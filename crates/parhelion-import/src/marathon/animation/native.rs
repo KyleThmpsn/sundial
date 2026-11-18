@@ -10,6 +10,7 @@
 use super::*;
 use crate::tiger::animation::{self as native_animation, pose::Pose};
 use std::sync::Arc;
+mod selection;
 
 pub(super) struct Carrier {
     pub runtime: u32,
@@ -125,6 +126,18 @@ pub(in crate::marathon) fn equipment_bones(
         anyhow::bail!("Native equipment skeleton is absent or ambiguous");
     };
     names(&*native.tag(*owner, Some(0x80809C36))?)
+}
+
+/// Whether the weapon has the native shell controller whose magazine counterpart has identical
+/// storage. The runtime writer validates and changes the private composition and all typed aliases.
+pub(super) fn magazine_candidate(native: &mut Reader, item_tag: u32) -> Result<bool> {
+    let report = crate::tiger::rig::inspect(native, item_tag, false)?;
+    let entity = native.tag(hex(&report["runtime_entity"])?, Some(0x80809C0F))?;
+    Ok(
+        sundial::package_authoring::entity::reload::magazine_candidate(&entity.0)
+            .map_err(anyhow::Error::msg)?
+            .is_some(),
+    )
 }
 
 /// Every state name a native weapon's first-person lookup can request, without reading its
@@ -251,6 +264,8 @@ pub(super) struct Extension {
     pub owners: Vec<Value>,
     pub skeleton: Payload,
     pub controls: Payload,
+    pub equipment_skeleton: Payload,
+    pub equipment_controls: Payload,
     /// Native equipment bone names in palette order, after the extension.
     pub palette: Vec<u32>,
     pub report: Value,
@@ -409,6 +424,8 @@ pub(super) fn extend(carrier: &Carrier, weapon: &source::Rig, graph: &Path) -> R
         owners,
         skeleton: first_person_extension.skeleton,
         controls: first_person_extension.controls,
+        equipment_skeleton: equipment_extension.skeleton,
+        equipment_controls: equipment_extension.controls,
         palette,
         report,
     })
@@ -426,21 +443,67 @@ pub(super) fn placement_names(placement: &Payload) -> Result<BTreeSet<u32>> {
 
 /// Rewrite the carrier's runtime markers that the source weapon also names, which include the
 /// named hand constraint targets, and append the source hand targets in `appended` that the
-/// carrier lacks. A source point on a nonroot bone is composed with that bone's bind into the
-/// weapon root frame, so it stays at the bone's rest place. Every stock weapon marker row is
-/// bound to the weapon root, and appended rows are too. Carrier-only markers keep their rows
-/// and are reported.
+/// carrier lacks. Each marker follows its named bone in the extended equipment palette. Shared
+/// bones keep native binds, so the local target takes the inverse of the clip's bind correction.
+/// Carrier-only markers keep their rows and are reported.
 pub(super) fn markers(
     carrier: &Carrier,
     placement: &Payload,
     weapon: &source::Rig,
+    equipment: &Payload,
     appended: &BTreeSet<u32>,
     graph: &Path,
 ) -> Result<Value> {
+    let (converted, mut report) = marker_data(carrier, placement, weapon, equipment, appended)?;
+    let tag = carrier.markers.0;
+    let file = format!("animation/markers-{tag:08X}.bin");
+    let template_file = format!("animation/markers-{tag:08X}-template.bin");
+    fs::write(graph.join(&file), &converted.0)?;
+    fs::write(graph.join(&template_file), &carrier.markers.1.0)?;
+    report["file"] = json!(file);
+    report["template_file"] = json!(template_file);
+    Ok(report)
+}
+
+/// The exact marker rows the equipment emitter will write for these named clip targets.
+pub(super) fn marker_targets(
+    carrier: &Carrier,
+    placement: &Payload,
+    weapon: &source::Rig,
+    equipment: &Payload,
+    targets: &BTreeSet<u32>,
+) -> Result<Vec<crate::tiger::markers::Marker>> {
+    let carrier_names = crate::tiger::markers::read_native(&carrier.markers.1)?
+        .into_iter()
+        .map(|row| row.name)
+        .collect::<BTreeSet<_>>();
+    let appended = targets.difference(&carrier_names).copied().collect();
+    let (payload, _) = marker_data(carrier, placement, weapon, equipment, &appended)?;
+    Ok(crate::tiger::markers::read_native(&payload)?
+        .into_iter()
+        .filter(|row| targets.contains(&row.name))
+        .collect())
+}
+
+fn marker_data(
+    carrier: &Carrier,
+    placement: &Payload,
+    weapon: &source::Rig,
+    equipment: &Payload,
+    appended: &BTreeSet<u32>,
+) -> Result<(Payload, Value)> {
     use crate::tiger::markers;
     let carrier_rows = markers::read_native(&carrier.markers.1)?;
     let carrier_names = carrier_rows.iter().map(|m| m.name).collect::<BTreeSet<_>>();
     let base = placement.pointer(24)?;
+    let equipment_names = names(equipment)?;
+    let equipment_bind = native_animation::pose::bind(equipment)?;
+    ensure!(
+        !equipment_names.is_empty()
+            && equipment_names.len() == equipment_bind.len()
+            && equipment_names.first().map(|row| row.0) == weapon.names.first().copied(),
+        "Equipment marker palette does not share the source weapon root"
+    );
     let mut source = Vec::new();
     let mut moved = Vec::new();
     for row in placement.array(base + 0xA8, 48, None)? {
@@ -450,12 +513,21 @@ pub(super) fn markers(
         }
         let bone = placement.u32(row + 0x24)? as usize;
         ensure!(
+            placement.u32(row + 0x20)? == 0,
+            "Source weapon marker body group is untranslated"
+        );
+        ensure!(
             bone < weapon.names.len(),
             "Source marker bone is outside the weapon rig"
         );
+        let native_bone = equipment_names
+            .iter()
+            .position(|row| row.0 == weapon.names[bone])
+            .context("Source marker bone is absent from the equipment palette")?;
         if bone != 0 {
             moved.push(
-                json!({"name":format!("{name:08X}"),"bone":format!("{:08X}", weapon.names[bone])}),
+                json!({"name":format!("{name:08X}"),"bone":format!("{:08X}", weapon.names[bone]),
+                    "source_bone":bone,"equipment_bone":native_bone}),
             );
         }
         let mut local = [0.; 8];
@@ -465,38 +537,42 @@ pub(super) fn markers(
         for (i, value) in local[4..7].iter_mut().enumerate() {
             *value = placement.f32(row + 0x10 + i * 4)?;
         }
+        let scale = placement.f32(row + 0x1C)?;
+        ensure!(
+            (scale - 1.).abs() < 0.00001,
+            "Source marker has a nonunit scale"
+        );
         local[7] = 1.;
-        let object = weapon.bind[0]
+        let source_rest = weapon.bind[0].inverse().then(weapon.bind[bone]);
+        let native_rest = equipment_bind[0]
             .inverse()
-            .then(weapon.bind[bone])
+            .then(equipment_bind[native_bone]);
+        let target = native_rest
+            .inverse()
+            .then(source_rest)
             .then(Pose::checked(local)?);
         source.push(markers::Marker {
             name,
-            binding: [0, 0],
-            position: [object.0[4], object.0[5], object.0[6], 1.],
-            orientation: [object.0[0], object.0[1], object.0[2], object.0[3]],
+            binding: [0, u32::try_from(native_bone)?],
+            position: [target.0[4], target.0[5], target.0[6], target.0[7]],
+            orientation: [target.0[0], target.0[1], target.0[2], target.0[3]],
             row: 0,
         });
     }
-    let (converted, plan) = markers::rewrite(&carrier.markers.1, &source)?;
+    let (converted, plan) = markers::rewrite_equipment(&carrier.markers.1, &source, equipment)?;
     let added = plan.added.iter().map(|m| m.name).collect::<BTreeSet<_>>();
     ensure!(
         added == *appended,
         "Appended hand targets differ from the source placement"
     );
-    crate::tiger::markers::validate(&converted.0)?;
-    let tag = carrier.markers.0;
-    let file = format!("animation/markers-{tag:08X}.bin");
-    let template_file = format!("animation/markers-{tag:08X}-template.bin");
-    fs::write(graph.join(&file), &converted.0)?;
-    fs::write(graph.join(&template_file), &carrier.markers.1.0)?;
-    Ok(
-        json!({"kind":"markers","native":tag,"first_person":false,"file":file,"template_file":template_file,
+    Ok((
+        converted,
+        json!({"kind":"markers","native":carrier.markers.0,"first_person":false,
         "source_markers":plan.matched.iter().map(|m| format!("{:08X}", m.name)).collect::<Vec<_>>(),
         "appended_markers":added.iter().map(|n| format!("{n:08X}")).collect::<Vec<_>>(),
-        "rest_place_markers":moved,
+        "moving_bone_markers":moved,
         "carrier_markers":plan.carrier_only.iter().map(|n| format!("{n:08X}")).collect::<Vec<_>>()}),
-    )
+    ))
 }
 
 /// A translated descriptor: the source descriptor it came from, its clip placeholder and
@@ -528,7 +604,11 @@ impl Carrier {
 /// only the translated rows left those ordinals past its arrays, and the client read the
 /// following zero words and array markers as clip tags.
 pub(super) fn bank(carrier: &Carrier, clips: &[u32], rows: &[Row]) -> Result<Payload> {
-    let mut bank = (*carrier.bank.1).clone();
+    bank_payload(&carrier.bank.1, clips, rows)
+}
+
+pub(super) fn bank_payload(original: &Payload, clips: &[u32], rows: &[Row]) -> Result<Payload> {
+    let mut bank = original.clone();
     let words = bank
         .0
         .chunks_exact(4)
@@ -637,14 +717,17 @@ pub(super) fn carrier_layer_route(
 }
 
 /// A named route of weighted descriptor ordinals in the private bank.
-pub(super) type Routes = BTreeMap<u32, Vec<(u32, f32)>>;
+pub(super) type Routes = BTreeMap<u32, super::selection::Tree<Vec<(u32, f32)>>>;
 
 /// The carrier's state table `80803465` with each translated action routed through a private
-/// weighted node. Names that select the same weighted descriptors share a node. Every other
+/// weighted node or exact-name input selector. Identical translated trees share a node. Every other
 /// name keeps its native node, which addresses the carrier's descriptors at their original
 /// ordinals and reads the carrier's dictionary.
 pub(super) fn states(carrier: &Carrier, routes: &Routes) -> Result<Payload> {
-    let p = &carrier.states.1;
+    state_payload(&carrier.states.1, routes)
+}
+
+pub(super) fn state_payload(p: &Payload, routes: &Routes) -> Result<Payload> {
     let mut out = p.0.clone();
     let mut nodes = p
         .array(24, 16, Some(0x8080342F))?
@@ -660,28 +743,14 @@ pub(super) fn states(carrier: &Carrier, routes: &Routes) -> Result<Payload> {
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut shared: Vec<(&Vec<(u32, f32)>, usize)> = Vec::new();
+    let mut shared = Vec::new();
     let mut targets = BTreeMap::new();
     for (name, route) in routes {
-        ensure!(!route.is_empty(), "Translated action route is empty");
         let index = if let Some(&(_, index)) = shared.iter().find(|(r, _)| *r == route) {
             index
         } else {
-            let at = (out.len() + 19) & !15;
-            out.resize(at - 4, 0);
-            out.extend(0x80803434u32.to_le_bytes());
-            out.extend([0; 16]);
-            let entries = route
-                .iter()
-                .flat_map(|(descriptor, weight)| {
-                    descriptor
-                        .to_le_bytes()
-                        .into_iter()
-                        .chain(weight.to_le_bytes())
-                })
-                .collect::<Vec<_>>();
-            append(&mut out, at, 0x80803439, &entries, 8)?;
-            nodes.push((1, Some(at)));
+            let (kind, at) = selection::node(&mut out, route)?;
+            nodes.push((kind, Some(at)));
             shared.push((route, nodes.len() - 1));
             nodes.len() - 1
         };
@@ -702,18 +771,21 @@ pub(super) fn states(carrier: &Carrier, routes: &Routes) -> Result<Payload> {
                 .to_le_bytes(),
         )?;
     }
-    let mut routed = BTreeSet::new();
+    let mut named = BTreeMap::new();
     for field in p.array(8, 8, Some(0x8080342E))? {
-        let name = p.u32(field)?;
-        if let Some(&index) = targets.get(&name) {
-            put(&mut out, field + 4, &u32::try_from(index)?.to_le_bytes())?;
-            routed.insert(name);
-        }
+        ensure!(
+            named.insert(p.u32(field)?, p.u32(field + 4)?).is_none(),
+            "Native state table has duplicate names"
+        );
     }
-    ensure!(
-        routed.len() == targets.len(),
-        "Translated action is absent from the native state table"
-    );
+    for (name, index) in targets {
+        named.insert(name, u32::try_from(index)?);
+    }
+    let rows = named
+        .into_iter()
+        .flat_map(|(name, index)| [name.to_le_bytes(), index.to_le_bytes()].concat())
+        .collect::<Vec<_>>();
+    append(&mut out, 8, 0x8080342E, &rows, 8)?;
     let length = out.len() as u64;
     put(&mut out, 0, &length.to_le_bytes())?;
     Ok(Payload(out))

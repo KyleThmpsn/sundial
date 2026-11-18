@@ -151,6 +151,50 @@ pub fn text(r: &mut Reader, bank_index: usize, hash: u32, locale: usize) -> Resu
     Ok(Text::Found(decode(&data, combos[*index])?))
 }
 
+/// The English text of the string `hash` in whichever source bank holds it, for a reference
+/// that names no bank, as a HUD status does. Banks that answered an earlier search are tried
+/// first, since such strings share a few banks. A bank that cannot be read is passed over.
+pub fn unbanked_text(r: &mut Reader, hash: u32) -> Result<Option<String>> {
+    static ANSWERED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+    if hash == 0x811C9DC5 {
+        return Ok(None);
+    }
+    let mut banks = ANSWERED
+        .lock()
+        .map(|banks| banks.clone())
+        .unwrap_or_default();
+    let known = banks.len();
+    banks.extend(r.classes(0x808099EF));
+    for (order, tag) in banks.into_iter().enumerate() {
+        let Ok(header) = r.tag(tag, Some(0x808099EF)) else {
+            continue;
+        };
+        let Ok(hashes) = header.array(8, 4, Some(0x80800070)) else {
+            continue;
+        };
+        let Some(index) = hashes
+            .iter()
+            .position(|offset| header.u32(*offset).ok() == Some(hash))
+        else {
+            continue;
+        };
+        let data = r.tag(header.u32(0x18)?, Some(0x808099F1))?;
+        let combos = data.array(0x38, 16, Some(0x808099F5))?;
+        ensure!(
+            hashes.len() == combos.len(),
+            "Source string table sizes differ"
+        );
+        if order >= known
+            && let Ok(mut answered) = ANSWERED.lock()
+            && !answered.contains(&tag)
+        {
+            answered.push(tag);
+        }
+        return Ok(Some(decode(&data, combos[index])?));
+    }
+    Ok(None)
+}
+
 pub fn item_name(r: &mut Reader, hash: u32, index: usize, locale: usize) -> Result<Value> {
     item_label(r, hash, index, locale, 0x80)
 }

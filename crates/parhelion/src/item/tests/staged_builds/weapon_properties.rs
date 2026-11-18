@@ -20,10 +20,7 @@ use crate::recipe::{
     HexHash, WeaponRecipe, WeaponSocketColumnRecipe, WeaponSocketPlugVariantRecipe,
 };
 use sundial::package_authoring::{
-    runtime::{
-        WeaponRuntimeValue, WeaponRuntimeValueOverride, load_weapon_runtime_graph_for_entity,
-        modifiers,
-    },
+    runtime::{RuntimeValue, RuntimeValueOverride, load_runtime_graph_for_entity, modifiers},
     sandbox_perk::{
         self, action,
         entity::modifiers as records,
@@ -43,7 +40,7 @@ const RANGE: i64 = 9;
 /// multiplied by 2.5. Then two rows added: Spread multiplied by 2 and three more magazine rounds.
 struct Authored {
     properties: WeaponProperties,
-    values: Vec<WeaponRuntimeValueOverride>,
+    values: Vec<RuntimeValueOverride>,
     added: Vec<ModifierRow>,
     burst: usize,
     damage: usize,
@@ -198,14 +195,14 @@ impl Authored {
     }
 }
 
-fn float(value: f32) -> WeaponRuntimeValue {
-    WeaponRuntimeValue::Float32Bits(value.to_bits())
+fn float(value: f32) -> RuntimeValue {
+    RuntimeValue::Float32Bits(value.to_bits())
 }
 
-fn renumber(value: WeaponRuntimeValue, number: i64) -> WeaponRuntimeValue {
+fn renumber(value: RuntimeValue, number: i64) -> RuntimeValue {
     match value {
-        WeaponRuntimeValue::Signed(_) => WeaponRuntimeValue::Signed(number),
-        WeaponRuntimeValue::Unsigned(_) => WeaponRuntimeValue::Unsigned(number as u64),
+        RuntimeValue::Signed(_) => RuntimeValue::Signed(number),
+        RuntimeValue::Unsigned(_) => RuntimeValue::Unsigned(number as u64),
         other => panic!("a number, not {other:?}"),
     }
 }
@@ -232,7 +229,7 @@ fn assert_stock_perks_attach_to_the_item(manager: &PackageManager, globals: &[u8
 /// author chose.
 fn assert_rows_built(manager: &PackageManager, root: u32, authored: &Authored, route: &str) {
     let payload = manager.read_tag(TagHash(root)).unwrap();
-    let mut graph = load_weapon_runtime_graph_for_entity(manager, 0, 0, root, &payload).unwrap();
+    let mut graph = load_runtime_graph_for_entity(manager, 0, 0, root, &payload).unwrap();
     graph.scope_fields();
     let rows = records::discover(&graph);
     if rows.len() != authored.count() {

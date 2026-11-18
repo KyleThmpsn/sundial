@@ -4,11 +4,13 @@ use crate::d1_roi::native::perk::label;
 use crate::tiger::sequence::{object, relative};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+mod highlight;
 
-const TEMPLATES: [(u32, u32); 3] = [
+const TEMPLATES: [(u32, u32); 4] = [
     (0x81522CBA, 0x80BB890A),
     (0x8152C721, 0x80BB893B),
     (0x81524A0F, 0x815248AF),
+    (0x80FEEB6C, 0x80BB7376),
 ];
 /// Range scalar classes paired by query package structure, with a stock query holding the native
 /// class. Each class measures its own quantity, so other providers reject.
@@ -21,6 +23,18 @@ const SCALARS: [(u32, u32, u32); 2] = [
 struct Labels<'a> {
     source: &'a Source,
     registry: &'a Payload,
+}
+
+/// Both original callbacks select a bit by the world object's type byte. The checked
+/// biped type moved from ordinal nine in Rise of Iron to twelve in Shadowkeep.
+fn kind_mask(p: &Payload, value: usize, source: bool) -> Result<u32> {
+    let mask = p.u32(value)?;
+    let biped = if source { 1 << 9 } else { 1 << 12 };
+    ensure!(
+        mask & !biped == 0,
+        "Query object kind mask has no established counterpart"
+    );
+    Ok(if mask == 0 { 0 } else { 1 << 12 })
 }
 
 /// The native range scalar class and its eight parameter bytes. Both versions follow the
@@ -138,6 +152,9 @@ fn predicates(p: &Payload, labels: Option<&Labels>) -> Result<Value> {
                     }
                     (Some(_), 0x808026B3) | (None, 0x80804D7A) => {
                         json!([flags, 1, [p.u32(value)?, p.u32(value + 4)?]])
+                    }
+                    (Some(_), 0x80802109) | (None, 0x80804D72) => {
+                        json!([flags, 4, kind_mask(p, value, source)?])
                     }
                     (Some(_), 0x80802C1C) | (None, 0x80804D5F) => {
                         let (class, parameters) = scalar(p, value, source)?;
@@ -299,12 +316,20 @@ fn translate(
                 let (class, length) = match source.u32(value - 4)? {
                     0x8080295D => (0x80804D76, 4),
                     0x808026B3 => (0x80804D7A, 8),
+                    0x80802109 => (0x80804D72, 4),
                     0x80802C1C => (0x80804D5F, 20),
                     _ => anyhow::bail!("Unsupported source query predicate"),
                 };
                 let nv = object(target, class, length)?;
                 put(&mut target.0, nv, &source.0[value..value + length])?;
                 relative(target, nt + 8, nv)?;
+                if class == 0x80804D72 {
+                    put(
+                        &mut target.0,
+                        nv,
+                        &kind_mask(source, value, true)?.to_le_bytes(),
+                    )?;
+                }
                 if class == 0x80804D5F {
                     let (class, parameters) = scalar(source, value, true)?;
                     let template = &scalars[&class];
@@ -394,7 +419,10 @@ fn parameters(p: &Payload, source: bool) -> Result<Value> {
     }
     Ok(
         json!({"values":p.bytes::<8>(r+if source {0x90} else {0x78})?,
-        "outputs":outputs,"flags":p.bytes::<8>(at+16)?}),
+        "outputs":outputs,"flags":p.bytes::<8>(at+16)?,
+        "highlight_outputs":[p.u64(r+if source {0x168} else {0x178})? != 0,
+            p.u64(r+if source {0x170} else {0x180})? != 0,
+            p.u64(r+if source {0x178} else {0x188})? != 0]}),
     )
 }
 
@@ -411,10 +439,8 @@ impl Assembly<'_> {
             registry: &registry,
         };
         let queries = predicates(source, Some(&labels))?;
-        let omitted = omitted(source, &labels)?;
         let parameters = parameters(source, true)?;
         let mut selected = None;
-        let mut exact = false;
         for (owner, entity) in TEMPLATES {
             let native = self.native.tag(owner, Some(0x80809C36))?;
             if parameters != self::parameters(&native, false)? {
@@ -423,108 +449,146 @@ impl Assembly<'_> {
             selected.get_or_insert((owner, entity));
             if queries == predicates(&native, None)? {
                 selected = Some((owner, entity));
-                exact = true;
                 break;
             }
         }
         let (owner, entity) =
             selected.context("Source query parameters need another native adapter")?;
         let mut component = self.component(owner, entity, name, index)?;
-        let native = &component.template;
-        ensure!(
-            source.bytes::<24>(source.pointer(24)? + 0x168)? == [0; 24],
-            "Source query trailing outputs need another native adapter"
-        );
-        let search = search(source, &mut component.payload)?;
-        let outputs = self.query_outputs(source, native)?;
-        if !exact {
-            let mut scalars = BTreeMap::new();
-            for (_, class, tag) in SCALARS {
-                scalars.insert(class, self.native.tag(tag, Some(0x80809C36))?);
-            }
-            translate(source, &mut component.payload, &labels, &scalars)?;
-        }
-        ensure!(
-            queries == predicates(&component.payload, None)?,
-            "Translated query predicates differ"
-        );
-        activation(source, &mut component.payload)?;
+        let evidence = write(
+            self.source,
+            &mut self.native,
+            source,
+            &mut component.payload,
+        )?;
         component.seal()?;
-        self.evidence.push(json!({"source_component":source.u32(source.pointer(16)?)?,
-            "resource_class":0x80803136u32,"native_resource_class":0x80803820u32,
-            "query_adapter":{"predicates":queries,"omitted_filters":omitted,"output_names":outputs,"target_search":search,"parameters":parameters},
-            "gameplay_verified":false}));
+        self.evidence.push(evidence);
         Ok(component)
     }
+}
 
-    fn query_outputs(&mut self, source: &Payload, native: &Payload) -> Result<Vec<u32>> {
-        let (s, n) = (source.pointer(24)?, native.pointer(24)?);
-        let mut outputs = Vec::new();
-        for (sf, nf, si, ni, sc, nc, sm, nm, embedded) in [
+/// Translate a checked query into a privately owned native carrier. Both appearance and perk
+/// graphs use this contract, including complete predicates, outputs and activation groups.
+pub(crate) fn write(
+    source_reader: &Source,
+    native_reader: &mut Reader,
+    source: &Payload,
+    target: &mut Payload,
+) -> Result<Value> {
+    let registry = native_reader.tag(0x80C70CA1, None)?;
+    let labels = Labels {
+        source: source_reader,
+        registry: &registry,
+    };
+    let queries = predicates(source, Some(&labels))?;
+    let omitted = omitted(source, &labels)?;
+    let parameters = parameters(source, true)?;
+    ensure!(
+        parameters == self::parameters(target, false)?,
+        "Source query parameters need another native adapter"
+    );
+    let presentation = highlight::retain(source_reader, native_reader, source, target)?;
+    let search = search(source, target)?;
+    let outputs = query_outputs(source_reader, native_reader, source, target)?;
+    if queries != predicates(target, None)? {
+        let mut scalars = BTreeMap::new();
+        for (_, class, tag) in SCALARS {
+            scalars.insert(class, native_reader.tag(tag, Some(0x80809C36))?);
+        }
+        translate(source, target, &labels, &scalars)?;
+    }
+    ensure!(
+        queries == predicates(target, None)?,
+        "Translated query predicates differ"
+    );
+    // Both original updates use the same five candidate presentation bits. Keep the native
+    // carrier's internal output storage and additional providers instead of source offsets.
+    let controls = source.u32(source.pointer(24)? + 0x180)?;
+    ensure!(
+        controls & !31 == 0 && source.u32(source.pointer(24)? + 0x184)? == 0,
+        "Source query presentation controls differ"
+    );
+    let at = target.pointer(24)? + 0x1D0;
+    put(&mut target.0, at, &controls.to_le_bytes())?;
+    activation(source, target)?;
+    Ok(json!({"source_component":source.u32(source.pointer(16)?)?,
+        "resource_class":0x80803136u32,"native_resource_class":0x80803820u32,
+        "query_adapter":{"predicates":queries,"omitted_filters":omitted,"output_names":outputs,"target_search":search,"parameters":parameters,"presentation_controls":controls,"presentation":presentation},
+        "gameplay_verified":false}))
+}
+
+fn query_outputs(
+    source_reader: &Source,
+    native_reader: &mut Reader,
+    source: &Payload,
+    native: &Payload,
+) -> Result<Vec<u32>> {
+    let (s, n) = (source.pointer(24)?, native.pointer(24)?);
+    let mut outputs = Vec::new();
+    for (sf, nf, si, ni, sc, nc, sm, nm, embedded) in [
+        (
+            0x60, 0x48, 0x80800581, 0x80809ADE, 0x808008FE, 0x80809ADD, 1, 0, false,
+        ),
+        (
+            0x78, 0x60, 0x8080059E, 0x808097B9, 0x80800835, 0x808097B8, 3, 2, false,
+        ),
+        (
+            0xF0, 0xD0, 0x808007E9, 0x808097BB, 0x808004CD, 0x808097BA, 1, 0, true,
+        ),
+        (
+            0x108, 0x118, 0x8080053B, 0x80809AE1, 0x80800539, 0x80809AE2, 4, 3, false,
+        ),
+        (
+            0x128, 0x138, 0x8080053B, 0x80809AE1, 0x80800539, 0x80809AE2, 5, 4, false,
+        ),
+        (
+            0x148, 0x158, 0x8080053B, 0x80809AE1, 0x80800539, 0x80809AE2, 6, 5, false,
+        ),
+    ] {
+        ensure!(
+            source.pointer(s + sf)? == s + if embedded { 0xC0 } else { 0 }
+                && native.pointer(n + nf)? == n + if embedded { 0xA8 } else { 0 },
+            "Query provider points outside its definition"
+        );
+        let a = source_reader.read(source.u32(s + sf + 8)?)?;
+        let b = native_reader.tag(native.u32(n + nf + 8)?, None)?;
+        for (p, interface, instance, implementation, method, row_class) in [
             (
-                0x60, 0x48, 0x80800581, 0x80809ADE, 0x808008FE, 0x80809ADD, 1, 0, false,
+                &a,
+                si,
+                sc,
+                if embedded { 0x80802BF3 } else { 0x80803143 },
+                sm,
+                0x808005C0,
             ),
             (
-                0x78, 0x60, 0x8080059E, 0x808097B9, 0x80800835, 0x808097B8, 3, 2, false,
-            ),
-            (
-                0xF0, 0xD0, 0x808007E9, 0x808097BB, 0x808004CD, 0x808097BA, 1, 0, true,
-            ),
-            (
-                0x108, 0x118, 0x8080053B, 0x80809AE1, 0x80800539, 0x80809AE2, 4, 3, false,
-            ),
-            (
-                0x128, 0x138, 0x8080053B, 0x80809AE1, 0x80800539, 0x80809AE2, 5, 4, false,
-            ),
-            (
-                0x148, 0x158, 0x8080053B, 0x80809AE1, 0x80800539, 0x80809AE2, 6, 5, false,
+                b.as_ref(),
+                ni,
+                nc,
+                if embedded { 0x80804345 } else { 0x8080381F },
+                nm,
+                0x80809C56,
             ),
         ] {
+            let rows = p.array(16, 24, Some(row_class))?;
             ensure!(
-                source.pointer(s + sf)? == s + if embedded { 0xC0 } else { 0 }
-                    && native.pointer(n + nf)? == n + if embedded { 0xA8 } else { 0 },
-                "Query provider points outside its definition"
+                p.u32(8)? == interface
+                    && p.u32(12)? == instance
+                    && rows.len() == 1
+                    && p.u32(rows[0])? == implementation
+                    && p.u32(rows[0] + 4)? == method
+                    && p.bytes::<16>(rows[0] + 8)? == [0; 16],
+                "Query provider dispatch differs"
             );
-            let a = self.source.read(source.u32(s + sf + 8)?)?;
-            let b = self.native.tag(native.u32(n + nf + 8)?, None)?;
-            for (p, interface, instance, implementation, method, row_class) in [
-                (
-                    &a,
-                    si,
-                    sc,
-                    if embedded { 0x80802BF3 } else { 0x80803143 },
-                    sm,
-                    0x808005C0,
-                ),
-                (
-                    b.as_ref(),
-                    ni,
-                    nc,
-                    if embedded { 0x80804345 } else { 0x8080381F },
-                    nm,
-                    0x80809C56,
-                ),
-            ] {
-                let rows = p.array(16, 24, Some(row_class))?;
-                ensure!(
-                    p.u32(8)? == interface
-                        && p.u32(12)? == instance
-                        && rows.len() == 1
-                        && p.u32(rows[0])? == implementation
-                        && p.u32(rows[0] + 4)? == method
-                        && p.bytes::<16>(rows[0] + 8)? == [0; 16],
-                    "Query provider dispatch differs"
-                );
-            }
-            if sf >= 0x108 {
-                let output = source.u32(s + sf + 24)?;
-                ensure!(
-                    output == native.u32(n + nf + 24)?,
-                    "Query output name differs"
-                );
-                outputs.push(output);
-            }
         }
-        Ok(outputs)
+        if sf >= 0x108 {
+            let output = source.u32(s + sf + 24)?;
+            ensure!(
+                output == native.u32(n + nf + 24)?,
+                "Query output name differs"
+            );
+            outputs.push(output);
+        }
     }
+    Ok(outputs)
 }

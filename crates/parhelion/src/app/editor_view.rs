@@ -324,7 +324,7 @@ impl PackageAuthoringApp {
             .additional_behaviors
             .iter()
             .filter_map(|chosen| crate::weapon::behavior::behavior(&chosen.behavior))
-            .any(crate::weapon::behavior::source_switches_element);
+            .any(crate::weapon::behavior::source_switches_damage_type);
         let variable_available =
             donor.is_some_and(|gameplay| variable_damage_supported(&gameplay.summary));
         #[cfg(feature = "d2-model-importer")]
@@ -780,7 +780,7 @@ impl PackageAuthoringApp {
         self.hud_icon_editor.draw(
             ui,
             &mut self.recipe.overrides.hud_icon,
-            crate::hud_icon::ui::Appearance {
+            crate::icon::hud::ui::Appearance {
                 packages: &self.packages,
                 pattern_index: summary.and_then(|donor| donor.weapon_pattern_index),
                 name,

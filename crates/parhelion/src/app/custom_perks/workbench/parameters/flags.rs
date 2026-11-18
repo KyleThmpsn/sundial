@@ -2,9 +2,7 @@
 //! flag word, read and written through the same helpers as every native field, so the edit
 //! is one override on the word. The word itself waits under More Properties.
 use super::{PrivatePerkRuntimeGraph, native};
-use sundial::package_authoring::runtime::{
-    WeaponRuntimeField, WeaponRuntimeValue, WeaponRuntimeValueOverride,
-};
+use sundial::package_authoring::runtime::{RuntimeField, RuntimeValue, RuntimeValueOverride};
 
 /// The invisibility attachment record and its flag word.
 const SCHEMA: u32 = 0x8080_43EC;
@@ -16,7 +14,7 @@ const BIT: u64 = 0x20;
 pub(in crate::app::custom_perks) struct Flag<'a> {
     pub graph: u32,
     pub owner: u32,
-    pub field: &'a WeaponRuntimeField,
+    pub field: &'a RuntimeField,
 }
 
 pub(in crate::app::custom_perks) fn discover(loaded: &PrivatePerkRuntimeGraph) -> Vec<Flag<'_>> {
@@ -40,7 +38,7 @@ pub(in crate::app::custom_perks) fn discover(loaded: &PrivatePerkRuntimeGraph) -
             for field in &root.fields {
                 let word = field.locator.type_handle.get() == SCHEMA
                     && field.locator.value_offset == OFFSET
-                    && matches!(field.value, WeaponRuntimeValue::Unsigned(_));
+                    && matches!(field.value, RuntimeValue::Unsigned(_));
                 if word
                     && !flags
                         .iter()
@@ -59,14 +57,14 @@ pub(in crate::app::custom_perks) fn discover(loaded: &PrivatePerkRuntimeGraph) -
 }
 
 impl Flag<'_> {
-    fn carrier<'a>(&self, loaded: &'a PrivatePerkRuntimeGraph) -> Option<&'a WeaponRuntimeField> {
+    fn carrier<'a>(&self, loaded: &'a PrivatePerkRuntimeGraph) -> Option<&'a RuntimeField> {
         let graph = &loaded.graphs.iter().find(|(tag, _)| *tag == self.graph)?.1;
         native::carrier(graph, self.owner, self.field)
     }
 
     fn stock(&self) -> u64 {
         match self.field.value {
-            WeaponRuntimeValue::Unsigned(word) => word,
+            RuntimeValue::Unsigned(word) => word,
             _ => 0,
         }
     }
@@ -74,10 +72,10 @@ impl Flag<'_> {
     fn word(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
     ) -> Result<u64, String> {
         match native::current_value(loaded, self.field, self.carrier(loaded), draft)? {
-            WeaponRuntimeValue::Unsigned(word) => Ok(word),
+            RuntimeValue::Unsigned(word) => Ok(word),
             _ => Err(
                 "Attachment Flags is not a flag word here. Remove the edit before continuing."
                     .into(),
@@ -88,7 +86,7 @@ impl Flag<'_> {
     pub(super) fn value(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
     ) -> Result<bool, String> {
         Ok(self.word(loaded, draft)? & BIT != 0)
     }
@@ -96,7 +94,7 @@ impl Flag<'_> {
     pub(super) fn is_modified(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
     ) -> bool {
         self.word(loaded, draft)
             .is_ok_and(|word| word & BIT != self.stock() & BIT)
@@ -107,21 +105,21 @@ impl Flag<'_> {
     pub(super) fn covers(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
     ) -> bool {
         self.word(loaded, draft)
             .is_ok_and(|word| (word ^ self.stock()) & !BIT == 0)
     }
 
     /// Whether this is the field the tile edits, so the change list names it once.
-    pub(super) fn targets_field(&self, owner: u32, field: &WeaponRuntimeField) -> bool {
+    pub(super) fn targets_field(&self, owner: u32, field: &RuntimeField) -> bool {
         owner == self.owner && field.locator == self.field.locator
     }
 
     fn write(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
+        draft: &mut Vec<RuntimeValueOverride>,
         word: u64,
     ) -> Result<(), String> {
         native::write_value(
@@ -129,14 +127,14 @@ impl Flag<'_> {
             self.field,
             self.carrier(loaded),
             draft,
-            &WeaponRuntimeValue::Unsigned(word),
+            &RuntimeValue::Unsigned(word),
         )
     }
 
     pub(super) fn set(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
+        draft: &mut Vec<RuntimeValueOverride>,
         on: bool,
     ) -> Result<(), String> {
         let word = self.word(loaded, draft)?;
@@ -146,7 +144,7 @@ impl Flag<'_> {
     pub(super) fn reset(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
+        draft: &mut Vec<RuntimeValueOverride>,
     ) -> Result<(), String> {
         let word = self.word(loaded, draft)?;
         self.write(loaded, draft, (word & !BIT) | (self.stock() & BIT))
@@ -159,7 +157,7 @@ pub(in crate::app::custom_perks) fn draw(
     width: f32,
     loaded: &PrivatePerkRuntimeGraph,
     flag: &Flag<'_>,
-    draft: &mut Vec<WeaponRuntimeValueOverride>,
+    draft: &mut Vec<RuntimeValueOverride>,
 ) -> Option<Result<(), String>> {
     let current = flag.value(loaded, draft);
     let stock = flag.stock() & BIT != 0;

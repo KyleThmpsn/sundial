@@ -1,3 +1,4 @@
+//! Collectibles, their acquired conditions and the numeric programs that count them for badges.
 #[cfg(test)]
 mod tests;
 
@@ -22,9 +23,9 @@ mod collections;
 #[cfg(test)]
 use collections::*;
 pub(crate) use collections::{
-    acquires_by, append_collectible, append_collectible_display, collectible_clone_template,
-    collection_unlock_index, donor_weapon_collection_page, gear_collection_page,
-    node_collectible_children, template_presentation_parents,
+    acquires_by, append_collectible, append_collectible_display, changed_stock_arrays,
+    collectible_clone_template, collection_unlock_index, donor_weapon_collection_page,
+    gear_collection_page, node_collectible_children, template_presentation_parents,
     validate_authored_collectible_display_row, validate_authored_collectible_nested_isolation,
     validate_weapon_material_sets,
 };
@@ -261,6 +262,8 @@ pub(crate) struct ProjectAuthoredRow {
     pub(crate) source_acquired_flag: u16,
     pub(crate) acquisition: Acquisition,
     pub(crate) count_selection: SunriseAcquiredPoolSelection,
+    /// Where the entry goes among the entries of the badges it joins.
+    pub(crate) badge_rank: crate::badge::Rank,
 }
 
 #[derive(Clone, Copy)]

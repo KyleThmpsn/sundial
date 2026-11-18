@@ -12,7 +12,6 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 const SCHEMA: u32 = 1;
 
@@ -72,10 +71,6 @@ impl AppliedVersions {
         self.dirty = false;
         Ok(())
     }
-}
-
-pub(crate) fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 /// Defaults replaced while opening a library, with the folder holding the previous copies.

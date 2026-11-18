@@ -5,10 +5,7 @@
 //! stock timers that never end.
 use super::*;
 use sundial::package_authoring::{
-    runtime::{
-        WeaponRuntimeValueOverride, load_weapon_runtime_graph_for_entity,
-        resolve_weapon_runtime_field,
-    },
+    runtime::{RuntimeValueOverride, load_runtime_graph_for_entity, resolve_runtime_field},
     sandbox_perk::entity::effect_length::{EffectLength, UNLIMITED, discover, seconds},
 };
 
@@ -41,7 +38,7 @@ fn real_hop_on_effect_lengths_compile_into_private_owners() {
 /// of the nest that differs from stock in the four lanes and its own retargeted words alone.
 fn devour_length_compiles(manager: &PackageManager) {
     let source = read_tag(manager, TagHash(DEVOUR), "Devour").unwrap();
-    let mut graph = load_weapon_runtime_graph_for_entity(manager, 0, 0, DEVOUR, &source).unwrap();
+    let mut graph = load_runtime_graph_for_entity(manager, 0, 0, DEVOUR, &source).unwrap();
     graph.scope_fields();
     let lengths = discover(&graph);
     assert_eq!(lengths.len(), 1, "{lengths:#?}");
@@ -51,11 +48,11 @@ fn devour_length_compiles(manager: &PackageManager) {
     assert_eq!(devour.stock(), 11.0);
 
     // The edit is one override on the constant row, which resolves to the stock bytes.
-    let edit = WeaponRuntimeValueOverride {
+    let edit = RuntimeValueOverride {
         locator: devour.field.locator.clone(),
         value: EffectLength::encode(20.0),
     };
-    let resolved = resolve_weapon_runtime_field(
+    let resolved = resolve_runtime_field(
         manager,
         &source,
         &edit.locator.for_graph(DEVOUR.into()).unwrap(),
@@ -91,8 +88,7 @@ fn devour_length_compiles(manager: &PackageManager) {
 /// Invisibility's timer scales an input first, so its length is the constant the program adds.
 fn invisibility_length_reads(manager: &PackageManager) {
     let source = read_tag(manager, TagHash(INVISIBILITY), "Invisibility").unwrap();
-    let mut graph =
-        load_weapon_runtime_graph_for_entity(manager, 0, 0, INVISIBILITY, &source).unwrap();
+    let mut graph = load_runtime_graph_for_entity(manager, 0, 0, INVISIBILITY, &source).unwrap();
     graph.scope_fields();
     let lengths = discover(&graph);
     assert_eq!(lengths.len(), 1, "{lengths:#?}");
@@ -108,8 +104,7 @@ fn invisibility_length_reads(manager: &PackageManager) {
 /// retargeted words moves.
 fn invisibility_unlimited_compiles(manager: &PackageManager) {
     let source = read_tag(manager, TagHash(INVISIBILITY), "Invisibility").unwrap();
-    let mut graph =
-        load_weapon_runtime_graph_for_entity(manager, 0, 0, INVISIBILITY, &source).unwrap();
+    let mut graph = load_runtime_graph_for_entity(manager, 0, 0, INVISIBILITY, &source).unwrap();
     graph.scope_fields();
     let lengths = discover(&graph);
     let length = &lengths[0];
@@ -128,7 +123,7 @@ fn invisibility_unlimited_compiles(manager: &PackageManager) {
         (scale, EffectLength::encode(0.0)),
         (&flag.field, flag.with(&flag.field.value, true).unwrap()),
     ]
-    .map(|(field, value)| WeaponRuntimeValueOverride {
+    .map(|(field, value)| RuntimeValueOverride {
         locator: field.locator.clone(),
         value,
     });

@@ -145,7 +145,7 @@ pub(super) fn resolve_presentation_donor(
 
 pub(super) fn resolve_runtime_component_donor(
     sources: &ProjectSources,
-    reference: &WeaponRuntimeComponentDonorReference,
+    reference: &RuntimeComponentDonorReference,
 ) -> AuthoringResult<ResolvedRuntimeComponentDonor> {
     let manager = &sources.manager;
     let sandbox_patterns = &sources.stock_sandbox_patterns;
@@ -286,7 +286,7 @@ pub(super) fn resolve_added_damage_carrier_source(
                     continue;
                 };
                 // A shared runtime entity can back both fixed-perk and socket-driven weapons.
-                // A socket-driven peer proves the element on this entity, but its type-68
+                // A socket-driven peer proves the damage type on this entity, but its type-68
                 // socket cannot be added to a definition without one, so it stands for the
                 // modern fixed marker there. Peers whose own layout fits rank first.
                 let direct = family != WeaponDamageCarrierFamily::PlugDriven;
@@ -304,7 +304,7 @@ pub(super) fn resolve_added_damage_carrier_source(
                         .ok()
                         .and_then(|resource| array_at(&definition, resource).ok())
                         .map(|(count, _, _, _)| count);
-                // Slot and element are authored independently. Prefer a peer in the
+                // Slot and damage type are authored independently. Prefer a peer in the
                 // requested slot, but a compatible elemental peer of this exact
                 // runtime entity also proves the carrier when that slot has none.
                 let score = u8::from(direct) * 8
@@ -358,7 +358,7 @@ pub(super) fn resolve_added_damage_carrier_source(
     let family = carrier.family().ok_or_else(|| {
         invalid("The target-slot presentation donor has no fixed elemental damage carrier")
     })?;
-    // A socket-driven presentation donor proves the element, not a socket the gameplay
+    // A socket-driven presentation donor proves the damage type, not a socket the gameplay
     // definition lacks: a definition without a type-68 lane takes the modern fixed marker.
     let family = match family {
         WeaponDamageCarrierFamily::PlugDriven if gameplay_damage_lanes.is_empty() => {

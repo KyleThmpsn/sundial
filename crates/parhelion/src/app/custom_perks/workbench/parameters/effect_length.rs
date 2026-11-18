@@ -5,10 +5,7 @@
 use super::{PerkEditor, PrivatePerkRuntimeGraph, guided, native};
 use crate::app::style;
 use sundial::package_authoring::{
-    runtime::{
-        WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeValue,
-        WeaponRuntimeValueOverride,
-    },
+    runtime::{RuntimeField, RuntimeFieldLocator, RuntimeValue, RuntimeValueOverride},
     sandbox_perk::entity::effect_length::{self, EffectLength, UNLIMITED, UnlimitedFlag},
 };
 
@@ -42,8 +39,8 @@ impl Length {
     fn carrier<'a>(
         &self,
         loaded: &'a PrivatePerkRuntimeGraph,
-        field: &WeaponRuntimeField,
-    ) -> Option<&'a WeaponRuntimeField> {
+        field: &RuntimeField,
+    ) -> Option<&'a RuntimeField> {
         let graph = &loaded.graphs.iter().find(|(tag, _)| *tag == self.graph)?.1;
         native::carrier(graph, self.length.owner_tag, field)
     }
@@ -51,18 +48,18 @@ impl Length {
     fn read(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        field: &WeaponRuntimeField,
-        draft: &[WeaponRuntimeValueOverride],
-    ) -> Result<WeaponRuntimeValue, String> {
+        field: &RuntimeField,
+        draft: &[RuntimeValueOverride],
+    ) -> Result<RuntimeValue, String> {
         native::current_value(loaded, field, self.carrier(loaded, field), draft)
     }
 
     fn write(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        field: &WeaponRuntimeField,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
-        value: &WeaponRuntimeValue,
+        field: &RuntimeField,
+        draft: &mut Vec<RuntimeValueOverride>,
+        value: &RuntimeValue,
     ) -> Result<(), String> {
         native::write_value(loaded, field, self.carrier(loaded, field), draft, value)
     }
@@ -70,8 +67,8 @@ impl Length {
     fn seconds(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        field: &WeaponRuntimeField,
-        draft: &[WeaponRuntimeValueOverride],
+        field: &RuntimeField,
+        draft: &[RuntimeValueOverride],
     ) -> Result<f32, String> {
         effect_length::seconds(&self.read(loaded, field, draft)?).ok_or_else(|| {
             "Attachment Length lanes disagree. Remove the edit before continuing.".into()
@@ -82,7 +79,7 @@ impl Length {
     pub(super) fn value(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
     ) -> Result<Option<f32>, String> {
         let seconds = self.seconds(loaded, &self.length.field, draft)?;
         let scale = self
@@ -106,7 +103,7 @@ impl Length {
     fn reads_unlimited(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
     ) -> bool {
         matches!(self.value(loaded, draft), Ok(None))
     }
@@ -114,7 +111,7 @@ impl Length {
     pub(super) fn is_modified(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
     ) -> bool {
         self.value(loaded, draft)
             .is_ok_and(|value| value != self.stock())
@@ -124,7 +121,7 @@ impl Length {
     pub(super) fn set(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
+        draft: &mut Vec<RuntimeValueOverride>,
         seconds: f32,
     ) -> Result<(), String> {
         if !seconds.is_finite() || seconds == 0.0 {
@@ -161,7 +158,7 @@ impl Length {
     pub(super) fn reset(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
+        draft: &mut Vec<RuntimeValueOverride>,
     ) -> Result<(), String> {
         if self.reads_unlimited(loaded, draft) {
             self.leave_unlimited(loaded, draft)?;
@@ -173,7 +170,7 @@ impl Length {
     fn leave_unlimited(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
+        draft: &mut Vec<RuntimeValueOverride>,
     ) -> Result<(), String> {
         if let Some(scale) = &self.length.input_scale {
             self.write(loaded, scale, draft, &scale.value)?;
@@ -188,7 +185,7 @@ impl Length {
         &self,
         loaded: &PrivatePerkRuntimeGraph,
         flag: &UnlimitedFlag,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
+        draft: &mut Vec<RuntimeValueOverride>,
         set: bool,
     ) -> Result<(), String> {
         let value = flag
@@ -202,9 +199,9 @@ impl Length {
     pub(super) fn targets_field(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
         owner: u32,
-        field: &WeaponRuntimeField,
+        field: &RuntimeField,
     ) -> bool {
         owner == self.length.owner_tag
             && (field.locator == self.length.field.locator
@@ -221,7 +218,7 @@ impl Length {
     pub(super) fn unlimited_flag(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
     ) -> Option<&UnlimitedFlag> {
         self.length
             .unlimited
@@ -233,7 +230,7 @@ impl Length {
     pub(super) fn contains(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        locator: &WeaponRuntimeFieldLocator,
+        locator: &RuntimeFieldLocator,
     ) -> bool {
         std::iter::once(&self.length.field)
             .chain(self.length.input_scale.as_ref())
@@ -270,7 +267,7 @@ pub(in crate::app::custom_perks) fn draw(
     width: f32,
     loaded: &PrivatePerkRuntimeGraph,
     length: &Length,
-    draft: &mut Vec<WeaponRuntimeValueOverride>,
+    draft: &mut Vec<RuntimeValueOverride>,
 ) -> Option<Result<(), String>> {
     let current = length.value(loaded, draft);
     let mut value = f64::from(

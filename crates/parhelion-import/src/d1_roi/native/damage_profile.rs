@@ -21,6 +21,7 @@
 //! | Ownerless kill attribution record | `+B8`, `80802DAA` | `+58`, `80804B17` |
 //! | Float32 one | `+50` | `+D0` |
 //! | Feedback | `+100` | `+B0` |
+//! | Response list (graphs and programs, as a query's) | `+108` | `+B8` |
 //!
 //! Each build compiles its category mask from the category rows against its own registry, so the
 //! native mask is rebuilt from the rows. Native word `+54 = 100` has no consumer-qualified role
@@ -33,6 +34,12 @@
 //! both examined stock pairs. Its native consumer is unqualified. Both builds look a response up
 //! by class, take the first and skip an absent one (`005E0220`, `00B8C890`), so a profile may
 //! hold any of them in any order, or none, as stock profiles do.
+//!
+//! Response `808022F5` holds one name, as native `80804B55` does in its four bytes. Forty-seven
+//! stock profiles hold an `80804B55`, with four names among them, one of them Rise of Iron's
+//! `000C094B`. What reads the name is not traced in either game. A name a stock profile holds
+//! carries. Any other is left out and reported, since nothing native names it. Native Phoenix
+//! Uppercut profile `81A6B5F0` leaves out the `000C094B` its source `80A7F3A8` holds.
 use super::*;
 use crate::{
     d1_roi::{
@@ -51,6 +58,32 @@ pub(crate) const TEMPLATE: u32 = 0x8152BB69;
 pub(crate) const SOURCE_DICTIONARY: u32 = 0x80AAC26E;
 pub(crate) const NATIVE_DICTIONARY: u32 = 0x80C70CA1;
 const NATIVE_CUE: u32 = 0x80809802;
+/// The names stock `80804B55` responses hold.
+const RESPONSE_NAMES: [u32; 4] = [0xF427_CF45, 0x000C_094B, 0x71DE_6AD4, 0xA2B5_2C41];
+
+/// How a graph a profile's response list names is bound: the stock graph a native port keeps
+/// for it, or the symbol of its private translation.
+pub enum Graph {
+    Stock(u32),
+    Private(String),
+}
+
+/// The graphs the response list of profile `tag` names, none for another profile family.
+pub fn response_graphs(source: &Source, tag: u32) -> Result<Vec<u32>> {
+    let p = source.read(tag)?;
+    if p.0.len() == 0x230 {
+        return Ok(Vec::new());
+    }
+    let root = p.pointer(24)?;
+    if root < 4 || p.u32(root - 4)? != 0x80AA_C28B {
+        return Ok(Vec::new());
+    }
+    Ok(
+        crate::d1_roi::sequence::query::Responses::read(source, &p, root + 0x108)?
+            .graphs()
+            .collect(),
+    )
+}
 
 pub struct Translated {
     pub assets: Vec<Asset>,
@@ -62,6 +95,9 @@ pub struct Translated {
     pub absent: Vec<u32>,
     /// Source cues of audio rows that play nothing, which the translation leaves out.
     pub silent: Vec<u32>,
+    /// The source's response name when no stock profile holds it, which the translation leaves
+    /// out.
+    pub unnamed: Option<u32>,
 }
 
 fn word(p: &Payload, at: usize, value: u32) -> Result<bool> {
@@ -73,6 +109,7 @@ pub fn translate(
     native: &mut Reader,
     tag: u32,
     prefix: &str,
+    graph: &dyn Fn(u32) -> Result<Graph>,
 ) -> Result<Translated> {
     ensure!(
         source.reference(tag)? == 0x80800861,
@@ -122,10 +159,10 @@ pub fn translate(
             && p.pointer(root + 0x38)? == root + 0xF0
             && p.u64(root + 0x60)? == 0
             && p.u64(root + 0x70)? == 0
-            && p.u64(root + 0xE0)? == 0
-            && p.u64(root + 0x108)? == 0,
+            && p.u64(root + 0xE0)? == 0,
         "Source area profile has a field without a translation"
     );
+    let responses = crate::d1_roi::sequence::query::Responses::read(source, &p, root + 0x108)?;
     // The description's optional `80802DAA` record attributes a kill when the damage has no owner
     // entity: a cause name, a killer name and three flag bytes. Source getter `005DFA20` feeds
     // `006D3440`, which ranks reassignment by `+A` (`006D4030`), builds the attribution from `+4`,
@@ -170,7 +207,12 @@ pub fn translate(
         push,
         fixed,
         mut audio,
+        name,
     } = read_responses(&p, root)?;
+    let (name, unnamed) = match name {
+        Some(name) if RESPONSE_NAMES.contains(&name) => (Some(name), None),
+        other => (None, other),
+    };
     let AudioRows { cues, rows, silent } = audio_rows(source, &p, audio)?;
     // An audio response whose every row was silent plays nothing and leaves with its rows.
     if rows.is_empty() && !silent.is_empty() {
@@ -265,52 +307,21 @@ pub fn translate(
         &category_rows,
         0x18,
     )?;
-    // Native lists the responses present as push, the fixed response and audio, in that order.
-    let present =
-        usize::from(push.is_some()) + usize::from(fixed.is_some()) + usize::from(audio.is_some());
-    append(
-        &mut payload.0,
+    patches.extend(write_responses(
+        &mut payload,
         n_root + 0x78,
-        0x80804B3D,
-        &vec![0; present * 8],
-        8,
-    )?;
-    let list = payload.array(n_root + 0x78, 8, Some(0x80804B3D))?;
-    let mut objects = Vec::new();
-    if let Some(push) = push {
-        let at = native_sequence::object(&mut payload, 0x80804B57, 0x28)?;
-        put(&mut payload.0, at, &push)?;
-        objects.push(at);
-    }
-    if let Some(fixed) = fixed {
-        let at = native_sequence::object(&mut payload, 0x80804B56, 0x0C)?;
-        put(&mut payload.0, at, &fixed)?;
-        objects.push(at);
-    }
-    if audio.is_some() {
-        let audio_at = native_sequence::object(&mut payload, 0x80804B46, 0x20)?;
-        let mut audio_rows = Vec::new();
-        for (_, control) in &rows {
-            let mut row = vec![0u8; 0x38];
-            row[0x08..0x0C].copy_from_slice(&u32::MAX.to_le_bytes());
-            row[0x18..0x1C].copy_from_slice(&u32::MAX.to_le_bytes());
-            row[0x28..0x2C].copy_from_slice(&u32::MAX.to_le_bytes());
-            row[0x30..0x34].copy_from_slice(control);
-            audio_rows.extend(row);
+        (push, fixed, name),
+        audio.is_some().then_some(rows.as_slice()),
+    )?);
+    for (offset, tag) in responses.write(&mut payload, n_root + 0xB8)? {
+        match graph(tag)? {
+            Graph::Stock(stock) => put(&mut payload.0, offset, &stock.to_le_bytes())?,
+            Graph::Private(symbol) => patches.push(Patch {
+                offset,
+                symbol,
+                class: 0x80809C0F,
+            }),
         }
-        append(&mut payload.0, audio_at, 0x80804B48, &audio_rows, 0x38)?;
-        for (index, (cue, _)) in rows.iter().enumerate() {
-            let at = payload.array(audio_at, 0x38, Some(0x80804B48))?[index] + 8;
-            patches.push(Patch {
-                offset: at,
-                symbol: graph_audio::cue_symbol(*cue),
-                class: NATIVE_CUE,
-            });
-        }
-        objects.push(audio_at);
-    }
-    for (row, object) in list.into_iter().zip(objects) {
-        native_sequence::relative(&mut payload, row, object)?;
     }
     if let Some(attribution) = attribution {
         let at = native_sequence::object(&mut payload, 0x80804B17, 0x0C)?;
@@ -335,7 +346,75 @@ pub fn translate(
         unqualified: [p.u32(root + 0x90)?, p.u32(root + 0xA8)?],
         absent,
         silent,
+        unnamed,
     })
+}
+
+/// Writes the response pointer list at `list_field` with the objects present and returns the
+/// audio rows' cue patches.
+fn write_responses(
+    payload: &mut Payload,
+    list_field: usize,
+    (push, fixed, name): (Option<[u8; 0x28]>, Option<[u8; 0x0C]>, Option<u32>),
+    audio: Option<&[(u32, [u8; 4])]>,
+) -> Result<Vec<Patch>> {
+    let mut patches = Vec::new();
+    // Native lists the responses present as push, the fixed response and audio, in that order.
+    // The name follows them.
+    let present = usize::from(push.is_some())
+        + usize::from(fixed.is_some())
+        + usize::from(audio.is_some())
+        + usize::from(name.is_some());
+    append(
+        &mut payload.0,
+        list_field,
+        0x80804B3D,
+        &vec![0; present * 8],
+        8,
+    )?;
+    let list = payload.array(list_field, 8, Some(0x80804B3D))?;
+    let mut objects = Vec::new();
+    if let Some(push) = push {
+        let at = native_sequence::object(payload, 0x80804B57, 0x28)?;
+        put(&mut payload.0, at, &push)?;
+        objects.push(at);
+    }
+    if let Some(fixed) = fixed {
+        let at = native_sequence::object(payload, 0x80804B56, 0x0C)?;
+        put(&mut payload.0, at, &fixed)?;
+        objects.push(at);
+    }
+    if let Some(rows) = audio {
+        let audio_at = native_sequence::object(payload, 0x80804B46, 0x20)?;
+        let mut audio_rows = Vec::new();
+        for (_, control) in rows {
+            let mut row = vec![0u8; 0x38];
+            row[0x08..0x0C].copy_from_slice(&u32::MAX.to_le_bytes());
+            row[0x18..0x1C].copy_from_slice(&u32::MAX.to_le_bytes());
+            row[0x28..0x2C].copy_from_slice(&u32::MAX.to_le_bytes());
+            row[0x30..0x34].copy_from_slice(control);
+            audio_rows.extend(row);
+        }
+        append(&mut payload.0, audio_at, 0x80804B48, &audio_rows, 0x38)?;
+        for (index, (cue, _)) in rows.iter().enumerate() {
+            let at = payload.array(audio_at, 0x38, Some(0x80804B48))?[index] + 8;
+            patches.push(Patch {
+                offset: at,
+                symbol: graph_audio::cue_symbol(*cue),
+                class: NATIVE_CUE,
+            });
+        }
+        objects.push(audio_at);
+    }
+    if let Some(name) = name {
+        let at = native_sequence::object(payload, 0x80804B55, 4)?;
+        put(&mut payload.0, at, &name.to_le_bytes())?;
+        objects.push(at);
+    }
+    for (row, object) in list.into_iter().zip(objects) {
+        native_sequence::relative(payload, row, object)?;
+    }
+    Ok(patches)
 }
 
 struct AudioRows {
@@ -384,10 +463,12 @@ fn audio_rows(source: &Source, p: &Payload, audio: Option<usize>) -> Result<Audi
                 && source.reference(cue)? == 0x8080080A,
             "Source area profile audio row differs"
         );
-        // The control word's third byte is `41` or `42`, as in `01 04 42 01`.
+        // The control word's third byte is `41` or `42`, as in `01 04 42 01`, or the word is
+        // `00 00 10 00`, which Rise of Iron Phoenix Uppercut profile `80A7F3A8` and its native
+        // port `81A6B5F0` both hold.
         let mut control = p.bytes::<4>(row + 0x20)?;
         ensure!(
-            matches!(control[2], 0x41 | 0x42),
+            matches!(control[2], 0x41 | 0x42) || control == [0, 0, 0x10, 0],
             "Source area profile audio control differs"
         );
         if control[2] == 0x42 {
@@ -409,6 +490,7 @@ struct Responses {
     push: Option<[u8; 0x28]>,
     fixed: Option<[u8; 0x0C]>,
     audio: Option<usize>,
+    name: Option<u32>,
 }
 
 fn read_responses(p: &Payload, root: usize) -> Result<Responses> {
@@ -416,17 +498,24 @@ fn read_responses(p: &Payload, root: usize) -> Result<Responses> {
     let mut push = None;
     let mut fixed = None;
     let mut audio = None;
+    let mut name = None;
     for row in p.array(root + 0x28, 8, Some(0x8080276E))? {
         let at = p.pointer(row)?;
         let repeated = match p.u32(at - 4)? {
             0x808023B0 => push.replace(p.bytes::<0x28>(at)?).is_some(),
             0x80802B30 => fixed.replace(p.bytes::<0x0C>(at)?).is_some(),
             0x808021B3 => audio.replace(at).is_some(),
+            0x808022F5 => name.replace(p.u32(at)?).is_some(),
             class => anyhow::bail!("Source area profile response {class:08X} is unqualified"),
         };
         ensure!(!repeated, "Source area profile repeats a response");
     }
-    Ok(Responses { push, fixed, audio })
+    Ok(Responses {
+        push,
+        fixed,
+        audio,
+        name,
+    })
 }
 
 fn envelope_patches(out: &mut [u8], symbol: &str) -> Result<Vec<Patch>> {

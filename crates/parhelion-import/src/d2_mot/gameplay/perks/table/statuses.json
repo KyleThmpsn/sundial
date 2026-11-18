@@ -1,0 +1,19 @@
+{
+  "statuses": {
+    "138F7272": {
+      "native": "5A21565F",
+      "source": "void_volatile, the status of a target made volatile",
+      "evidence": "Shadowkeep has no status of this key. Its one status that a Void ability hit attaches and that explodes on further damage is the Void Detonator of Controlled Demolition, key 5A21565F on the status owner of entity 80BC3363, which Resupply reads."
+    },
+    "B5C2BC87": {
+      "native": "66C922E0",
+      "source": "arc_blind, the status of a blinded target",
+      "evidence": "Shadowkeep has no status of this key. Twelve status owners hold 66C922E0, among them the one on entity 80BC2C2F that the Arcstrider perk Disorienting Blow attaches (Meleeing electrified enemies disorients them). No stock perk reads it of a killed target."
+    },
+    "15BF52E3": {
+      "native": "AC496004",
+      "source": "void_weaken, the newer weaken status",
+      "evidence": "Shadowkeep has no status of this key and 14 status owners of key AC496004, weaken_target. Modern kill conditions still read AC496004, and one controller reads both keys as alternatives."
+    }
+  }
+}

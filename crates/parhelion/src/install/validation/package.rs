@@ -21,9 +21,10 @@ pub(in crate::install) struct Structure {
 impl Structure {
     pub(super) fn from_layout(layout: &PackageLayout, bytes: &[u8]) -> Self {
         let table = &bytes[layout.block_table_offset
-            ..layout.block_table_offset + layout.block_count * crate::format::BLOCK_HEADER_SIZE];
+            ..layout.block_table_offset
+                + layout.block_count * crate::package::format::BLOCK_HEADER_SIZE];
         let mut block_ends = BTreeMap::<u16, u64>::new();
-        for row in table.chunks_exact(crate::format::BLOCK_HEADER_SIZE) {
+        for row in table.chunks_exact(crate::package::format::BLOCK_HEADER_SIZE) {
             let offset = u32::from_le_bytes(row[..4].try_into().unwrap());
             let size = u32::from_le_bytes(row[4..8].try_into().unwrap());
             let patch = u16::from_le_bytes(row[8..10].try_into().unwrap());
@@ -99,7 +100,7 @@ impl Structure {
             }
             let size = original
                 .block_count
-                .checked_mul(crate::format::BLOCK_HEADER_SIZE)
+                .checked_mul(crate::package::format::BLOCK_HEADER_SIZE)
                 .ok_or_else(|| InstallError::validation("Block table length overflow"))?;
             if self.inherited_table.get(..size)
                 != baseline.get(original.block_table_offset..original.block_table_offset + size)

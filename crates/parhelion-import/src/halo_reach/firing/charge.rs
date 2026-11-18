@@ -16,7 +16,7 @@ use crate::tiger::reader::Reader;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use sundial::package_authoring::runtime::WeaponRuntimeEntitySource;
+use sundial::package_authoring::runtime::RuntimeEntitySource;
 
 /// Overcharged actions: none holds the charge, explode destroys the weapon and discharge fires.
 const DISCHARGE: i64 = 2;
@@ -98,7 +98,7 @@ fn donor(native: &mut Reader, item: u32) -> Result<Option<Donor>> {
         Some(native.manager.platform),
     )
     .map_err(anyhow::Error::msg)?;
-    let weapon = runtime::load_weapon_runtime_entity_for_item_with_manager(&manager, item)
+    let weapon = runtime::load_runtime_entity_for_item_with_manager(&manager, item)
         .map_err(anyhow::Error::msg)?;
     if !entity::weapon_component_binding_hashes(&weapon.payload)
         .map_err(anyhow::Error::msg)?
@@ -152,7 +152,7 @@ fn donor(native: &mut Reader, item: u32) -> Result<Option<Donor>> {
 
 /// The Charge inputs a logic row of the donor's selected translator table computes. The table is
 /// the one its translation group keys, or table zero, as the build selects it.
-fn computed(native: &mut Reader, weapon: &WeaponRuntimeEntitySource) -> Result<BTreeSet<u32>> {
+fn computed(native: &mut Reader, weapon: &RuntimeEntitySource) -> Result<BTreeSet<u32>> {
     let bindings =
         sundial::package_authoring::entity::weapon_component_bindings(&weapon.payload, TRANSLATOR)
             .map_err(anyhow::Error::msg)?;

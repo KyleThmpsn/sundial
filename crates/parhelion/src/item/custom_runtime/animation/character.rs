@@ -36,9 +36,9 @@ impl Binding {
         manager: &PackageManager,
         entity: &[u8],
         content: u32,
-        patches: &mut Vec<WeaponRuntimeResourcePatch>,
+        patches: &mut Vec<RuntimeResourcePatch>,
     ) -> AuthoringResult<()> {
-        let prepare = || -> anyhow::Result<Vec<WeaponRuntimeResourcePatch>> {
+        let prepare = || -> anyhow::Result<Vec<RuntimeResourcePatch>> {
             use anyhow::{Context, ensure};
             let bindings =
                 weapon_component_bindings(entity, 0xD3A5500E).map_err(anyhow::Error::msg)?;
@@ -84,7 +84,7 @@ impl Binding {
                     let offset = (row + 0x6C)
                         .checked_sub(usize::try_from(binding.resource_offset)?)
                         .context("Character attachment offset underflow")?;
-                    Ok(WeaponRuntimeResourcePatch {
+                    Ok(RuntimeResourcePatch {
                         binding_hash: binding.binding_hash,
                         resource_index: u16::try_from(binding.resource_index)?,
                         offset: u32::try_from(offset)?,

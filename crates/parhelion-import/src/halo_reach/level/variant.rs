@@ -9,6 +9,7 @@ use super::{
     super::cache::{Cache, Tag},
     METRES_PER_UNIT,
 };
+use crate::math::cross;
 use anyhow::{Context, Result, bail, ensure};
 use std::{collections::BTreeSet, io::Read, path::Path};
 
@@ -213,14 +214,6 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
         return v;
     }
     v.map(|c| c / length)
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// The up axis an up code names: a cube face whose axis is +-1, and the other two components from

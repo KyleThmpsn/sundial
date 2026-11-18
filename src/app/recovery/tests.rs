@@ -1,6 +1,6 @@
 use crate::app::tests::driver::*;
 use crate::app::*;
-use crate::persistence::sqlite_account;
+use crate::persistence::sunrise_account;
 
 #[test]
 #[ignore = "Requires SUNDIAL_INSTALL pointing to an installed Sunrise module, read only"]
@@ -12,23 +12,23 @@ fn installed_resources_prepare_both_resets_for_the_selected_installation() {
     let mut app = app(install);
     app.settings_path = directory.0.join("settings.json");
     let database = directory.0.join("data/investment.sqlite3");
-    sqlite_account::tests::create_fixture(&database, 3);
+    sunrise_account::tests::create_fixture(&database, 3);
     app.document = WorkspaceDocument::load(settings, &app.settings_path, false);
-    let before = sqlite_account::snapshot::read(&database).unwrap();
+    let before = sunrise_account::snapshot::read(&database).unwrap();
     app.request_sqlite_defaults_reset();
     let Some(ConfirmationDialog::ResetSqliteDefaults(plan)) = app.confirmation.take() else {
         panic!("{}", app.status);
     };
     assert_eq!(plan.path(), database);
-    assert_eq!(sqlite_account::snapshot::read(&database).unwrap(), before);
+    assert_eq!(sunrise_account::snapshot::read(&database).unwrap(), before);
     // Execute only against this disposable fixture, never the installed account.
     let receipt = plan.apply().unwrap();
     assert!(matches!(
-        sqlite_account::load_document(&database).unwrap(),
-        sqlite_account::SqliteAccountDocumentLoad::Loaded(_)
+        sunrise_account::load_document(&database).unwrap(),
+        sunrise_account::SunriseAccountDocumentLoad::Loaded(_)
     ));
     assert_eq!(
-        sqlite_account::snapshot::read(&receipt.safety_backup).unwrap(),
+        sunrise_account::snapshot::read(&receipt.safety_backup).unwrap(),
         before
     );
 }

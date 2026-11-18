@@ -13,10 +13,18 @@ pub(super) fn check(
     let graph = emitted.tag(graph, Some(0x80809C0F))?;
     let owners = graph.array(16, 12, Some(0x80809C04))?;
     let original_owners = original_graph.array(32, 12, Some(0x80800715))?;
-    assert_eq!(owners.len(), original_owners.len());
+    let source_owner = original.u32(original.pointer(16)?)?;
+    let source_tags = original_owners
+        .into_iter()
+        .map(|row| original_graph.u32(row))
+        .collect::<Result<Vec<_>>>()?;
     assert_eq!(
-        original_graph.u32(original_owners[ordinal])?,
-        original.u32(original.pointer(16)?)?
+        source_tags
+            .iter()
+            .filter(|&&tag| tag == source_owner)
+            .count(),
+        1,
+        "Source network owner must occur once in its graph"
     );
     let tag = graph.u32(owners[ordinal])?;
     assert!(

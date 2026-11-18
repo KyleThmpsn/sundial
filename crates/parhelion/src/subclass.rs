@@ -49,7 +49,7 @@ pub(crate) struct Resolved {
     /// Its screen pictures and where each comes from.
     pub(crate) screen_art: Option<art::ResolvedArt>,
     /// The generated icon the build draws for the icon's image.
-    pub(crate) drawn_icon: Option<crate::icon_edit::ImportedIcon>,
+    pub(crate) drawn_icon: Option<crate::icon::edit::ImportedIcon>,
 }
 
 pub(crate) const EVERY_CLASS_TYPE_NAME: &str = "Guardian Subclass";
@@ -266,7 +266,7 @@ impl SubclassAbilities {
     }
 
     /// The edits of every authored ability, then of every authored path node.
-    fn all_edits(&self) -> impl Iterator<Item = &EntryEdits> {
+    pub(crate) fn all_edits(&self) -> impl Iterator<Item = &EntryEdits> {
         self.choices.iter().map(|choice| &choice.edits).chain(
             self.attunements
                 .iter()

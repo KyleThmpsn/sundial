@@ -3,12 +3,12 @@
 use anyhow::{Result, ensure};
 use parhelion_import::{cancellation, d2_mot::subclass};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::Path,
     sync::{Arc, atomic::AtomicBool},
 };
+use sundial::storage::sha256_hex;
 
 fn input() -> Value {
     json!({
@@ -61,10 +61,6 @@ fn save(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
 #[test]
 fn selected_source_evidence_survives_planning_and_replay() -> Result<()> {
     let temporary = tempfile::tempdir()?;
@@ -81,7 +77,7 @@ fn selected_source_evidence_survives_planning_and_replay() -> Result<()> {
     ensure!(report["installable"] == false && report["gameplay_verified"] == false);
     ensure!(report["target_build"] == "86657.20.08.23.1800.d2_rc___release");
     ensure!(report["input"] == input());
-    ensure!(report["input_sha256"] == digest(&serde_json::to_vec(&report["input"])?));
+    ensure!(report["input_sha256"] == sha256_hex(&serde_json::to_vec(&report["input"])?));
     ensure!(report["plan"]["damage"]["requested"] == "strand");
     ensure!(report["plan"]["damage"]["native"] == "kinetic");
     ensure!(report["plan"]["damage"]["presentation"] == "strand");
@@ -123,7 +119,7 @@ fn selected_source_evidence_survives_planning_and_replay() -> Result<()> {
         "target_build": report["target_build"],
         "revision": std::env::var("PARHELION_TEST_REVISION").ok(),
         "input": report["input"], "report": report,
-        "input_sha256": digest(&before), "report_sha256": digest(&report_bytes),
+        "input_sha256": sha256_hex(&before), "report_sha256": sha256_hex(&report_bytes),
         "independent_readback": "JSON identities, membership, controller resolution, damage and readiness",
         "limits": ["No modern ability graph lowering", "No native packages emitted", "No gameplay trial"]
     });

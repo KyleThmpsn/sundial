@@ -1,4 +1,4 @@
-//! Add an imported ability's or armor's private human actions to the shared native human tables. Each action
+//! Add an imported ability's, armor's or weapon's private human actions to the shared native human tables. Each action
 //! copies the same-named native node under a private name, and its clips join the bank after every
 //! existing descriptor. Stock names, descriptors and clip rows keep their ordinals, and earlier
 //! items' additions are kept. The stock records are replaced in the build's own packages. No stock
@@ -25,12 +25,15 @@ fn word(value: &Value, key: &str) -> anyhow::Result<u32> {
     )?)
 }
 
-/// Every imported ability directory the subclass specs name, and every imported armor graph,
-/// whose evade can play actions of its own, each once.
+/// Every imported ability directory the subclass specs name, every imported armor graph, whose
+/// evade can play actions of its own, and every other imported graph that holds prepared
+/// clips in its `human` folder, as a sword with a private attack action does, each once.
 pub(super) fn directories(weapons: &[WeaponCloneSpec]) -> Vec<PathBuf> {
     let mut found = BTreeSet::new();
-    for spec in weapons.iter().filter(|spec| spec.kind == ItemKind::Armor) {
-        if let Some(graph) = &spec.overrides.imported_graph {
+    for spec in weapons {
+        if let Some(graph) = &spec.overrides.imported_graph
+            && (spec.kind == ItemKind::Armor || graph.directory.join("human").is_dir())
+        {
             found.insert(graph.directory.clone());
         }
     }

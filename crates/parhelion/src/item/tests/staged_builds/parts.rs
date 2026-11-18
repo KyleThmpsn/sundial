@@ -8,8 +8,7 @@
 use super::*;
 use sundial::package_authoring::gear_markers::{MarkerSet, read_appearance};
 use sundial::package_authoring::runtime::{
-    load_weapon_runtime_entity_at_pattern_index_with_manager,
-    load_weapon_runtime_entity_with_manager,
+    load_runtime_entity_at_pattern_index_with_manager, load_runtime_entity_with_manager,
 };
 
 const AUSTRINGER: u32 = 0x90D4_2801;
@@ -90,7 +89,7 @@ fn real_part_donors_and_moved_markers_reach_the_staged_packages() {
     let plan = &bundle.plan.weapons[0];
     let manager = open_manager(&view_packages).unwrap();
     let stock = open_manager(&packages).unwrap();
-    let authored = load_weapon_runtime_entity_with_manager(&manager, plan.item_hash).unwrap();
+    let authored = load_runtime_entity_with_manager(&manager, plan.item_hash).unwrap();
     // Several of these items share another item's pattern row, so each is read through its own.
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let summaries = catalog.weapon_donors();
@@ -100,7 +99,7 @@ fn real_part_donors_and_moved_markers_reach_the_staged_packages() {
             .find(|donor| donor.hash == hash)
             .and_then(|donor| donor.weapon_pattern_index)
             .unwrap();
-        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern).unwrap()
+        load_runtime_entity_at_pattern_index_with_manager(&stock, pattern).unwrap()
     };
     let luna = stock_entity(LUNAS_HOWL);
     let austringer = stock_entity(AUSTRINGER);
@@ -316,14 +315,11 @@ fn real_base_family_animations_keep_the_base_rig() {
             .unwrap()
     };
     let authored =
-        load_weapon_runtime_entity_with_manager(&manager, bundle.plan.weapons[0].item_hash)
-            .unwrap();
+        load_runtime_entity_with_manager(&manager, bundle.plan.weapons[0].item_hash).unwrap();
     let jade =
-        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern(JADE_RABBIT))
-            .unwrap();
+        load_runtime_entity_at_pattern_index_with_manager(&stock, pattern(JADE_RABBIT)).unwrap();
     let machina =
-        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern(MACHINA_DEI_4))
-            .unwrap();
+        load_runtime_entity_at_pattern_index_with_manager(&stock, pattern(MACHINA_DEI_4)).unwrap();
     assert_eq!(
         authored.weapon_content_group_hash, jade.weapon_content_group_hash,
         "the row should keep the scout rifle's content group"
@@ -540,11 +536,10 @@ fn real_component_splices_take_one_component_each() {
     let manager = open_manager(&view.path().join("packages")).unwrap();
     let stock = open_manager(&packages).unwrap();
     let authored =
-        load_weapon_runtime_entity_with_manager(&manager, bundle.plan.weapons[0].item_hash)
-            .unwrap();
-    let base = load_weapon_runtime_entity_with_manager(&stock, AUSTRINGER).unwrap();
-    let jade = load_weapon_runtime_entity_with_manager(&stock, JADE_RABBIT).unwrap();
-    let sweet = load_weapon_runtime_entity_with_manager(&stock, SWEET_BUSINESS).unwrap();
+        load_runtime_entity_with_manager(&manager, bundle.plan.weapons[0].item_hash).unwrap();
+    let base = load_runtime_entity_with_manager(&stock, AUSTRINGER).unwrap();
+    let jade = load_runtime_entity_with_manager(&stock, JADE_RABBIT).unwrap();
+    let sweet = load_runtime_entity_with_manager(&stock, SWEET_BUSINESS).unwrap();
     let owner = weapon_component_bindings(&authored.payload, WEAPON_BARREL_COMPONENT_KEY).unwrap()
         [0]
     .owner_tag;
@@ -691,10 +686,9 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
         };
         rate_curves_by_type(&read_tag(manager, TagHash(binding.owner_tag), "translator").unwrap())
     };
-    let authored = load_weapon_runtime_entity_with_manager(&manager, plan.item_hash).unwrap();
+    let authored = load_runtime_entity_with_manager(&manager, plan.item_hash).unwrap();
     let pattern = base.summary.weapon_pattern_index.unwrap();
-    let stock_entity =
-        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern).unwrap();
+    let stock_entity = load_runtime_entity_at_pattern_index_with_manager(&stock, pattern).unwrap();
     let sidearm_pattern = catalog
         .weapon_donor(LAST_HOPE)
         .unwrap()
@@ -702,7 +696,7 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
         .weapon_pattern_index
         .unwrap();
     let sidearm =
-        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, sidearm_pattern).unwrap();
+        load_runtime_entity_at_pattern_index_with_manager(&stock, sidearm_pattern).unwrap();
     let rig = |entity: &[u8]| {
         [0x1C80_DD4A_u32, 0x681C_2C0D, 0x8983_4B2B]
             .map(|binding| weapon_component_bindings(entity, binding).unwrap()[0].owner_tag)
@@ -866,8 +860,7 @@ fn real_single_actions_play_another_frames_animations() {
     let manager = open_manager(&view.path().join("packages")).unwrap();
     let stock = open_manager(&packages).unwrap();
     let authored =
-        load_weapon_runtime_entity_with_manager(&manager, bundle.plan.weapons[0].item_hash)
-            .unwrap();
+        load_runtime_entity_with_manager(&manager, bundle.plan.weapons[0].item_hash).unwrap();
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let pattern = |hash: u32| {
         catalog
@@ -878,11 +871,9 @@ fn real_single_actions_play_another_frames_animations() {
             .unwrap()
     };
     let luna =
-        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern(LUNAS_HOWL))
-            .unwrap();
+        load_runtime_entity_at_pattern_index_with_manager(&stock, pattern(LUNAS_HOWL)).unwrap();
     let gospel =
-        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern(ANCIENT_GOSPEL))
-            .unwrap();
+        load_runtime_entity_at_pattern_index_with_manager(&stock, pattern(ANCIENT_GOSPEL)).unwrap();
     let own = profile(&stock, &luna.payload, Some(luna.weapon_content_group_hash))
         .unwrap()
         .keys[1];
@@ -938,7 +929,7 @@ fn real_single_actions_play_another_frames_animations() {
 
     // Other hand cannons still play the shared rig.
     let staged_gospel =
-        load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, pattern(ANCIENT_GOSPEL))
+        load_runtime_entity_at_pattern_index_with_manager(&manager, pattern(ANCIENT_GOSPEL))
             .unwrap();
     assert_eq!(
         arms_rig(
@@ -1028,11 +1019,9 @@ fn real_single_actions_reload_between_submachine_gun_profiles() {
     let mut receipts = Vec::new();
     for &(base, name, donor, namespace, expected_own, expected_lent) in &cases {
         let base_entity =
-            load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern(base))
-                .unwrap();
+            load_runtime_entity_at_pattern_index_with_manager(&stock, pattern(base)).unwrap();
         let donor_entity =
-            load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern(donor))
-                .unwrap();
+            load_runtime_entity_at_pattern_index_with_manager(&stock, pattern(donor)).unwrap();
         let own = profile(
             &stock,
             &base_entity.payload,
@@ -1085,7 +1074,7 @@ fn real_single_actions_reload_between_submachine_gun_profiles() {
             .unwrap()
             .identity
             .item_hash;
-        let authored = load_weapon_runtime_entity_with_manager(&staged, item).unwrap();
+        let authored = load_runtime_entity_with_manager(&staged, item).unwrap();
         let authored_rig = arms_rig(
             &staged,
             &authored.payload,
@@ -1133,8 +1122,7 @@ fn real_single_actions_reload_between_submachine_gun_profiles() {
         // Read both stock rows through the staged manager, not just the source manager.
         for hash in [base, donor] {
             let entity =
-                load_weapon_runtime_entity_at_pattern_index_with_manager(&staged, pattern(hash))
-                    .unwrap();
+                load_runtime_entity_at_pattern_index_with_manager(&staged, pattern(hash)).unwrap();
             let untouched = arms_rig(
                 &staged,
                 &entity.payload,

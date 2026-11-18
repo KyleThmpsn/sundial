@@ -16,21 +16,18 @@ use parhelion_import::{
     },
 };
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::{
     env, fs,
     path::{Path, PathBuf},
 };
 use sundial::investment::InvestmentCatalog;
+use sundial::storage::sha256_hex;
 mod count;
 
 fn configured(key: &str) -> Result<PathBuf> {
     env::var_os(key)
         .map(PathBuf::from)
         .with_context(|| format!("Set {key}"))
-}
-fn sha(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 struct SourceRow {
     class: u32,
@@ -416,7 +413,7 @@ fn triple_jump_survives_selected_entry_import_reload_and_staging() -> Result<()>
     fs::write(
         output.join("readback.json"),
         serde_json::to_vec_pretty(
-            &json!({"revision":revision,"source_builds":source.report().builds,"source_choice":selected[0],"source_bank_sha256":sha(&original.0),"native_stock_bank_sha256":sha(&before.0),"emitted_bank_sha256":sha(&bank.0),"action_sha256":sha(&program.0),"checked_properties":checked,"armor_count":armor_readback,"recipe_sha256":sha(&fs::read(saved)?),"manifest":built.manifest_path,"preparation":prepared.provenance,"installed":false,"gameplay_verified":false}),
+            &json!({"revision":revision,"source_builds":source.report().builds,"source_choice":selected[0],"source_bank_sha256":sha256_hex(&original.0),"native_stock_bank_sha256":sha256_hex(&before.0),"emitted_bank_sha256":sha256_hex(&bank.0),"action_sha256":sha256_hex(&program.0),"checked_properties":checked,"armor_count":armor_readback,"recipe_sha256":sha256_hex(&fs::read(saved)?),"manifest":built.manifest_path,"preparation":prepared.provenance,"installed":false,"gameplay_verified":false}),
         )?,
     )?;
     stock.finish()?;

@@ -51,12 +51,93 @@ fn clip(graph: &Inputs, value: &serde_json::Value) -> AuthoringResult<Clip> {
     })
 }
 
+/// A private layer table for the pose controller `owner`, which plays none of the stock table's
+/// supplemental layers.
+struct Layers {
+    owner: u32,
+    original: (u32, Vec<u8>),
+    converted: Vec<u8>,
+}
+
+impl Layers {
+    fn load(graph: &Inputs, section: &serde_json::Value) -> AuthoringResult<Option<Self>> {
+        let Some(layers) = section.get("pose_layers").filter(|v| !v.is_null()) else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            owner: tag(layers, "owner")?,
+            original: (
+                tag(layers, "tag")?,
+                payload(graph, &layers["template_file"])?,
+            ),
+            converted: payload(graph, &layers["file"])?,
+        }))
+    }
+
+    /// Checks the table against stock and its controller, then appends it. It may differ from
+    /// stock only in its dispatch, where every descriptor takes no route.
+    fn author(
+        &self,
+        manager: &PackageManager,
+        consumers: &[(u32, Vec<u8>)],
+        allocator: AppendedTagAllocator,
+        tags: &mut Vec<NewTagSpec>,
+    ) -> AuthoringResult<u32> {
+        stock(manager, &self.original, 0x808034EB, "equipment pose layers")?;
+        let original = Payload(self.original.1.clone());
+        let mut expected = self.original.1.clone();
+        for at in original
+            .array(40, 2, Some(0x80800006))
+            .map_err(|e| invalid(e.to_string()))?
+        {
+            expected[at..at + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+        }
+        if expected != self.converted {
+            return Err(invalid(
+                "Equipment pose layers changed outside their dispatch",
+            ));
+        }
+        let mut owners = consumers.iter().filter(|(tag, _)| *tag == self.owner);
+        let (Some((_, owner)), None) = (owners.next(), owners.next()) else {
+            return Err(invalid(
+                "Equipment pose layer controller is absent or repeated",
+            ));
+        };
+        if read_u32(owner, Self::field(owner)?)? != self.original.0 {
+            return Err(invalid("Equipment pose layer binding changed"));
+        }
+        let private = allocator
+            .assigned_tag(tags.len(), "Equipment animation", "pose layers")?
+            .0;
+        tags.push(NewTagSpec {
+            template_tag: TagHash(self.original.0),
+            payload: self.converted.clone(),
+            storage: crate::NewTagStorageMode::InheritTemplate,
+        });
+        Ok(private)
+    }
+
+    /// Where the pose controller `owner` names its layer table.
+    fn field(owner: &[u8]) -> AuthoringResult<usize> {
+        let at = Payload(owner.to_vec())
+            .pointer(24)
+            .map_err(|e| invalid(e.to_string()))?;
+        if at < 4 || read_u32(owner, at - 4)? != 0x80803640 {
+            return Err(invalid(
+                "Equipment pose layer owner has an unexpected class",
+            ));
+        }
+        Ok(at + 0x11C)
+    }
+}
+
 pub(in crate::item) struct EquipmentAnimation {
     entity: (u32, Vec<u8>),
     lookup: (u32, Vec<u8>),
     bank: (u32, Vec<u8>),
     converted_bank: Vec<u8>,
     consumers: Vec<(u32, Vec<u8>)>,
+    layers: Option<Layers>,
     clips: Vec<Clip>,
     rigs: Vec<Rig>,
     preserve_timing: bool,
@@ -86,7 +167,9 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<EquipmentA
         .iter()
         .map(|value| clip(graph, value))
         .collect::<AuthoringResult<Vec<_>>>()?;
-    if clips.is_empty() {
+    let layers = Layers::load(graph, section)?;
+    // A section can be linked only to take the donor's supplemental layers off the weapon.
+    if clips.is_empty() && layers.is_none() {
         return Err(invalid("Linked equipment animation has no converted clips"));
     }
     let consumers = section["bank_consumers"]
@@ -135,6 +218,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<EquipmentA
         bank: (tag(section, "bank")?, payload(graph, &files["bank"])?),
         converted_bank: payload(graph, &files["converted_bank"])?,
         consumers,
+        layers,
         clips,
         rigs,
         preserve_timing: section["preserve_timing"] == true,
@@ -279,6 +363,14 @@ pub(in crate::item) fn author(
         payload: bank,
         storage: crate::NewTagStorageMode::InheritTemplate,
     });
+    let layers = animation
+        .layers
+        .as_ref()
+        .map(|layers| {
+            let private = layers.author(manager, &animation.consumers, allocator, tags)?;
+            Ok((layers, private))
+        })
+        .transpose()?;
     let mut owners = vec![(&animation.lookup, true)];
     owners.extend(animation.consumers.iter().map(|owner| (owner, false)));
     let mut seen = BTreeSet::new();
@@ -309,6 +401,12 @@ pub(in crate::item) fn author(
             return Err(invalid("Equipment animation owner names another clip bank"));
         }
         write_u32(&mut owner.0, field, bank_tag)?;
+        if let Some((layers, table)) = layers
+            && layers.owner == original.0
+        {
+            let field = Layers::field(&owner.0)?;
+            write_u32(&mut owner.0, field, table)?;
+        }
         let private = allocator
             .assigned_tag(tags.len(), "Equipment animation", "owner")?
             .0;

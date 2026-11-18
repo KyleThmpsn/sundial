@@ -4,6 +4,8 @@ use crate::package_payload::{i64_at, relative_offset, u16_at, u32_at, u64_at};
 
 mod armor;
 pub use armor::{armor_equipment_class, set_armor_equipment_class};
+mod artifact;
+pub use artifact::{artifact_equipment_class, set_artifact_equipment_class};
 mod emblem;
 mod subclass;
 pub use emblem::emblem_metric_categories;
@@ -114,7 +116,7 @@ pub const ITEM_STRING_STAT_GROUP_POINTER_OFFSET: usize = 0x70;
 pub const ITEM_STRING_STAT_GROUP_RESOURCE_CLASS: u32 = 0x8080_5CF1;
 pub const ITEM_STRING_STAT_GROUP_INDEX_OFFSET: usize = 0x14;
 /// The damage type an item's strings give it in the same resource, in the native damage enum:
-/// 0 Kinetic, 1 Solar, 2 Arc, 3 Void. Every stock subclass holds its own element here.
+/// 0 Kinetic, 1 Solar, 2 Arc, 3 Void. Every stock subclass holds its own damage type here.
 pub const ITEM_STRING_DAMAGE_TYPE_OFFSET: usize = 0x08;
 pub const ITEM_STRING_AMMO_CLASS_OFFSET: usize = 0x13C;
 pub const ITEM_STRING_AMMO_TYPE_OFFSET: usize = 0x140;

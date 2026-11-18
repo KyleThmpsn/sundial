@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub use crate::ability::AbilityTarget;
-use crate::runtime::WeaponRuntimeValueOverride;
+use crate::runtime::RuntimeValueOverride;
 mod selectors;
 pub use selectors::{
     AbilityState, AbilityVersion, AttachmentTarget, DamageMode, PropertyOperation, ValueSource,
@@ -450,8 +450,8 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "is_false")]
         apply_to_player: bool,
     },
-    /// Changes the weapon's damage type, which is what The Fundamentals and the element mods
-    /// do. The mode is the element: 0 Kinetic, 1 Solar, 2 Arc, 3 Void.
+    /// Changes the weapon's damage type, which is what The Fundamentals and the damage mods
+    /// do. The mode is the damage type: 0 Kinetic, 1 Solar, 2 Arc, 3 Void.
     SetDamageType {
         /// The damage type byte at `+0x02`.
         mode: DamageMode,
@@ -1313,6 +1313,47 @@ pub struct NativeGroup {
     pub removal: Vec<NativeNode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rearm: Vec<NativeNode>,
+}
+
+/// Refuses a nested predicate that would read a condition state it does not have.
+///
+/// The nested predicate, kind 35, holds one condition state. It hands that state to its child
+/// at `+100` when the child's byte `+06` is set, and to its own named value test otherwise. A
+/// named value test, the key at `+D4` of a kind 20 or kind 35 record other than the empty
+/// hash, reads the state without checking for one. So a keyed predicate around a child that
+/// takes the state, or around a predicate with a key of its own, faults the client when the
+/// condition is evaluated.
+fn predicate_state(bytes: &[u8], at: usize) -> Result<(), String> {
+    let keyed = |at: usize| {
+        bytes
+            .get(at + 0xD4..at + 0xD8)
+            .is_some_and(|key| key != 0x811C_9DC5_u32.to_le_bytes().as_slice())
+    };
+    if bytes.get(at + 5) != Some(&35) {
+        return Ok(());
+    }
+    let Some(pointer) = bytes.get(at + 0x100..at + 0x108) else {
+        return Ok(());
+    };
+    let mut relative = [0; 8];
+    relative.copy_from_slice(pointer);
+    let relative = i64::from_le_bytes(relative);
+    let child = i64::try_from(at + 0x100)
+        .ok()
+        .and_then(|field| field.checked_add(relative))
+        .and_then(|child| usize::try_from(child).ok());
+    let Some(child) = child.filter(|_| relative != 0) else {
+        return Ok(());
+    };
+    let takes_state = bytes.get(child + 6).is_some_and(|byte| *byte != 0);
+    let predicate = matches!(bytes.get(child + 5), Some(20 | 35));
+    if keyed(at) && (takes_state || (predicate && keyed(child))) {
+        return Err(
+            "A condition that tests a named value cannot hold a condition that takes its state or tests a named value of its own."
+                .into(),
+        );
+    }
+    predicate_state(bytes, child)
 }
 
 impl NativeGroup {
@@ -2344,6 +2385,20 @@ impl Program {
                     }
                 }
                 _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuses a condition whose nested predicate would read a condition state it does not
+    /// have, which faults the client. The compiler checks this, not [`Self::validate`], so a
+    /// recipe that holds such a perk still loads and its build can leave that perk out.
+    pub(crate) fn validate_condition_states(&self) -> Result<(), String> {
+        for program in self.owned_programs() {
+            for (kind, node) in program.native_nodes() {
+                if matches!(kind, NativeNodeKind::Condition(_)) {
+                    predicate_state(&node.bytes, 0)?;
+                }
             }
         }
         Ok(())

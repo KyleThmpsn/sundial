@@ -8,8 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{Connection, params};
-use sundial_account::{EntityId, ProfileState};
+use sundial_account::{CharacterAbilities, EntityId, ProfileState};
 
+use super::contract;
 use super::error::DawnAccountError;
 
 /// The `characters` columns Sundial does not model, kept exactly as stored.
@@ -30,6 +31,16 @@ pub(super) struct CharacterRow {
     pub content_bypass: i64,
     pub next_inventory_serial: i64,
     pub vendor_campaigns: i64,
+    /// `selected_title_record` and the 36-byte native `customization` block. Schema 7 only.
+    pub title_and_customization: Option<(i64, Vec<u8>)>,
+}
+
+/// One `item_values` row, kept exactly as stored. Schema 7 only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ItemValue {
+    pub instance_soid: String,
+    pub lane: i64,
+    pub value: i64,
 }
 
 /// One `item_rolls` row, kept exactly as stored.
@@ -62,16 +73,28 @@ pub(super) struct Carried {
     pub profile_rows: BTreeMap<EntityId, ProfileRow>,
     /// `item_rolls`, which cascades away when its item row is deleted.
     pub item_rolls: Vec<ItemRoll>,
+    /// The five ability entries each item row stores, by instance SOID. Schema 7 only. Dawn reads
+    /// the equipped subclass's entries and ignores the character row's.
+    pub item_abilities: BTreeMap<String, CharacterAbilities>,
+    /// `item_values`, which cascades away like `item_rolls`. Schema 7 only.
+    pub item_values: Vec<ItemValue>,
 }
 
 pub(super) fn read(
     connection: &Connection,
     profile: &ProfileState,
 ) -> Result<Carried, DawnAccountError> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let per_item = contract::per_item(version);
     let mut characters = BTreeMap::new();
-    let mut statement = connection.prepare(
-        "SELECT soid,last_selected,level,accepted,preview_available,appearance,last_destination,         content_bypass,next_inventory_serial,vendor_campaigns FROM characters",
-    )?;
+    let mut statement = connection.prepare(if per_item {
+        "SELECT soid,last_selected,level,accepted,preview_available,appearance,last_destination,\
+         content_bypass,next_inventory_serial,vendor_campaigns,selected_title_record,customization \
+         FROM characters"
+    } else {
+        "SELECT soid,last_selected,level,accepted,preview_available,appearance,last_destination,\
+         content_bypass,next_inventory_serial,vendor_campaigns FROM characters"
+    })?;
     for row in statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -85,6 +108,11 @@ pub(super) fn read(
                 content_bypass: row.get(7)?,
                 next_inventory_serial: row.get(8)?,
                 vendor_campaigns: row.get(9)?,
+                title_and_customization: if per_item {
+                    Some((row.get(10)?, row.get(11)?))
+                } else {
+                    None
+                },
             },
         ))
     })? {
@@ -144,13 +172,131 @@ pub(super) fn read(
     })? {
         item_rolls.push(row?);
     }
+    drop(statement);
+
+    let mut item_abilities = BTreeMap::new();
+    let mut item_values = Vec::new();
+    if per_item {
+        let mut statement = connection.prepare(
+            "SELECT instance_soid,movement_ability,grenade_ability,super_ability,melee_ability,\
+             class_ability FROM character_items",
+        )?;
+        for row in statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                CharacterAbilities {
+                    movement: row.get(1)?,
+                    grenade: row.get(2)?,
+                    super_ability: row.get(3)?,
+                    melee: row.get(4)?,
+                    class_ability: row.get(5)?,
+                },
+            ))
+        })? {
+            let (soid, abilities) = row?;
+            item_abilities.insert(soid, abilities);
+        }
+        drop(statement);
+        let mut statement = connection.prepare(
+            "SELECT instance_soid,lane,value FROM item_values ORDER BY instance_soid,lane",
+        )?;
+        for row in statement.query_map([], |row| {
+            Ok(ItemValue {
+                instance_soid: row.get(0)?,
+                lane: row.get(1)?,
+                value: row.get(2)?,
+            })
+        })? {
+            item_values.push(row?);
+        }
+    }
     Ok(Carried {
         characters,
         postmaster,
         item_mutation_serials,
         profile_rows,
         item_rolls,
+        item_abilities,
+        item_values,
     })
+}
+
+impl super::DawnAccountDocument {
+    /// The key one item's ability entries are carried under, in the spelling its row is written
+    /// with. `None` on a schema that keeps abilities on the character row.
+    pub(super) fn item_abilities_key(&self, id: EntityId) -> Option<String> {
+        if !contract::per_item(self.schema_version) {
+            return None;
+        }
+        let soid = self
+            .snapshot
+            .characters
+            .characters()
+            .iter()
+            .flat_map(|character| {
+                character
+                    .inventory
+                    .iter()
+                    .chain(character.equipment.values().flatten())
+            })
+            .find(|item| item.id == id)?
+            .instance_soid
+            .get();
+        let canonical = contract::format_soid(soid);
+        Some(
+            self.carried
+                .item_mutation_serials
+                .keys()
+                .find(|key| key.eq_ignore_ascii_case(&canonical))
+                .cloned()
+                .unwrap_or(canonical),
+        )
+    }
+
+    /// Gives each equipped subclass its character's current ability picks before a save.
+    ///
+    /// The editor holds one selection per character, which on schema 7 is the equipped
+    /// subclass's. Any edit to it therefore belongs on that item, whichever path made it.
+    pub(super) fn settle_item_abilities(&mut self) -> Result<(), DawnAccountError> {
+        if !contract::per_item(self.schema_version) {
+            return Ok(());
+        }
+        let subclass = sundial_account::EquipmentSlot::new("subclass");
+        let equipped = self
+            .snapshot
+            .characters
+            .characters()
+            .iter()
+            .filter_map(|character| {
+                let item = character.equipment.get(&subclass)?.as_ref()?;
+                Some((item.id, character.metadata?.abilities))
+            })
+            .collect::<Vec<_>>();
+        for (id, abilities) in equipped {
+            if let Some(key) = self.item_abilities_key(id) {
+                self.carried.item_abilities.insert(key, abilities);
+            }
+        }
+        for abilities in self.carried.item_abilities.values() {
+            let entries = [
+                abilities.movement,
+                abilities.grenade,
+                abilities.super_ability,
+                abilities.melee,
+                abilities.class_ability,
+            ];
+            if entries
+                .iter()
+                .any(|entry| *entry > contract::ITEM_ABILITY_MAXIMUM)
+            {
+                return Err(DawnAccountError::Unwritable(format!(
+                    "Dawn stores subclass ability entries from 0 to {}. No changes were saved",
+                    contract::ITEM_ABILITY_MAXIMUM
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Puts the carried rows back, after the account graph has been rewritten.
@@ -175,6 +321,33 @@ pub(super) fn restore(
                 row.next_inventory_serial,
                 row.vendor_campaigns
             ],
+        )?;
+        if let Some((title, customization)) = &row.title_and_customization {
+            transaction.execute(
+                "UPDATE characters SET selected_title_record=?2,customization=?3 WHERE soid=?1",
+                params![soid, title, customization],
+            )?;
+        }
+    }
+    for (soid, abilities) in &carried.item_abilities {
+        transaction.execute(
+            "UPDATE character_items SET movement_ability=?2,grenade_ability=?3,super_ability=?4,\
+             melee_ability=?5,class_ability=?6 WHERE instance_soid=?1",
+            params![
+                soid,
+                abilities.movement,
+                abilities.grenade,
+                abilities.super_ability,
+                abilities.melee,
+                abilities.class_ability
+            ],
+        )?;
+    }
+    for value in &carried.item_values {
+        transaction.execute(
+            "INSERT INTO item_values(instance_soid,lane,value) \
+             SELECT ?1,?2,?3 WHERE EXISTS(SELECT 1 FROM character_items WHERE instance_soid=?1)",
+            params![value.instance_soid, value.lane, value.value],
         )?;
     }
     for (soid, serial) in &carried.item_mutation_serials {

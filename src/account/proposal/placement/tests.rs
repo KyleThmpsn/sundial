@@ -132,7 +132,7 @@ fn slot_replacement_selects_json_or_sqlite_at_runtime_without_touching_inactive_
     let directory = crate::test_support::TestDirectory::new("slot-replacement-backends");
     let settings = directory.0.join("settings.json");
     let database = crate::persistence::investment_path(&settings);
-    crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&database, 3);
     let inactive_database = std::fs::read(&database).unwrap();
     let original = serde_json::to_vec(&document(8)).unwrap();
     std::fs::write(&settings, &original).unwrap();

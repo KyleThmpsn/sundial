@@ -68,18 +68,15 @@ pub(super) fn base(surface: &surface::Surface<'_>, layer: usize, sample: String)
     format!("lerp({sample},{target},min(saturate(v1.w*{slope}+{offset}),{maximum}))")
 }
 
-/// The blended Phong exponent's Beckmann slope `sqrt(2 / (p + 2))` in the native smoothness mapping
-/// ([`native_roughness`]). The strength is the blended analytical highlight's, masked by the
-/// albedo's alpha as the reflection is, so layers without specular stay fully rough.
-pub(super) fn roughness(material: &Material) -> String {
-    if (0..4).any(|layer| specular(material, layer)) {
-        native_roughness(
-            "sqrt(2/(max(terrainSpecPower,0)+2))",
-            "unlit.a*terrainHighlight",
-        )
-    } else {
-        "1".into()
-    }
+/// The blended Phong exponent's Beckmann slope `sqrt(2 / (p + 2))` and the blended analytical
+/// highlight's strength, masked by the albedo's alpha as the reflection is, for the native
+/// smoothness mapping ([`native_roughness`]). `None` when no layer has specular, so such a
+/// terrain stays fully rough.
+pub(super) fn highlight(material: &Material) -> Option<(&'static str, &'static str)> {
+    (0..4).any(|layer| specular(material, layer)).then_some((
+        "sqrt(2/(max(terrainSpecPower,0)+2))",
+        "unlit.a*terrainHighlight",
+    ))
 }
 
 pub(super) fn reflection(

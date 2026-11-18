@@ -157,7 +157,7 @@ fn prepared_radiance_reloads_and_equips_private_paths_and_source_presentation() 
     let stock = open_manager(&stock_path).unwrap();
     let catalog = crate::test_support::catalog(view.path()).unwrap();
     let donor = catalog
-        .subclasses(crate::package_profile::is_stock_item_definition)
+        .subclasses(crate::package::profile::is_stock_item_definition)
         .into_iter()
         .find(|item| item.name == "Dawnblade")
         .unwrap();
@@ -908,11 +908,13 @@ fn prepared_radiance_reloads_and_equips_private_paths_and_source_presentation() 
         let component_rows = graph.array(16, 12, Some(0x80809C04)).unwrap();
         let replication_rows = replication.array(48, 32, Some(0x80809BB8)).unwrap();
         assert_eq!(component_rows.len(), replication_rows.len());
-        let chain =
-            crate::chain::discover_patch_chain(&staged_path, TagHash(replication_tag).pkg_id())
-                .unwrap();
+        let chain = crate::package::chain::discover_patch_chain(
+            &staged_path,
+            TagHash(replication_tag).pkg_id(),
+        )
+        .unwrap();
         let package = fs::read(&chain.latest().path).unwrap();
-        let package_layout = crate::format::PackageLayout::parse(&package).unwrap();
+        let package_layout = crate::package::format::PackageLayout::parse(&package).unwrap();
         let companions = package_layout
             .shared_tag_enrollment_rows(&package)
             .unwrap()
@@ -981,7 +983,7 @@ fn prepared_radiance_reloads_and_equips_private_paths_and_source_presentation() 
             }
             fs::write(output.join(format!("{:08X}.bin", allocation.0)), &bytes).unwrap();
             allocation_evidence.push(json!({"owner":tag,"allocation":allocation.0,
-            "private":private,"sha256":sha(&bytes),"enrolled":true}));
+            "private":private,"sha256":sha256_hex(&bytes),"enrolled":true}));
         }
         assert!(
             allocation_evidence
@@ -1018,23 +1020,23 @@ fn prepared_radiance_reloads_and_equips_private_paths_and_source_presentation() 
         fs::write(output.join(format!("readback-{super_entry}.json")),serde_json::to_vec_pretty(&json!({
         "revision":revision,"source_build":"56578.17.04.12.1251.evil",
         "native_build":"86657.20.08.23.1800.d2_rc___release","source_packages":source_packages,
-        "source_bank_sha256":sha(&source_bank.0),"recipe":recipe_path,"manifest":build.manifest_path,
+        "source_bank_sha256":sha256_hex(&source_bank.0),"recipe":recipe_path,"manifest":build.manifest_path,
         "root":root,"row":row,"identity":pairs[usize::from(row)].identity,"pattern":pairs[usize::from(row)].pattern,
         "controller":controller_tag,"bank":bank_tag,"slot_metadata":metadata_tag,"callbacks":callbacks,
         "super_entry":super_entry,"source_presentation":source_presentation,
         "initializers":init,"query_geometry":{"offset":query,"class":controller.u32(query-4).unwrap(),"body":hex::encode(controller.bytes::<16>(query).unwrap())},
         "query_action":query_action,"query_selection":query_selection,
-        "presentation":presentation,"grants":grants,"root_sha256":sha(&graph.0),
-        "controller_sha256":sha(&controller.0),"bank_sha256":sha(&bank.0),
-        "source_controller_sha256":sha(&source_controller.0),
+        "presentation":presentation,"grants":grants,"root_sha256":sha256_hex(&graph.0),
+        "controller_sha256":sha256_hex(&controller.0),"bank_sha256":sha256_hex(&bank.0),
+        "source_controller_sha256":sha256_hex(&source_controller.0),
         "energy":{"charges":controller.u32(definition+0xC8).unwrap(),
             "activation_cost":controller.f32(definition+0xCC).unwrap(),
             "base_active_drain":controller.f32(definition+0xD0).unwrap(),
             "flags":controller.u16(definition+0x4C).unwrap()},
         "replication":replication_tag,"replication_companion":companion_tag,
-        "replication_sha256":sha(&replication.0),"companion_sha256":sha(&companion),
+        "replication_sha256":sha256_hex(&replication.0),"companion_sha256":sha256_hex(&companion),
         "allocations":allocation_evidence,
-        "executable_sha256":sha(&fs::read(std::env::current_exe().unwrap()).unwrap()),
+        "executable_sha256":sha256_hex(&fs::read(std::env::current_exe().unwrap()).unwrap()),
         "installed":false,"gameplay_verified":false,
         "limits":["Package readback does not prove dead-player input, authority, charge consumption, resurrection or repeated-use cleanup.",
             "Sequence translation is checked structurally. Rendering, sound, animation and buff effects in play are not observed."]

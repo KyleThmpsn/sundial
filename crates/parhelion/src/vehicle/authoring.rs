@@ -2,8 +2,8 @@
 use super::{Durability, Sparrow, Weapons, health, motion, weapons};
 use crate::{
     AuthoringResult, NewTagSpec, NewTagStorageMode,
-    appended_tags::AppendedTagAllocator,
     error::invalid,
+    package::appended_tags::AppendedTagAllocator,
     tag_payload::{read_u16, read_u32, write_u64},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,7 +13,7 @@ use sundial::package_authoring::{
         retarget_weapon_component_owner, retarget_weapon_component_owner_payload,
         validate_weapon_entity,
     },
-    runtime::{WeaponRuntimeGraph, load_weapon_runtime_graph_for_entity},
+    runtime::{RuntimeGraph, load_runtime_graph_for_entity},
 };
 use tiger_pkg::TagHash;
 
@@ -21,11 +21,7 @@ const ENTITY: u32 = 0x8080_9C0F;
 const HOVER_INSTANCE: u32 = 0x8080_3CDE;
 const HOVER_DEFINITION: u32 = 0x8080_3171;
 
-fn graph(
-    manager: &PackageManager,
-    tag: TagHash,
-    payload: &[u8],
-) -> AuthoringResult<WeaponRuntimeGraph> {
+fn graph(manager: &PackageManager, tag: TagHash, payload: &[u8]) -> AuthoringResult<RuntimeGraph> {
     let entry = manager
         .get_entry(tag)
         .ok_or_else(|| invalid(format!("Vehicle entity {tag} is missing")))?;
@@ -35,7 +31,7 @@ fn graph(
         )));
     }
     validate_weapon_entity(payload).map_err(invalid)?;
-    let graph = load_weapon_runtime_graph_for_entity(manager, 0, 0, tag.0, payload)
+    let graph = load_runtime_graph_for_entity(manager, 0, 0, tag.0, payload)
         .map_err(|error| invalid(format!("Selected vehicle {tag}: {error}")))?;
     let schemas = graph
         .owners

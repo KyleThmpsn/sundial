@@ -15,7 +15,7 @@
 //! appearance's parts are pinned to the gameplay rig's root bone instead, which draws the
 //! model without its moving parts. See `item::emission::reskin`.
 use crate::tag_payload::{array_at, read_u32, read_u64};
-use crate::{AuthoringResult, error::invalid, item::WeaponRuntimeResourcePatch};
+use crate::{AuthoringResult, error::invalid, item::RuntimeResourcePatch};
 use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::entity::{
     WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, graft_weapon_component_bindings_with, owner::EventPolicy,
@@ -156,7 +156,7 @@ pub(crate) fn runtime_marker_patches(
     manager: &PackageManager,
     entity: &[u8],
     targets: &[RuntimeMarker],
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     if targets.is_empty() {
         return Ok(Vec::new());
     }
@@ -192,7 +192,7 @@ pub(crate) fn runtime_marker_patches(
             .checked_sub(resource)
             .and_then(|offset| u32::try_from(offset).ok())
             .ok_or_else(|| invalid("Marker row lies before its resource"))?;
-        patches.push(WeaponRuntimeResourcePatch {
+        patches.push(RuntimeResourcePatch {
             binding_hash: MARKER_SET,
             resource_index: 0,
             offset,
@@ -218,7 +218,7 @@ pub(crate) fn marker_set_appends(
     manager: &PackageManager,
     base: &[u8],
     moved: &[u8],
-) -> AuthoringResult<Vec<crate::item::WeaponRuntimeResourceAppend>> {
+) -> AuthoringResult<Vec<crate::item::RuntimeResourceAppend>> {
     let single = |entity: &[u8]| -> AuthoringResult<Option<(u32, usize)>> {
         let bindings = weapon_component_bindings(entity, MARKER_SET).map_err(invalid)?;
         Ok(match bindings.as_slice() {
@@ -317,7 +317,7 @@ pub(crate) fn marker_set_appends(
         .checked_sub(resource)
         .and_then(|offset| u32::try_from(offset).ok())
         .ok_or_else(|| invalid("Marker descriptor lies before its resource"))?;
-    Ok(vec![crate::item::WeaponRuntimeResourceAppend {
+    Ok(vec![crate::item::RuntimeResourceAppend {
         binding_hash: MARKER_SET,
         resource_index: 0,
         bytes,
@@ -325,6 +325,8 @@ pub(crate) fn marker_set_appends(
         arrays: vec![(relative, 0, count as u64)],
         pointers: Vec::new(),
         references: Vec::new(),
+        retained_pointers: Vec::new(),
+        retained_bytes: Vec::new(),
     }])
 }
 
@@ -353,7 +355,7 @@ pub(crate) fn stat_table_patches(
     entity: &[u8],
     row_group: u32,
     own_group: u32,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     if row_group == own_group {
         return Ok(Vec::new());
     }
@@ -399,7 +401,7 @@ pub(crate) fn stat_table_patches(
             .and_then(|offset| u32::try_from(offset).ok())
             .ok_or_else(|| invalid("Stat translator patch offset overflow"))
     };
-    let patch = |offset: u32, bytes: Vec<u8>| WeaponRuntimeResourcePatch {
+    let patch = |offset: u32, bytes: Vec<u8>| RuntimeResourcePatch {
         binding_hash: WEAPON_STAT_TRANSLATOR_COMPONENT_KEY,
         resource_index: 0,
         offset,

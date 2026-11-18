@@ -9,11 +9,15 @@ use crate::d2_mot::payload::Payload;
 mod energy;
 pub use energy::component_value;
 mod event;
+mod general;
 pub use event::{kill_condition, kill_condition_with_labels};
+pub use general::{condition_with, effect_with};
 mod event_modifier;
 pub use event_modifier::{event_modifier, event_modifier_with_labels};
 mod hit;
 pub use hit::{Hit, hit_condition};
+mod predicate;
+pub use predicate::{all_of, key_gate, predicate};
 mod property;
 pub use property::named_property;
 mod status;
@@ -439,14 +443,51 @@ pub fn modifier_settings(
     native: &Payload,
     to: usize,
 ) -> Result<[u8; 88]> {
+    modifier_settings_with(source, at, native, to, modifier_input)
+}
+
+/// [`modifier_settings`] with the caller's map from a source component and input to the
+/// Shadowkeep ones.
+pub fn modifier_settings_with(
+    source: &Payload,
+    at: usize,
+    native: &Payload,
+    to: usize,
+    destination: impl Fn(u8, u16) -> Result<(u8, u16)>,
+) -> Result<[u8; 88]> {
     let settings = source.pointer(24)?;
     ensure!(
         settings >= 4
             && source.u32(settings - 4)? == 0x80802D2B
             && source
                 .array(settings + 88, 112, Some(0x80802D33))?
-                .contains(&at)
-            && source.u32(at + 4)? == 0x80802D32,
+                .contains(&at),
+        "unsupported source modifier-settings class"
+    );
+    let settings = native.pointer(24)?;
+    ensure!(
+        settings >= 4
+            && native.u32(settings - 4)? == 0x80803AFE
+            && native
+                .array(settings + 88, 88, Some(0x80803B06))?
+                .contains(&to),
+        "unsupported native modifier-settings envelope"
+    );
+    modifier_row_with(source, at, native, to, destination)
+}
+
+/// The Shadowkeep settings of one modifier row, for a row of any bank: a stat modifier owner's
+/// or the one on a status's timed property input. The caller has found both rows in their
+/// banks' arrays.
+pub fn modifier_row_with(
+    source: &Payload,
+    at: usize,
+    native: &Payload,
+    to: usize,
+    destination: impl Fn(u8, u16) -> Result<(u8, u16)>,
+) -> Result<[u8; 88]> {
+    ensure!(
+        source.u32(at + 4)? == 0x80802D32,
         "unsupported source modifier-settings class"
     );
     source.bytes::<112>(at)?;
@@ -466,7 +507,7 @@ pub fn modifier_settings(
             && source.u64(at + 48)? == 0
             && i64::from_le_bytes(source.bytes(at + 56)?) == -56
             && source.u32(at + 68)? == 0
-            && source.u64(at + 72)? == 1
+            && source.u64(at + 72)? <= 1
             && source.u64(at + 80)? == 0
             && source.i16(at + 88)? == -1
             && source.u32(at + 92)? == 0x811C9DC5
@@ -482,15 +523,9 @@ pub fn modifier_settings(
             "source modifier metadata reference differs"
         );
     }
-    let (component, input) = modifier_input(source.u8(at + 96)?, source.u16(at + 90)?)?;
-    let settings = native.pointer(24)?;
+    let (component, input) = destination(source.u8(at + 96)?, source.u16(at + 90)?)?;
     ensure!(
-        settings >= 4
-            && native.u32(settings - 4)? == 0x80803AFE
-            && native
-                .array(settings + 88, 88, Some(0x80803B06))?
-                .contains(&to)
-            && native.u32(to + 4)? == 0x80803B05,
+        native.u32(to + 4)? == 0x80803B05,
         "unsupported native modifier-settings envelope"
     );
     let mut bytes = native.bytes::<88>(to)?;
@@ -504,7 +539,8 @@ pub fn modifier_settings(
             && native.u64(to + 32)? == 0
             && i64::from_le_bytes(native.bytes(to + 48)?) == -48
             && native.u32(to + 60)? == 0
-            && native.u64(to + 64)? == 1
+            // One in a stat modifier owner's row and zero in a status bank's, on both sides.
+            && native.u64(to + 64)? == source.u64(at + 72)?
             && native.bytes::<3>(to + 77)? == [0; 3]
             && native.u32(to + 80)? == 0
             && native.u32(to + 84)? == u32::MAX,

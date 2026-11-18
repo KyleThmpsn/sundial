@@ -231,11 +231,107 @@ fn opus_mapping(fmt: &[u8]) -> Result<Vec<u8>> {
 /// The store name of `pcm_wem` results. Change it whenever the decoded media would differ.
 const PCM_RECIPE: &str = "ffmpeg-pcm-1";
 
-/// Decode Wwise Opus into 16-bit PCM RIFF media with ffmpeg. The output is not
-/// independently playable in Dawn until its legacy bank and event are authored.
-/// Media an earlier import decoded is taken from the store without starting ffmpeg.
+/// The channel count a Wwise media file declares.
+pub fn channels(media: &[u8]) -> Result<u16> {
+    let chunks = chunks(media)?;
+    let fmt = chunks
+        .iter()
+        .find(|(id, _)| **id == *b"fmt ")
+        .context("Wwise media format chunk missing")?
+        .1;
+    word(fmt, 2)
+}
+
+/// The store name of `vorbis_pcm` results. Change it whenever the decoded media would differ.
+const VORBIS_RECIPE: &str = "vorbis-pcm-1";
+
+/// Decode version 150 Wwise Vorbis into 16-bit PCM RIFF media, in process.
+///
+/// The format chunk is 66 bytes with 48 extension bytes, as in the earlier Vorbis layout, but
+/// `+20` holds a channel configuration: the count in the low byte, the kind in the next four
+/// bits and the speaker mask above. Only standard speaker sets the native writer has are taken.
+/// Loop, cue and seek chunks would need their own translation and are refused.
+fn vorbis_pcm(media: &[u8]) -> Result<Vec<u8>> {
+    if let Some(pcm) = crate::store::recall(VORBIS_RECIPE, media) {
+        return Ok(pcm);
+    }
+    let source = chunks(media)?;
+    let only = |id: [u8; 4]| -> Result<&[u8]> {
+        let mut found = source.iter().filter(|(name, _)| **name == id);
+        match (found.next(), found.next()) {
+            (Some((_, body)), None) => Ok(*body),
+            _ => bail!("Wwise Vorbis media needs one format and one sample chunk"),
+        }
+    };
+    let fmt = only(*b"fmt ")?;
+    only(*b"data")?;
+    ensure!(
+        source
+            .iter()
+            .all(|(id, _)| matches!(*id, b"fmt " | b"hash" | b"data" | b"JUNK")),
+        "Wwise Vorbis media carries playback metadata that requires translation"
+    );
+    ensure!(
+        fmt.len() == 66 && word(fmt, 16)? == 48,
+        "unsupported Wwise Vorbis format chunk"
+    );
+    let channels = word(fmt, 2)?;
+    let rate = dword(fmt, 4)?;
+    let config = dword(fmt, 20)?;
+    let frames = dword(fmt, 24)? as usize;
+    ensure!(
+        config & 0xFF == u32::from(channels) && (config >> 8) & 0xF == 1 && frames > 0,
+        "Wwise Vorbis media has no standard speaker set"
+    );
+    let mask = config >> 12;
+    let decoded =
+        sundial::package_authoring::decode_audio_wave(media).map_err(anyhow::Error::msg)?;
+    crate::cancellation::check()?;
+    let decoded = chunks(&decoded)?;
+    let field = |id: [u8; 4]| {
+        decoded
+            .iter()
+            .find(|(name, _)| **name == id)
+            .map(|(_, body)| *body)
+    };
+    let output = field(*b"fmt ").context("decoded format")?;
+    let data = field(*b"data").context("decoded samples")?;
+    ensure!(
+        word(output, 0)? == 1
+            && word(output, 2)? == channels
+            && dword(output, 4)? == rate
+            && word(output, 14)? == 16,
+        "Wwise Vorbis decoder changed the sample layout"
+    );
+    // The stream ends on a whole block, so a decode can run past the declared length by less
+    // than two long blocks. The declared count is the sound's length and the rest is padding.
+    let frame = usize::from(channels) * 2;
+    let extent = frames
+        .checked_mul(frame)
+        .context("Wwise Vorbis frame extent")?;
+    ensure!(
+        data.len() >= extent && data.len() - extent < 4096 * frame,
+        "Wwise Vorbis decoded {} frames, but the source declares {frames}",
+        data.len() / frame
+    );
+    let pcm = riff_pcm_layout(channels, rate, mask, &data[..extent])?;
+    crate::store::remember(VORBIS_RECIPE, media, &pcm);
+    Ok(pcm)
+}
+
+/// Decode version 150 Wwise media into 16-bit PCM RIFF media: Opus with ffmpeg, Vorbis in
+/// process. The output is not independently playable in Dawn until its legacy bank and event
+/// are authored. Media an earlier import decoded is taken from the store without decoding.
 pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
     crate::cancellation::check()?;
+    let format = chunks(media)?
+        .iter()
+        .find(|(id, _)| **id == *b"fmt ")
+        .map(|(_, body)| word(body, 0))
+        .transpose()?;
+    if format == Some(0xFFFF) {
+        return vorbis_pcm(media);
+    }
     if let Some(pcm) = crate::store::recall(PCM_RECIPE, media) {
         return Ok(pcm);
     }

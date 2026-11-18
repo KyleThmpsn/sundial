@@ -24,8 +24,90 @@ pub(super) fn choose(
             borrowed: Borrowed::new(),
         });
     }
-    let (template, borrowed) = fallback(native, owners, families)?;
-    Ok(Choice { template, borrowed })
+    if let Some((template, borrowed)) = composite(native, families)? {
+        return Ok(Choice { template, borrowed });
+    }
+    match fallback(native, owners, families) {
+        Ok((template, borrowed)) => Ok(Choice { template, borrowed }),
+        Err(error) => {
+            crate::cancellation::check()?;
+            let template = without_context(native, families)?.ok_or(error)?;
+            Ok(Choice {
+                template,
+                borrowed: Borrowed::new(),
+            })
+        }
+    }
+}
+
+/// Failing all of those, a listed template may also add the shared effect context, which leaves
+/// with its rows as an added channel bank or receiver does. Rise of Iron sword attack entity
+/// `80A88C80` holds a network, a receiver, a sequence, the category and a channel bank. None of
+/// the 46,235 stock graphs has exactly those owners, while 34 add only the effect context,
+/// `80C199A2` among them.
+fn without_context(native: &mut Reader, families: &BTreeSet<Family>) -> Result<Option<Template>> {
+    for &candidate in &TEMPLATES {
+        let template = Template::read(native, candidate)?;
+        let provided = template.owners.keys().copied().collect::<BTreeSet<_>>();
+        if provided.contains(&Family::Context)
+            && provided.is_superset(families)
+            && provided.difference(families).all(|family| {
+                matches!(family, Family::Channel | Family::Receiver | Family::Context)
+            })
+        {
+            return Ok(Some(template));
+        }
+    }
+    Ok(None)
+}
+
+/// Families a graph may take from another stock graph when no stock graph holds its whole set.
+/// A condition volume carries its own query, recipient and Timer, and its one channel getter is
+/// found by name, so it needs nothing from the graph beside it.
+const COMPOSED: [Family; 1] = [Family::Volume];
+
+/// A source set no stock graph holds, as one listed template that holds the rest and a lender for
+/// each [`COMPOSED`] family. Skorri's Harmony's `80A88C3E` has a volume, the framework network, a
+/// status, a sequence and a channel bank. None of the 46,235 stock graphs has exactly those
+/// owners, while `80FF06FD` holds the last four and `80FEEBEF` a volume of the same script. Each
+/// translated owner keeps the stock graph that registers its own template.
+fn composite(
+    native: &mut Reader,
+    families: &BTreeSet<Family>,
+) -> Result<Option<(Template, Borrowed)>> {
+    let missing = families
+        .iter()
+        .copied()
+        .filter(|family| COMPOSED.contains(family))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(None);
+    }
+    let rest = families
+        .iter()
+        .copied()
+        .filter(|family| !COMPOSED.contains(family))
+        .collect::<BTreeSet<_>>();
+    for &candidate in &TEMPLATES {
+        let template = Template::read(native, candidate)?;
+        if template.owners.keys().copied().collect::<BTreeSet<_>>() != rest {
+            continue;
+        }
+        let mut borrowed = Borrowed::new();
+        for &family in &missing {
+            for &lender in &TEMPLATES {
+                let lender = Template::read(native, lender)?;
+                if let Some((_, tag, owner)) = lender.owners.get(&family) {
+                    borrowed.insert(family, (*tag, owner.clone(), lender.graph.clone()));
+                    break;
+                }
+            }
+        }
+        if borrowed.len() == missing.len() {
+            return Ok(Some((template, borrowed)));
+        }
+    }
+    Ok(None)
 }
 
 /// An exact family match wins. Otherwise a template may add only a channel bank and a receiver,

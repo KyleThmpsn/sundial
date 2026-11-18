@@ -57,7 +57,7 @@ pub(super) fn prepare(
         "presentation":presentation.report,
         "source":{"plug_hash":request.plug_hash,"controllers":assigned.iter().map(|a| json!({
             "action_tag":format!("{:08X}", a.action_tag),"perk_hash":format!("{:08X}", a.perk_hash),
-            "controller_sha256":digest(&a.controller.0)})).collect::<Vec<_>>()},
+            "controller_sha256":sha256_hex(&a.controller.0)})).collect::<Vec<_>>()},
         "omitted":omitted,
         "remaining":["In-game equip and unequip, the native consumer of each written property", "Stock donor gameplay isolation"]
     });

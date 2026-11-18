@@ -35,7 +35,7 @@ use crate::{
 
 use super::{
     chain,
-    placed::{Placed, clone_placed, keyed, read as placed, renamed, set_slot},
+    placed::{Placed, clone_placed, keyed, read as placed, renamed, set_slot, words},
 };
 
 mod point;
@@ -159,17 +159,6 @@ fn target(payload: &[u8], field: usize) -> AuthoringResult<usize> {
         .checked_add_signed(relative as isize)
         .filter(|&at| relative != 0 && at < payload.len())
         .ok_or_else(|| invalid(format!("Pointer at 0x{field:X} leaves its record")))
-}
-
-/// The `u32` rows of the array at `descriptor`, none when it is empty.
-fn words(payload: &[u8], descriptor: usize) -> AuthoringResult<Vec<u32>> {
-    if read_u64(payload, descriptor)? == 0 {
-        return Ok(Vec::new());
-    }
-    let (count, _, rows, _) = array_at(payload, descriptor)?;
-    (0..count)
-        .map(|index| read_u32(payload, rows + index * 4))
-        .collect()
 }
 
 /// A spawner's actor: the entity of its first member's first candidate placement.
@@ -519,6 +508,45 @@ impl Encounter {
             squads: natives,
             key: fnv1_name_hash(&format!("{area}/encounter")),
         }))
+    }
+
+    /// The encounter as the activity SDK pack describes it, when its entries start at `object`
+    /// and the registry lists the object at place `ordinal` of the array at `field`. As
+    /// [`Self::tags`] gives them out, the object takes the first entry, the spawn point list the
+    /// next two, and each squad six: its spawner's handle, redirect and record, then its rule's.
+    pub(super) fn rows(
+        &self,
+        object: TagHash,
+        field: usize,
+        ordinal: usize,
+    ) -> AuthoringResult<super::pack::Encounter> {
+        let entry = |offset: usize| {
+            u16::try_from(object.entry_index() as usize + offset)
+                .map(|index| TagHash::new(object.pkg_id(), index).0)
+                .map_err(|_| invalid("The map package has too many entries"))
+        };
+        let word =
+            |value: usize| u32::try_from(value).map_err(|_| invalid("A registry lists too much"));
+        Ok(super::pack::Encounter {
+            object: object.0,
+            key: self.key,
+            field: word(field)?,
+            ordinal: word(ordinal)?,
+            squads: self
+                .squads
+                .iter()
+                .enumerate()
+                .map(|(index, squad)| {
+                    Ok(super::pack::Squad {
+                        name: squad.name.clone(),
+                        rule_name: format!("{}_spawnrule", squad.name),
+                        spawner: entry(3 + 6 * index + 2)?,
+                        rule: entry(3 + 6 * index + 5)?,
+                        template: self.templates.squads[squad.template].spawner.tags[2].0,
+                    })
+                })
+                .collect::<AuthoringResult<_>>()?,
+        })
     }
 
     /// The encounter's entries at the tags `at` gives from `next` on, the first being its object:

@@ -8,14 +8,14 @@ use parhelion_import::d2_mot::{
     reader::{Reader, outside},
 };
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use sundial::storage::sha256_hex;
 use sundial::{
     investment::{InvestmentCatalog, WeaponDonor},
     package_authoring::{
         PackageManager,
         entity::{WEAPON_ENTITY_CLASS, weapon_component_bindings},
         open_shadowkeep_package_manager, resolve_live_named_tag,
-        runtime::load_weapon_runtime_entity_for_item_with_manager,
+        runtime::load_runtime_entity_for_item_with_manager,
         sandbox_perk::load_sandbox_perk_runtime_action,
         sandbox_perk::program::{
             Action, HudStatus, NativeAssetPatch, NativeAssetResourcePatch, NativeNode,
@@ -88,13 +88,6 @@ fn error(error: impl std::fmt::Display) -> String {
     format!("{error:#}")
 }
 
-fn digest(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
 fn checked_tag(manager: &PackageManager, tag: u32, class: u32) -> Result<Vec<u8>, String> {
     let entry = manager
         .get_entry(TagHash(tag))
@@ -117,7 +110,7 @@ fn checked_tag(manager: &PackageManager, tag: u32, class: u32) -> Result<Vec<u8>
 }
 
 fn sword(manager: &PackageManager, hash: u32) -> Result<(), String> {
-    let entity = load_weapon_runtime_entity_for_item_with_manager(manager, hash)?;
+    let entity = load_runtime_entity_for_item_with_manager(manager, hash)?;
     let bindings = weapon_component_bindings(&entity.payload, SWORD_BINDING)?;
     if bindings.len() != 1 || bindings[0].concrete_class != SWORD_CLASS {
         return Err(format!(
@@ -364,7 +357,7 @@ fn finish(
         .icon_png
         .as_deref()
         .map(|bytes| {
-            crate::icon_edit::ImportedIcon::from_bytes(bytes).map(|image| super::Icon::Image {
+            crate::icon::edit::ImportedIcon::from_bytes(bytes).map(|image| super::Icon::Image {
                 name: plug.presentation.name.clone(),
                 image,
             })
@@ -391,8 +384,8 @@ fn finish(
     edit(&mut recipe);
     recipe.to_spec().map_err(error)?.validate().map_err(error)?;
     let encoded = recipe.to_json_pretty().map_err(error)?;
-    provenance["prepared_recipe_sha256"] = json!(digest(encoded.as_bytes()));
-    provenance["baseline_recipe_sha256"] = json!(digest(
+    provenance["prepared_recipe_sha256"] = json!(sha256_hex(encoded.as_bytes()));
+    provenance["baseline_recipe_sha256"] = json!(sha256_hex(
         request.recipe.to_json_pretty().map_err(error)?.as_bytes()
     ));
     fs::write(output.join("prepared-weapon.parhelion.json"), encoded).map_err(error)?;
@@ -652,15 +645,15 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
             "perk_hash": source.perk_hash,
             "runtime_key": source.runtime_key,
             "action_tag": source.action_tag,
-            "controller_sha256": digest(&source.controller.0),
+            "controller_sha256": sha256_hex(&source.controller.0),
             "routing": source.routing,
             "lunge_entity": source.lunge.entity_tag,
             "lunge_owner": source.lunge.owner_tag,
             "lunge_modifier_offset": source.lunge.modifier_offset,
-            "lunge_owner_sha256": digest(&source.lunge.owner.0),
+            "lunge_owner_sha256": sha256_hex(&source.lunge.owner.0),
             "angular_entity": source.angular.entity_tag,
             "angular_owner": source.angular.owner_tag,
-            "angular_owner_sha256": digest(&source.angular.owner.0),
+            "angular_owner_sha256": sha256_hex(&source.angular.owner.0),
         },
         "native": {
             "donor_hash": donor_hash,
@@ -672,8 +665,8 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
             "lunge_owner": native_lunge.owner_tag,
             "lunge_resource_offset": native_lunge.resource_offset,
             "lunge_modifier_offset": native_lunge.offset,
-            "lunge_graph_sha256": digest(&native_lunge.graph),
-            "lunge_owner_sha256": digest(&native_lunge.owner),
+            "lunge_graph_sha256": sha256_hex(&native_lunge.graph),
+            "lunge_owner_sha256": sha256_hex(&native_lunge.owner),
             "profile": Some(&profile),
             "effect_order": [2, 41, 36],
             "removal_order": [18, 1, 41, 8, 20],

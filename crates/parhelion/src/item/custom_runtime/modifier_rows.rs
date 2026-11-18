@@ -10,10 +10,7 @@
 //! owner writer places the header on a 16-byte boundary with the typed-array marker before it.
 use super::*;
 use sundial::package_authoring::{
-    runtime::{
-        encode_weapon_runtime_field_value, load_weapon_runtime_graph_for_entity,
-        resolve_weapon_runtime_field,
-    },
+    runtime::{encode_runtime_field_value, load_runtime_graph_for_entity, resolve_runtime_field},
     sandbox_perk::{entity::modifiers, program::ModifierRow},
 };
 
@@ -23,14 +20,14 @@ use sundial::package_authoring::{
 pub(in crate::item) fn appends(
     manager: &PackageManager,
     graph: u32,
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
     rows: &[ModifierRow],
-) -> AuthoringResult<Vec<WeaponRuntimeResourceAppend>> {
+) -> AuthoringResult<Vec<RuntimeResourceAppend>> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
     let payload = read_tag(manager, TagHash(graph), "attached entity")?;
-    let loaded = load_weapon_runtime_graph_for_entity(manager, 0, 0, graph, &payload)
+    let loaded = load_runtime_graph_for_entity(manager, 0, 0, graph, &payload)
         .map_err(|error| invalid(format!("Attached entity 0x{graph:08X}: {error}")))?;
     let records = modifiers::discover(&loaded);
     let Some(first) = records.first() else {
@@ -58,12 +55,12 @@ pub(in crate::item) fn appends(
     let mut patched = read_tag(manager, TagHash(owner), "modifier owner")?;
     for (value_index, value) in values.iter().enumerate() {
         let locator = value.locator.for_graph(graph.into()).map_err(invalid)?;
-        let resolved = resolve_weapon_runtime_field(manager, &payload, &locator)
+        let resolved = resolve_runtime_field(manager, &payload, &locator)
             .map_err(|error| invalid(format!("Runtime value {value_index} is stale: {error}")))?;
         if resolved.owner_tag != owner {
             continue;
         }
-        let bytes = encode_weapon_runtime_field_value(&resolved.field, &value.value)
+        let bytes = encode_runtime_field_value(&resolved.field, &value.value)
             .map_err(|error| invalid(format!("Runtime value {value_index} is invalid: {error}")))?;
         let end = resolved.owner_offset + bytes.len();
         patched
@@ -88,7 +85,7 @@ pub(in crate::item) fn appends(
     for row in rows {
         bytes.extend(modifiers::row_bytes(template, row).map_err(invalid)?);
     }
-    Ok(vec![WeaponRuntimeResourceAppend {
+    Ok(vec![RuntimeResourceAppend {
         binding_hash: binding,
         resource_index: index,
         bytes,
@@ -96,5 +93,7 @@ pub(in crate::item) fn appends(
         arrays: vec![(descriptor, 0, total as u64)],
         pointers: Vec::new(),
         references: Vec::new(),
+        retained_pointers: Vec::new(),
+        retained_bytes: Vec::new(),
     }])
 }

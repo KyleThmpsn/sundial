@@ -3,33 +3,31 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
-fn valid_runtime_text(kind: &WeaponRuntimeValueKind, text: &str) -> bool {
+fn valid_runtime_text(kind: &RuntimeValueKind, text: &str) -> bool {
     match *kind {
-        WeaponRuntimeValueKind::FixedBytes { size } => {
+        RuntimeValueKind::FixedBytes { size } => {
             parse_runtime_hex_bytes(text, size as usize).is_some()
         }
-        WeaponRuntimeValueKind::Float32 | WeaponRuntimeValueKind::Vector4Float32 => {
-            parse_runtime_hex_u64(text)
-                .and_then(|bits| u32::try_from(bits).ok())
-                .is_some_and(|bits| f32::from_bits(bits).is_finite())
-        }
-        WeaponRuntimeValueKind::Float64 => {
+        RuntimeValueKind::Float32 | RuntimeValueKind::Vector4Float32 => parse_runtime_hex_u64(text)
+            .and_then(|bits| u32::try_from(bits).ok())
+            .is_some_and(|bits| f32::from_bits(bits).is_finite()),
+        RuntimeValueKind::Float64 => {
             parse_runtime_hex_u64(text).is_some_and(|bits| f64::from_bits(bits).is_finite())
         }
-        WeaponRuntimeValueKind::HexIdentifier { .. } => parse_runtime_hex_u64(text)
+        RuntimeValueKind::HexIdentifier { .. } => parse_runtime_hex_u64(text)
             .is_some_and(|value| value <= kind.unsigned_maximum().unwrap_or(u64::MAX)),
-        WeaponRuntimeValueKind::SignedInteger { bits: 64 } => text.trim().parse::<i64>().is_ok(),
-        WeaponRuntimeValueKind::UnsignedInteger { bits: 64 }
-        | WeaponRuntimeValueKind::Enum { bits: 64 }
-        | WeaponRuntimeValueKind::BitFlags { bits: 64 } => text.trim().parse::<u64>().is_ok(),
+        RuntimeValueKind::SignedInteger { bits: 64 } => text.trim().parse::<i64>().is_ok(),
+        RuntimeValueKind::UnsignedInteger { bits: 64 }
+        | RuntimeValueKind::Enum { bits: 64 }
+        | RuntimeValueKind::BitFlags { bits: 64 } => text.trim().parse::<u64>().is_ok(),
         _ => true,
     }
 }
 
 pub(super) fn fields_for<'a>(
     loaded: &'a PrivatePerkRuntimeGraph,
-    locator: &WeaponRuntimeFieldLocator,
-) -> Vec<&'a WeaponRuntimeField> {
+    locator: &RuntimeFieldLocator,
+) -> Vec<&'a RuntimeField> {
     loaded
         .graphs
         .iter()
@@ -38,11 +36,11 @@ pub(super) fn fields_for<'a>(
         .collect()
 }
 
-pub(super) fn finite(value: &WeaponRuntimeValue) -> bool {
+pub(super) fn finite(value: &RuntimeValue) -> bool {
     match value {
-        WeaponRuntimeValue::Float32Bits(bits) => f32::from_bits(*bits).is_finite(),
-        WeaponRuntimeValue::Float64Bits(bits) => f64::from_bits(*bits).is_finite(),
-        WeaponRuntimeValue::Vector4Float32Bits(bits) => {
+        RuntimeValue::Float32Bits(bits) => f32::from_bits(*bits).is_finite(),
+        RuntimeValue::Float64Bits(bits) => f64::from_bits(*bits).is_finite(),
+        RuntimeValue::Vector4Float32Bits(bits) => {
             bits.iter().all(|bits| f32::from_bits(*bits).is_finite())
         }
         _ => true,
@@ -51,7 +49,7 @@ pub(super) fn finite(value: &WeaponRuntimeValue) -> bool {
 
 fn overlapping_fields(
     loaded: &PrivatePerkRuntimeGraph,
-    draft: &[WeaponRuntimeValueOverride],
+    draft: &[RuntimeValueOverride],
 ) -> Vec<String> {
     let owners = loaded
         .graphs
@@ -130,7 +128,7 @@ impl PerkEditor {
             let fields = fields_for(loaded, &value.locator);
             let valid = fields.len() == 1
                 && runtime_field_is_editable(fields[0])
-                && encode_weapon_runtime_value(&fields[0].kind, &value.value).is_ok()
+                && encode_runtime_value(&fields[0].kind, &value.value).is_ok()
                 && finite(&value.value);
             if !valid {
                 errors.push(format!("Saved field {} is missing, ambiguous, non-finite, or has the wrong type. Reset or remove it.", index + 1));
@@ -192,9 +190,9 @@ impl PerkEditor {
                 continue;
             }
             let original_bits = match &fields[0].value {
-                WeaponRuntimeValue::Float32Bits(bits) => Some(u64::from(*bits)),
-                WeaponRuntimeValue::Float64Bits(bits) => Some(*bits),
-                WeaponRuntimeValue::Vector4Float32Bits(bits) => {
+                RuntimeValue::Float32Bits(bits) => Some(u64::from(*bits)),
+                RuntimeValue::Float64Bits(bits) => Some(*bits),
+                RuntimeValue::Vector4Float32Bits(bits) => {
                     bits.get(usize::from(*lane)).map(|bits| u64::from(*bits))
                 }
                 _ => None,

@@ -19,19 +19,19 @@ fn native_account_journal_commits_recovers_and_refuses_concurrent_changes() {
     for sql in [
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../src/persistence/sqlite_account/fixtures/investment_schema.sql"
+            "/../../src/persistence/sunrise_account/fixtures/investment_schema.sql"
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../src/persistence/sqlite_account/fixtures/account_settings_schema.sql"
+            "/../../src/persistence/sunrise_account/fixtures/account_settings_schema.sql"
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../src/persistence/sqlite_account/fixtures/investment_defaults.sql"
+            "/../../src/persistence/sunrise_account/fixtures/investment_defaults.sql"
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../src/persistence/sqlite_account/fixtures/account_settings_defaults.sql"
+            "/../../src/persistence/sunrise_account/fixtures/account_settings_defaults.sql"
         )),
     ] {
         db.execute_batch(sql).unwrap();

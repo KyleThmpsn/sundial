@@ -26,6 +26,12 @@ pub(super) fn evidence(
         if second.u32(second.pointer(24)? - 4)? != 0x808084E9 {
             continue;
         }
+        // The sound form's third owner is a network. A channel bank there marks a graph
+        // translated whole, which its own closure readback follows.
+        let third = emitted.tag(graph.u32(owners[2])?, Some(0x80809C36))?;
+        if third.u32(third.pointer(16)? - 4)? == 0x8080979F {
+            continue;
+        }
         let suffix = format!("-{tag:08X}.json");
         let mut matching = Vec::new();
         for path in fs::read_dir(&emitted.output)? {

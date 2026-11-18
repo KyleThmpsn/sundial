@@ -8,14 +8,20 @@
 //! words with that entity's other components as in stock. A row from another source entity, or an
 //! authored provider's condition, takes the next free bit after the template's, one bit for each
 //! condition of its own source.
+//!
+//! A condition bit is one component's runtime state. An output can hold several components that
+//! copy the same source owner, as an ability holds one sequence component per source sequence.
+//! Each later copy takes bits of its own. Sharing the first copy's bit would let one component
+//! switch the others' callbacks on and off.
 use crate::tiger::payload::Payload;
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Source {
-    /// Another source entity, by the order rows first name it.
-    Entity(usize),
+    /// A source entity, by the order rows first name it, and which copy of the source owner the
+    /// component is. `None` is a later copy of an owner of the entity the output is built on.
+    Entity(Option<usize>, u32),
     /// An authored provider's condition, by the order providers are placed. Its source word is
     /// unknown, so no two providers share a bit.
     Authored(usize),
@@ -24,6 +30,8 @@ enum Source {
 pub(in crate::tiger::entity) struct Conditions<'a> {
     template: &'a Payload,
     sources: Vec<&'a Payload>,
+    /// How many placed components copy each owner of each source entity.
+    copies: BTreeMap<(Option<usize>, u32), u32>,
     authored: usize,
     /// Bit positions, word times 16 plus bit, given to each source's original positions.
     given: BTreeMap<(Source, u32), u32>,
@@ -52,6 +60,7 @@ impl<'a> Conditions<'a> {
         Ok(Self {
             template,
             sources: Vec::new(),
+            copies: BTreeMap::new(),
             authored: 0,
             given: BTreeMap::new(),
             next,
@@ -59,21 +68,47 @@ impl<'a> Conditions<'a> {
         })
     }
 
-    /// The word and bits for a row of `entity` that tests `bits` of its condition word `word`.
-    pub fn place(&mut self, entity: &'a Payload, word: usize, bits: u16) -> Result<(i16, u16)> {
-        let word = u32::try_from(word)?;
+    /// The source entity's index, or `None` for the entity the output is built on.
+    fn source(&mut self, entity: &'a Payload) -> Option<usize> {
         if entity.0 == self.template.0 {
+            return None;
+        }
+        Some(
+            match self.sources.iter().position(|source| source.0 == entity.0) {
+                Some(index) => index,
+                None => {
+                    self.sources.push(entity);
+                    self.sources.len() - 1
+                }
+            },
+        )
+    }
+
+    /// Starts a component that copies `owner`'s rows of `entity`. Returns which copy of that
+    /// owner it is among the components placed so far, for [`Self::place`].
+    pub fn component(&mut self, entity: &'a Payload, owner: u32) -> u32 {
+        let source = self.source(entity);
+        let copies = self.copies.entry((source, owner)).or_insert(0);
+        *copies += 1;
+        *copies - 1
+    }
+
+    /// The word and bits for a row of `entity` that tests `bits` of its condition word `word`,
+    /// in the component that is copy `copy` of its source owner.
+    pub fn place(
+        &mut self,
+        entity: &'a Payload,
+        copy: u32,
+        word: usize,
+        bits: u16,
+    ) -> Result<(i16, u16)> {
+        let word = u32::try_from(word)?;
+        let source = self.source(entity);
+        if source.is_none() && copy == 0 {
             self.end = self.end.max(past(word, bits));
             return Ok((i16::try_from(word)?, bits));
         }
-        let source = match self.sources.iter().position(|source| source.0 == entity.0) {
-            Some(index) => index,
-            None => {
-                self.sources.push(entity);
-                self.sources.len() - 1
-            }
-        };
-        self.give(Source::Entity(source), word, bits)
+        self.give(Source::Entity(source, copy), word, bits)
     }
 
     /// The word and bits for an authored provider's condition.

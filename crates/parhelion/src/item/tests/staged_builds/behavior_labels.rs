@@ -3,12 +3,12 @@
 //! replaces the host's type label, reads another content group, or modifies a stock owner.
 use super::*;
 use sundial::package_authoring::runtime::{
-    WeaponRuntimeEntitySource, load_weapon_runtime_entity_at_pattern_index_with_manager,
-    load_weapon_runtime_entity_with_manager,
+    RuntimeEntitySource, load_runtime_entity_at_pattern_index_with_manager,
+    load_runtime_entity_with_manager,
 };
 
 /// Follow the selected content block and its native label array without the graft compiler.
-fn labels(manager: &PackageManager, source: &WeaponRuntimeEntitySource) -> (u32, Vec<[u8; 24]>) {
+fn labels(manager: &PackageManager, source: &RuntimeEntitySource) -> (u32, Vec<[u8; 24]>) {
     let bindings = weapon_component_bindings(&source.payload, 0x5F0D_D954).unwrap();
     let [binding] = bindings.as_slice() else {
         panic!("one weapon-content component")
@@ -66,7 +66,7 @@ fn shared_pattern_behavior_labels_survive_packaging() {
             .summary
             .weapon_pattern_index
             .unwrap();
-        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, index).unwrap()
+        load_runtime_entity_at_pattern_index_with_manager(&stock, index).unwrap()
     };
     let base = source(0xA25B_8F8F);
     let (base_owner, base_labels) = labels(&stock, &base);
@@ -122,7 +122,7 @@ fn shared_pattern_behavior_labels_survive_packaging() {
     let mut readback = Vec::new();
     for (recipe, (item, pattern_item, donor_owner, source_labels)) in recipes.iter().zip(donors) {
         let authored_item = recipe.identity.item_hash.parse_u32().unwrap();
-        let authored = load_weapon_runtime_entity_with_manager(&manager, authored_item).unwrap();
+        let authored = load_runtime_entity_with_manager(&manager, authored_item).unwrap();
         let (owner, actual) = labels(&manager, &authored);
         assert_eq!(
             actual.first(),

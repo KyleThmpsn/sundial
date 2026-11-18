@@ -33,7 +33,7 @@ fn ability_copies_replay_after_an_earlier_subclass_changes() {
     fs::write(view.path().join("destiny2.exe"), []).unwrap();
     let catalog = crate::test_support::catalog(view.path()).unwrap();
     let base = catalog
-        .subclasses(crate::package_profile::is_stock_item_definition)
+        .subclasses(crate::package::profile::is_stock_item_definition)
         .into_iter()
         .find(|subclass| subclass.name == BASE)
         .unwrap_or_else(|| panic!("no stock {BASE}"));

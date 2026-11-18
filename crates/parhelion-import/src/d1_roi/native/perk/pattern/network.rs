@@ -427,7 +427,11 @@ fn companion(
 /// `80C0020A` is the networked status form's two-row witness. `80C1158F` replicates graph
 /// `80C11517`, whose bank `80C11512` has the seven-row layout of `80EFAD9F`, the owner of
 /// envelope `80BC5798`. `80F66627` (graph `80F44F1F`) is a second seven-row witness.
-const REPLICATION_WITNESSES: [(usize, u32); 2] = [(2, 0x80C0020A), (7, 0x80C1158F)];
+/// `80C001FD` replicates graph `80B82431`, whose bank `80C001F5` has the allocation shape of
+/// `80BC578A`, the owner of three-row envelope `80BC578B`. It is one of 13 stock records with
+/// such a bank among 7,806, all with the same serialized row.
+const REPLICATION_WITNESSES: [(usize, u32); 3] =
+    [(2, 0x80C0020A), (3, 0x80C001FD), (7, 0x80C1158F)];
 
 pub(super) fn modifier(
     source: &Source,

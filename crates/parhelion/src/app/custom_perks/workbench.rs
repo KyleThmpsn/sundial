@@ -222,10 +222,10 @@ struct EffectDraft {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     action: Option<usize>,
     index: u16,
-    values: Vec<WeaponRuntimeValueOverride>,
+    values: Vec<RuntimeValueOverride>,
     action_values: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
     projectiles: Vec<ProjectileSelection>,
-    field_text: Vec<((WeaponRuntimeFieldLocator, u8), String)>,
+    field_text: Vec<((RuntimeFieldLocator, u8), String)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_movement: Option<(u32, Vec<(entity::projectile::parameters::Kind, u32)>)>,
 }

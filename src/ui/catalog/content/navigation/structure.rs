@@ -1,12 +1,12 @@
 //! On-demand component inspection shares the main inspector's decoder and renderer.
 use super::*;
-use crate::runtime::WeaponRuntimeGraph;
+use crate::runtime::RuntimeGraph;
 use std::{
     path::{Path, PathBuf},
     sync::mpsc,
 };
 
-type ResultGraph = Result<WeaponRuntimeGraph, String>;
+type ResultGraph = Result<RuntimeGraph, String>;
 #[derive(Default)]
 pub(super) struct Inspector {
     packages: Option<PathBuf>,
@@ -91,7 +91,7 @@ impl Inspector {
                     .read_tag(tiger_pkg::TagHash(tag))
                     .map_err(|e| e.to_string())?;
                 crate::entity::validate_weapon_entity(&payload)?;
-                crate::runtime::load_weapon_runtime_graph_for_entity(&manager, 0, 0, tag, &payload)
+                crate::runtime::load_runtime_graph_for_entity(&manager, 0, 0, tag, &payload)
             })();
             let _ = sender.send(result);
             ctx.request_repaint();

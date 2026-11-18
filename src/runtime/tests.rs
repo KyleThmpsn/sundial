@@ -1,7 +1,7 @@
 use super::*;
 
-fn runtime_binding(resource_offset: u64) -> WeaponRuntimeBinding {
-    WeaponRuntimeBinding {
+fn runtime_binding(resource_offset: u64) -> RuntimeBinding {
+    RuntimeBinding {
         binding_hash: 0x1111_2222,
         binding_label: "Test".to_owned(),
         resource_index: 0,
@@ -49,7 +49,7 @@ fn secondary_projectile_components_decode_reflected_fields_with_checked_bounds()
     for (schema, size) in [(0x8080_37A1, 512), (0x8080_3769, 728), (0x8080_377D, 776)] {
         assert_eq!(registry.records[&schema].struct_size as usize, size);
         let root = OwnerRootDescriptor {
-            kind: WeaponRuntimeRootKind::ComponentDefinition,
+            kind: RuntimeRootKind::ComponentDefinition,
             target: 0x20,
             schema,
             limit: 0x20 + size,
@@ -58,7 +58,7 @@ fn secondary_projectile_components_decode_reflected_fields_with_checked_bounds()
         let fields = decode_registry_root_fields(&owner, root, size, 0x1111_2222, 0, registry)
             .expect("secondary component fields");
         assert!(fields.iter().any(|field| {
-            field.source == WeaponRuntimeFieldSource::NativeMember && !field.locator.path.is_empty()
+            field.source == RuntimeFieldSource::NativeMember && !field.locator.path.is_empty()
         }));
         for field in fields {
             assert_eq!(field.locator.root_schema.get(), schema);
@@ -86,28 +86,28 @@ fn secondary_projectile_components_decode_reflected_fields_with_checked_bounds()
 fn runtime_values_encode_and_decode_native_little_endian_bytes() {
     let cases = [
         (
-            WeaponRuntimeValueKind::Boolean,
-            WeaponRuntimeValue::Boolean(true),
+            RuntimeValueKind::Boolean,
+            RuntimeValue::Boolean(true),
             vec![1],
         ),
         (
-            WeaponRuntimeValueKind::SignedInteger { bits: 16 },
-            WeaponRuntimeValue::Signed(-1234),
+            RuntimeValueKind::SignedInteger { bits: 16 },
+            RuntimeValue::Signed(-1234),
             vec![0x2E, 0xFB],
         ),
         (
-            WeaponRuntimeValueKind::UnsignedInteger { bits: 32 },
-            WeaponRuntimeValue::Unsigned(0xDEAD_BEEF),
+            RuntimeValueKind::UnsignedInteger { bits: 32 },
+            RuntimeValue::Unsigned(0xDEAD_BEEF),
             vec![0xEF, 0xBE, 0xAD, 0xDE],
         ),
         (
-            WeaponRuntimeValueKind::Float32,
-            WeaponRuntimeValue::Float32Bits((-0.0f32).to_bits()),
+            RuntimeValueKind::Float32,
+            RuntimeValue::Float32Bits((-0.0f32).to_bits()),
             vec![0, 0, 0, 0x80],
         ),
         (
-            WeaponRuntimeValueKind::Vector4Float32,
-            WeaponRuntimeValue::Vector4Float32Bits([
+            RuntimeValueKind::Vector4Float32,
+            RuntimeValue::Vector4Float32Bits([
                 1.0f32.to_bits(),
                 2.0f32.to_bits(),
                 3.0f32.to_bits(),
@@ -119,7 +119,7 @@ fn runtime_values_encode_and_decode_native_little_endian_bytes() {
         ),
     ];
     for (kind, value, expected) in cases {
-        let bytes = encode_weapon_runtime_value(&kind, &value).expect("encode runtime value");
+        let bytes = encode_runtime_value(&kind, &value).expect("encode runtime value");
         assert_eq!(bytes, expected);
         assert_eq!(decode_runtime_value(&expected, 0, &kind).unwrap(), value);
     }
@@ -129,19 +129,19 @@ fn runtime_values_encode_and_decode_native_little_endian_bytes() {
 fn technical_ranges_cover_every_unreflected_owner_byte_without_crossing_components() {
     let owner_payload = (0_u8..64).collect::<Vec<_>>();
     let root = OwnerRootDescriptor {
-        kind: WeaponRuntimeRootKind::Instance,
+        kind: RuntimeRootKind::Instance,
         target: 8,
         schema: 0x8080_1234,
         limit: 40,
     };
-    let known = WeaponRuntimeField {
-        locator: WeaponRuntimeFieldLocator {
+    let known = RuntimeField {
+        locator: RuntimeFieldLocator {
             graph_tag: None,
             binding_hash: WEAPON_BARREL_COMPONENT_KEY.into(),
             resource_index: 0,
             root: root.kind,
             root_schema: root.schema.into(),
-            path: vec![WeaponRuntimePathElement {
+            path: vec![RuntimePathElement {
                 name_hash: 1,
                 type_handle: SchemaHandle::new(2),
                 byte_offset: 4,
@@ -153,9 +153,9 @@ fn technical_ranges_cover_every_unreflected_owner_byte_without_crossing_componen
         owner_offset: 12,
         name: "Known".to_owned(),
         path_label: "Known".to_owned(),
-        kind: WeaponRuntimeValueKind::UnsignedInteger { bits: 32 },
-        value: WeaponRuntimeValue::Unsigned(u64::from_le_bytes([12, 13, 14, 15, 0, 0, 0, 0])),
-        source: WeaponRuntimeFieldSource::NativeMember,
+        kind: RuntimeValueKind::UnsignedInteger { bits: 32 },
+        value: RuntimeValue::Unsigned(u64::from_le_bytes([12, 13, 14, 15, 0, 0, 0, 0])),
+        source: RuntimeFieldSource::NativeMember,
         generated_kind: None,
         name_inferred: false,
     };
@@ -187,7 +187,7 @@ fn technical_ranges_cover_every_unreflected_owner_byte_without_crossing_componen
     }
     for field in fields
         .iter()
-        .filter(|field| field.source == WeaponRuntimeFieldSource::OpaqueNativeType)
+        .filter(|field| field.source == RuntimeFieldSource::OpaqueNativeType)
     {
         assert_eq!(
             field.owner_offset,
@@ -200,8 +200,8 @@ fn technical_ranges_cover_every_unreflected_owner_byte_without_crossing_componen
 #[test]
 fn shared_owner_ranges_preserve_bytes_and_reject_stale_boundaries() {
     let payload = (0_u8..64).collect::<Vec<_>>();
-    let root = WeaponRuntimeRoot {
-        kind: WeaponRuntimeRootKind::Definition,
+    let root = RuntimeRoot {
+        kind: RuntimeRootKind::Definition,
         schema: 0x8080_5678,
         owner_offset: 8,
         byte_size: 32,
@@ -221,7 +221,7 @@ fn shared_owner_ranges_preserve_bytes_and_reject_stale_boundaries() {
     assert_eq!(displayed[0].fields.len(), 2);
     for field in &displayed[0].fields {
         let start = field.owner_offset as usize;
-        let bytes = encode_weapon_runtime_field_value(field, &field.value).unwrap();
+        let bytes = encode_runtime_field_value(field, &field.value).unwrap();
         assert_eq!(bytes, payload[start..start + bytes.len()]);
         assert!(start + bytes.len() <= 24 || start >= 28);
         assert!(field.locator.is_buildable());
@@ -256,9 +256,8 @@ fn displayed_runtime_fields_resolve_to_exact_source_bytes() {
     // reconstruction of that optional field category explicitly.
     for pattern_index in [370, 285] {
         let source =
-            load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, pattern_index)
-                .unwrap();
-        let graph = load_weapon_runtime_graph_for_entity(
+            load_runtime_entity_at_pattern_index_with_manager(&manager, pattern_index).unwrap();
+        let graph = load_runtime_graph_for_entity(
             &manager,
             source.item_hash,
             source.pattern_global_id_hash,
@@ -271,8 +270,8 @@ fn displayed_runtime_fields_resolve_to_exact_source_bytes() {
             if !field.locator.is_buildable() {
                 continue;
             }
-            let displayed_bytes = encode_weapon_runtime_field_value(field, &field.value).unwrap();
-            let resolved = resolve_weapon_runtime_field(&manager, &source.payload, &field.locator)
+            let displayed_bytes = encode_runtime_field_value(field, &field.value).unwrap();
+            let resolved = resolve_runtime_field(&manager, &source.payload, &field.locator)
                 .unwrap_or_else(|error| {
                     panic!(
                         "Pattern {pattern_index} displayed field {} failed to resolve: {error}",
@@ -280,8 +279,7 @@ fn displayed_runtime_fields_resolve_to_exact_source_bytes() {
                     )
                 });
             assert_eq!(resolved.field.kind, field.kind, "{}", field.path_label);
-            let compiled_bytes =
-                encode_weapon_runtime_field_value(&resolved.field, &field.value).unwrap();
+            let compiled_bytes = encode_runtime_field_value(&resolved.field, &field.value).unwrap();
             assert_eq!(displayed_bytes, compiled_bytes, "{}", field.path_label);
             let payload = read_component_owner(&manager, resolved.owner_tag).unwrap();
             assert_eq!(

@@ -49,7 +49,7 @@ pub(super) fn inactive(
     if by_tag.len() != addresses.len() || addresses.len() != tags.len() {
         return Err(invalid("Map texture allocation is inconsistent"));
     }
-    let modes = crate::extend::resolve_reference_modes(tags.len(), references)?;
+    let modes = crate::package::extend::resolve_reference_modes(tags.len(), references)?;
     let peers = modes
         .iter()
         .map(|mode| match mode {

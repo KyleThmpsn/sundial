@@ -71,13 +71,16 @@ fn configured_staged_run_installs_through_the_transaction() {
         .copied()
         .chain([manifest.project.sunrise.badge_icon_tag])
     {
-        crate::watermark::validate_icon_definition_graph(&manager, tiger_pkg::TagHash(icon.get()))
-            .unwrap_or_else(|error| {
-                panic!(
-                    "installed icon definition 0x{:08X} is invalid: {error}",
-                    icon.get()
-                )
-            });
+        crate::icon::watermark::validate_icon_definition_graph(
+            &manager,
+            tiger_pkg::TagHash(icon.get()),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "installed icon definition 0x{:08X} is invalid: {error}",
+                icon.get()
+            )
+        });
     }
     if let Some(result) = &report.profile_sync {
         let sync = result

@@ -21,13 +21,13 @@ pub(crate) fn rows(loaded: &PrivatePerkRuntimeGraph) -> Vec<(u32, Modifier)> {
 /// Overrides that start every row of `loaded` neutral: nothing added, or multiplied by one.
 pub(crate) fn neutral(
     loaded: &PrivatePerkRuntimeGraph,
-) -> Result<Vec<WeaponRuntimeValueOverride>, String> {
+) -> Result<Vec<RuntimeValueOverride>, String> {
     let mut draft = Vec::new();
     for (graph, modifier) in rows(loaded) {
         if modifier.is_neutral() {
             continue;
         }
-        let amount = WeaponRuntimeValue::Float32Bits(modifier.neutral().to_bits());
+        let amount = RuntimeValue::Float32Bits(modifier.neutral().to_bits());
         write(
             loaded,
             graph,
@@ -45,9 +45,9 @@ fn write(
     loaded: &PrivatePerkRuntimeGraph,
     graph: u32,
     modifier: &Modifier,
-    field: &WeaponRuntimeField,
-    value: WeaponRuntimeValue,
-    draft: &mut Vec<WeaponRuntimeValueOverride>,
+    field: &RuntimeField,
+    value: RuntimeValue,
+    draft: &mut Vec<RuntimeValueOverride>,
 ) -> Result<(), String> {
     let graph = loaded
         .graphs
@@ -75,7 +75,7 @@ pub(crate) enum Part {
 }
 
 #[cfg(test)]
-fn field(modifier: &Modifier, part: Part) -> &WeaponRuntimeField {
+fn field(modifier: &Modifier, part: Part) -> &RuntimeField {
     match part {
         Part::Amount => &modifier.amount,
         Part::Operation => &modifier.operation,
@@ -91,7 +91,7 @@ fn field(modifier: &Modifier, part: Part) -> &WeaponRuntimeField {
 pub(crate) struct WeaponProperties {
     pub(crate) loaded: PrivatePerkRuntimeGraph,
     pub(crate) rows: Vec<(u32, Modifier)>,
-    pub(crate) neutral: Vec<WeaponRuntimeValueOverride>,
+    pub(crate) neutral: Vec<RuntimeValueOverride>,
 }
 
 #[cfg(test)]
@@ -141,8 +141,8 @@ impl WeaponProperties {
         &self,
         index: usize,
         part: Part,
-        value: WeaponRuntimeValue,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
+        value: RuntimeValue,
+        draft: &mut Vec<RuntimeValueOverride>,
     ) -> Result<(), String> {
         let (graph, modifier) = self.rows.get(index).ok_or("No such row.")?;
         write(
@@ -160,8 +160,8 @@ impl WeaponProperties {
         &self,
         index: usize,
         part: Part,
-        draft: &[WeaponRuntimeValueOverride],
-    ) -> Result<WeaponRuntimeValue, String> {
+        draft: &[RuntimeValueOverride],
+    ) -> Result<RuntimeValue, String> {
         let (graph, modifier) = self.rows.get(index).ok_or("No such row.")?;
         let field = field(modifier, part);
         let loaded = self

@@ -181,7 +181,7 @@ impl Graph {
                 let probability =
                     f32::from_le_bytes(block.bytes[..4].try_into().expect("condition header"));
                 if !probability.is_finite() {
-                    return Err("Condition probability must be finite.".into());
+                    return Err("Condition chance must be finite.".into());
                 }
             } else if let Some(node) = nodes::EFFECTS
                 .iter()

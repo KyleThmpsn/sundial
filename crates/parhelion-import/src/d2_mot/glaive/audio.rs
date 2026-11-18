@@ -27,6 +27,7 @@ use std::{
     fs,
     path::Path,
 };
+use sundial::package_authoring::fnv1;
 
 /// Each swing's clip and the melee controller state whose attack plays it.
 const SWING_STATES: [(u32, u32); 3] = [
@@ -64,13 +65,6 @@ fn hex(value: &Value) -> Result<u32> {
         value.as_str().context("tag text")?.trim_start_matches("0x"),
         16,
     )?)
-}
-
-/// FNV-1 of `text`, the hash the Enigma's contact profile key was named with.
-fn fnv1(text: &str) -> u32 {
-    text.bytes().fold(0x811C_9DC5u32, |key, byte| {
-        key.wrapping_mul(16_777_619) ^ u32::from(byte)
-    })
 }
 
 /// Adds rows to `list` unless one with the same source tag is already there.

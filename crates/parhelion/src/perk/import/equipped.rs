@@ -59,15 +59,15 @@ pub(super) fn prepare(
         "status":"experimental equipped modifier candidate", "gameplay_verified":false,
         "presentation":presentation.report,
         "source": {"plug_hash":request.plug_hash,"item_tag":source.assignment.item_tag,
-            "action_tag":source.assignment.action_tag,"controller_sha256":digest(&source.assignment.controller.0),
+            "action_tag":source.assignment.action_tag,"controller_sha256":sha256_hex(&source.assignment.controller.0),
             "entity":source.entity_tag,"owner":source.owner_tag,"path":source.path,
-            "owner_sha256":digest(&source.owner.0),"modifier_offset":at,
+            "owner_sha256":sha256_hex(&source.owner.0),"modifier_offset":at,
             "amount":source.owner.f32(at + 16).map_err(error)?,
             "operation":source.owner.u8(at + 20).map_err(error)?,
             "component":source.owner.u8(at + 96).map_err(error)?,
             "input":source.owner.u16(at + 90).map_err(error)?},
         "native":{"template_graph":MODIFIER_GRAPH,"template_owner":native.owner_tag,
-            "template_owner_sha256":digest(&native.owner),"activation":14,"removal":15,
+            "template_owner_sha256":sha256_hex(&native.owner),"activation":14,"removal":15,
             "attachment_target":0,"private_graph":true},
         "remaining":["In-game equip, repeated reload, perk selection and unequip cleanup", "Stock donor gameplay isolation"]
     });

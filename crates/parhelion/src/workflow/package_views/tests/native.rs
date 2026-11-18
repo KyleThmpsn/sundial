@@ -134,7 +134,7 @@ fn check_fresh_decoder_lifetime() {
 }
 
 fn compressed_source_package(packages: &Path, payload: &[u8]) -> Vec<u8> {
-    use crate::format::{
+    use crate::package::format::{
         PackageLayout, append_aligned, append_opaque_trailer,
         build_test_package_with_physical_payload,
     };
@@ -142,7 +142,7 @@ fn compressed_source_package(packages: &Path, payload: &[u8]) -> Vec<u8> {
 
     let source = build_test_package_with_physical_payload(0x058C, 0, payload).unwrap();
     let layout = PackageLayout::parse(&source).unwrap();
-    let encoded = crate::block_codec::PackageBlockEncoder::open_for_packages(packages)
+    let encoded = crate::package::block_codec::PackageBlockEncoder::open_for_packages(packages)
         .unwrap()
         .encode(0x058C, payload)
         .unwrap();

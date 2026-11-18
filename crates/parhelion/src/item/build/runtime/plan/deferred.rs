@@ -13,7 +13,12 @@
 //! reference. A relation that no resident entry names stays resident with its whole group, since
 //! nothing resident would ask for it, and so does every relation with an entry in a package that
 //! would otherwise keep none in the index, since the client registers a package only when the
-//! index names one of its entries. Payload words are read as candidate references, so an unrelated
+//! index names one of its entries. An entry the runtime assignment map names stays resident too,
+//! even when a relation's group reaches it. An item's pattern resolves through that map to its
+//! weapon entity, and the item tooltip reads the entity's stat component for an item that is not
+//! equipped. A firing group whose bank reads a channel from the weapon entity names that entity,
+//! and a build that deferred it faulted on a null payload when Collections showed the item.
+//! Payload words are read as candidate references, so an unrelated
 //! word that equals an authored tag can only keep more resident. Native entries the groups reach
 //! keep the enrollment the native prerequisites give them.
 //!
@@ -320,6 +325,11 @@ impl Payloads {
             grouped.insert(*relation);
             grouped.insert(*companion);
             grouped.extend(reach[relation].iter().copied());
+        }
+        // The assignment map resolves an item's pattern or a perk's runtime key straight to its
+        // entry, and the client reads that entry with no residency check.
+        for word in self.entity_assignments.chunks_exact(4) {
+            grouped.remove(&u32::from_le_bytes([word[0], word[1], word[2], word[3]]));
         }
         let resident: BTreeSet<u32> = graph
             .entries

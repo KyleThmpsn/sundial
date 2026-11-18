@@ -254,6 +254,40 @@ fn incoming(
     Ok(result)
 }
 
+/// No staged connection names an owner outside the staged graph, and a settings input reads the
+/// private bank or nothing, as a component left out of the carrier cannot supply it.
+fn connections(entity: &Payload, bank: u32) -> Result<()> {
+    let owners = entity
+        .array(16, 12, None)?
+        .into_iter()
+        .map(|at| entity.u32(at))
+        .collect::<Result<BTreeSet<_>>>()?;
+    let disconnected = |row: usize| -> Result<bool> {
+        Ok(entity.u32(row + 40)? == u32::MAX
+            && entity.u32(row + 44)? == u32::MAX
+            && entity.u64(row + 48)? == 0
+            && entity.u64(row + 56)? == 0xFFFF
+            && entity.u32(row + 64)? == 0)
+    };
+    for field in [32, 48] {
+        for row in entity.array(field, 72, None)? {
+            for end in [row, row + 32] {
+                ensure!(
+                    entity.u64(end + 24)? >= 0xFFFF || owners.contains(&entity.u32(end + 8)?),
+                    "Staged projectile connection names an owner that was left out"
+                );
+            }
+            ensure!(
+                entity.u32(row + 12)? != 0x80809BD9
+                    || entity.u32(row + 40)? == bank
+                    || disconnected(row)?,
+                "Staged settings input reads neither the private bank nor nothing"
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn check(
     source: &Source,
     stock: &mut Reader,
@@ -275,6 +309,7 @@ pub(super) fn check(
             .any(|&at| stock_entity.u32(at).ok() == Some(tag)),
         "Projectile bank still uses a stock owner"
     );
+    connections(entity, tag)?;
     let s = Bank::read(&from, true)?;
     let c = Bank::read(&carrier, false)?;
     let n = Bank::read(&to, false)?;
@@ -468,7 +503,10 @@ pub(super) fn check(
     ensure!(
         unnamed(&observed) == unnamed(&source_outputs)
             && consumers(unnamed(&observed)) == consumers(unnamed(&carrier_outputs)),
-        "Private bank settings inputs do not keep the source selection"
+        "Private bank settings inputs do not keep the source selection: source {:X?}, carrier {:X?}, staged {:X?}",
+        unnamed(&source_outputs),
+        unnamed(&carrier_outputs),
+        unnamed(&observed)
     );
     let settings = json!({"source":unnamed(&source_outputs),"carrier":unnamed(&carrier_outputs),
         "staged":unnamed(&observed)});

@@ -23,7 +23,7 @@ fn definition_ordinal(emission: &PackageEmission, item: u32) -> AuthoringResult<
         return Err(invalid("Authored item is missing or ambiguous"));
     };
     let tag = TagHash(read_u32(&emission.item_table, row + 16)?);
-    let host = crate::package_profile::host();
+    let host = crate::package::profile::host();
     let ordinal = AppendedTagAllocator::records(host.first).ordinal(tag)?;
     if ordinal >= emission.host_new_tags.len() {
         return Err(invalid("Authored definition is outside authored tags"));
@@ -45,7 +45,7 @@ fn strings_ordinal(emission: &PackageEmission, item: u32) -> AuthoringResult<usi
         return Err(invalid("Authored item strings are missing or ambiguous"));
     };
     let tag = TagHash(read_u32(&emission.item_strings, row + 16)?);
-    let host = crate::package_profile::host();
+    let host = crate::package::profile::host();
     let ordinal = AppendedTagAllocator::records(host.first).ordinal(tag)?;
     if ordinal >= emission.host_new_tags.len() {
         return Err(invalid("Authored item strings must be a private record"));
@@ -148,7 +148,7 @@ fn record_packages(
     tags: Vec<NewTagSpec>,
     references: Vec<crate::NewTagReferenceOverride>,
 ) -> AuthoringResult<Vec<crate::asset_packages::AssetPackage>> {
-    let host = crate::package_profile::host();
+    let host = crate::package::profile::host();
     let allocator = AppendedTagAllocator::records(host.first);
     let count = tags.len();
     let (first, overflow) = allocator.split(tags)?;
@@ -426,6 +426,17 @@ impl Entries {
             loading,
         )?;
         name_audio_media(&mut assets);
+        let unregistered = unregistered_assets(
+            &assets,
+            &manager,
+            runtime_dependencies.as_deref().unwrap_or(loading),
+        )?;
+        if !unregistered.is_empty() {
+            runtime_dependencies = Some(enroll(
+                runtime_dependencies.as_deref().unwrap_or(loading),
+                &unregistered,
+            )?);
+        }
         let assets_end = assets.native_count();
         let mut planned_assets = plan_assets(packages, assets)?;
         // Each map's packages, named after the map, take the next ids in the window after the
@@ -442,8 +453,8 @@ impl Entries {
         // Map registration reads template metadata during planning. Release all source handles
         // before any of the planned package jobs starts writing.
         drop(manager);
-        // The activity tables Sunrise can't merge. An importer whose maps join the main mod's
-        // builds its own on the main mod's finished tables.
+        // The activity tables. An importer whose maps join the main mod's follows the main
+        // mod's finished activities to keep clear of their hashes, names and destinations.
         for activity in maps.activity_tables() {
             crate::mod_family::build::produced(
                 crate::mod_family::build::Shared::Activities,
@@ -946,10 +957,10 @@ fn plan_records(
     (runtime_dependencies, on_demand): (&mut Option<Vec<u8>>, &BTreeSet<TagHash>),
     loading: &[u8],
 ) -> AuthoringResult<(Vec<packages::Ticket>, packages::Ticket)> {
-    let family = if crate::package_profile::host().is_standalone() {
-        crate::package_profile::RECORDS_FAMILY
+    let family = if crate::package::profile::host().is_standalone() {
+        crate::package::profile::RECORDS_FAMILY
     } else {
-        crate::package_profile::LEGACY_RECORDS_FAMILY
+        crate::package::profile::LEGACY_RECORDS_FAMILY
     };
     let mut standalone = Vec::new();
     let mut host = None;
@@ -959,7 +970,7 @@ fn plan_records(
             host = Some(package);
             continue;
         }
-        crate::package_profile::name_standalone_package(package.id, family).map_err(invalid)?;
+        crate::package::profile::name_standalone_package(package.id, family).map_err(invalid)?;
         let allocator = AppendedTagAllocator::new(package.id, 0);
         for ordinal in 0..package.tags.len() {
             let tag = allocator.assigned_tag(ordinal, "Investment loading", "record")?;
@@ -982,6 +993,43 @@ fn plan_records(
     let host = packages.overlay(HOST_PACKAGE_ID, host_tables, host_tags, host_references)?;
     packages.host(host, expected_host_count);
     Ok((standalone, host))
+}
+
+/// The first icon definition of each asset package the investment loading index `index` does
+/// not register yet, for it to name. The client registers a package only through a loading
+/// index. Private icon art other than the HUD's deliberately stays out of the index and loads
+/// through its own companion when a screen shows it, as stock icon art does. A package holding
+/// only such art would then never be registered, the case the on-demand planner covers for
+/// relation groups by keeping one resident. Naming one icon definition registers the package
+/// instead. Whether the client then also keeps that one icon's art resident is not established,
+/// and at most one icon per such package would be. A package without an icon definition
+/// registers through its own loading groups.
+fn unregistered_assets(
+    assets: &crate::asset_packages::AssetPackages,
+    manager: &PackageManager,
+    index: &[u8],
+) -> AuthoringResult<Vec<TagHash>> {
+    use sundial::package_authoring::icon_schema::ICON_DEFINITION_CLASS;
+    let held = registered(index)?;
+    let mut entries = Vec::new();
+    for package in &assets.packages {
+        if held.contains(&package.id) {
+            continue;
+        }
+        let icon = package.tags.iter().position(|tag| {
+            manager.get_entry(tag.template_tag).is_some_and(|entry| {
+                entry.file_type == 16 && entry.reference == ICON_DEFINITION_CLASS
+            })
+        });
+        if let Some(ordinal) = icon {
+            entries.push(AppendedTagAllocator::new(package.id, 0).assigned_tag(
+                ordinal,
+                "Investment loading",
+                "asset package registration",
+            )?);
+        }
+    }
+    Ok(entries)
 }
 
 fn plan_assets(
@@ -1011,7 +1059,7 @@ fn plan_maps(
     runtime_dependencies: &mut Option<Vec<u8>>,
     loading: &[u8],
 ) -> AuthoringResult<usize> {
-    const CAPACITY: usize = crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT;
+    const CAPACITY: usize = crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT;
     for index in 0..maps.len() {
         for part in maps.parts(index) {
             // Every package of a world takes the world's family, as a stock destination's
@@ -1019,7 +1067,7 @@ fn plan_maps(
             let family = maps.family(index, part);
             let index_payload = runtime_dependencies.as_deref().unwrap_or(loading);
             #[cfg(feature = "d2-model-importer")]
-            if crate::package_profile::host().is_standalone() {
+            if crate::package::profile::host().is_standalone() {
                 let native = window_id(
                     assets_end,
                     "The build's maps exceed the free authored package IDs",
@@ -1039,7 +1087,7 @@ fn plan_maps(
                     for (id, start, end) in
                         std::iter::once((native, 0, split.native_entries)).chain(resources)
                     {
-                        crate::package_profile::name_standalone_package(id, &family)
+                        crate::package::profile::name_standalone_package(id, &family)
                             .map_err(validation)?;
                         let references = chunk_references(&split.references, start..end, |at| {
                             split.addresses.get(at).copied().ok_or_else(|| {
@@ -1110,14 +1158,14 @@ fn plan_chunks(
     family: &str,
     ids: &[u16],
     tags: Vec<NewTagSpec>,
-    named: &[crate::format::NamedTag],
+    named: &[crate::package::format::NamedTag],
     references: &[crate::NewTagReferenceOverride],
 ) -> AuthoringResult<Vec<packages::Ticket>> {
-    const CAPACITY: usize = crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT;
+    const CAPACITY: usize = crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT;
     let mut tags = tags.into_iter();
     let mut planned = Vec::new();
     for (chunk, &id) in ids.iter().enumerate() {
-        crate::package_profile::name_standalone_package(id, family).map_err(validation)?;
+        crate::package::profile::name_standalone_package(id, family).map_err(validation)?;
         let start = chunk * CAPACITY;
         let part_tags = tags.by_ref().take(CAPACITY).collect::<Vec<_>>();
         let end = start + part_tags.len();
@@ -1143,7 +1191,7 @@ fn plan_chunks(
 
 /// The package id at `position` in the build's window, or a failure naming `shortage`.
 fn window_id(position: usize, shortage: &str) -> AuthoringResult<u16> {
-    crate::package_profile::window()
+    crate::package::profile::window()
         .nth(position)
         .ok_or_else(|| validation(shortage))
 }
@@ -1221,7 +1269,7 @@ fn plan_private_runtime_overflow(
     assets_end: usize,
     overflow: Vec<(u16, Vec<crate::NewTagSpec>)>,
 ) -> AuthoringResult<Vec<packages::Ticket>> {
-    let window = crate::package_profile::window();
+    let window = crate::package::profile::window();
     let mut planned = Vec::new();
     for (id, tags) in overflow {
         if !(window.base..=window.top).contains(&id)

@@ -159,7 +159,7 @@ pub(super) fn link_with(
             Some(companion) => {
                 let mut size = (nodes.len() + external.resources.len())
                     .checked_mul(64)
-                    .and_then(|bytes| bytes.checked_add(crate::format::BLOCK_SIZE))
+                    .and_then(|bytes| bytes.checked_add(crate::package::format::BLOCK_SIZE))
                     .ok_or_else(|| invalid("Companion size overflow"))?;
                 for parent in companion.native_parents() {
                     size = native_companion(directory, manager, parent, companions)?

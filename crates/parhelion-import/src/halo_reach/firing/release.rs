@@ -48,7 +48,7 @@ struct DonorPerk {
 }
 
 /// The finished sandbox perk indices a plug item grants.
-fn plug_perks(plug: &Payload) -> Result<Vec<u16>> {
+pub(super) fn plug_perks(plug: &Payload) -> Result<Vec<u16>> {
     if plug.u64(0x70)? == 0 {
         return Ok(Vec::new());
     }
@@ -84,7 +84,7 @@ fn donor_perk(native: &mut Reader, recipe: &Value, donor: u32) -> Result<DonorPe
         Some(native.manager.platform),
     )
     .map_err(anyhow::Error::msg)?;
-    let weapon = runtime::load_weapon_runtime_entity_for_item_with_manager(&manager, donor)
+    let weapon = runtime::load_runtime_entity_for_item_with_manager(&manager, donor)
         .map_err(anyhow::Error::msg)?;
     ensure!(
         entity::weapon_component_binding_hashes(&weapon.payload)

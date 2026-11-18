@@ -101,9 +101,12 @@ pub struct Settings {
     pub modern_packages: Option<PathBuf>,
     pub reach_maps: Option<PathBuf>,
     pub marathon_packages: Option<PathBuf>,
-    /// Experimental. Marathon imports play the source weapon's own animation instead of the
-    /// donor's.
+    /// Marathon imports play the source weapon's own animation instead of the donor's. On by
+    /// default.
     pub marathon_animations: bool,
+    /// The library reimport review has asked about Marathon animations while they were off and
+    /// was told not to ask again.
+    pub marathon_animations_asked: bool,
     /// Marathon imports bring the weapon's camos as ornaments. Off by default, since each camo
     /// translates a model of its own. A library reimport follows each recipe instead.
     pub marathon_ornaments: bool,
@@ -114,7 +117,7 @@ pub struct Settings {
     /// Rise of Iron weapon and armor imports bring the item's talent grid ornaments. On by
     /// default. A library reimport follows each recipe instead.
     pub d1_roi_ornaments: bool,
-    /// Retained when saving existing preferences. Texture conversion no longer loads this DLL.
+    /// Retained when saving existing preferences. Texture conversion does not load this DLL.
     pub d1_xg_library: Option<PathBuf>,
     pub d1_oodle: Option<PathBuf>,
     pub ffmpeg: Option<PathBuf>,
@@ -129,7 +132,8 @@ impl Default for Settings {
             modern_packages: None,
             reach_maps: None,
             marathon_packages: None,
-            marathon_animations: false,
+            marathon_animations: true,
+            marathon_animations_asked: false,
             marathon_ornaments: false,
             modern_ornaments: false,
             d1_roi: None,
@@ -588,6 +592,7 @@ fn convert_with_donor(
         &mapping,
         &attempt.join("private-perks"),
         &mut document,
+        &catalyst_lenders(donors, profile::hash(donor, "hash")?),
     )?;
     progress("Converting the hip-fire crosshair…".into());
     if let Err(error) =
@@ -681,6 +686,21 @@ fn kin(donors: &Value, base: u32) -> Vec<u32> {
         .filter(|row| row["weapon_type"] == kind)
         .filter_map(|row| u32::try_from(row["hash"].as_u64()?).ok())
         .collect()
+}
+
+/// Every stock weapon, the base's kin first. A catalyst socket's type belongs to one exotic and
+/// fits any weapon, so a base without one borrows from an exotic of its own type where it can.
+fn catalyst_lenders(donors: &Value, base: u32) -> Vec<u32> {
+    let mut lenders = kin(donors, base);
+    let others = donors["weapons"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| u32::try_from(row["hash"].as_u64()?).ok())
+        .filter(|hash| !lenders.contains(hash))
+        .collect::<Vec<_>>();
+    lenders.extend(others);
+    lenders
 }
 
 /// Record a rejected donor. A limit of the source itself ends the import, because every
@@ -874,6 +894,22 @@ fn ordinary_base(reader: &mut Reader, donors: &Value, hash: u32, weapon: &Weapon
         .is_ok_and(|rarity| rarity != 5)
 }
 
+/// Fields compare in declaration order, with identity and compatibility before layout ties.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct SelectionPriority {
+    unbacked_collection: bool,
+    unrelated_collection: bool,
+    different_identity: bool,
+    exotic_fallback: bool,
+    different_content: bool,
+    different_bucket: bool,
+    different_rarity: bool,
+    different_preferred: bool,
+    unplaced_sockets: u64,
+    bone_count: u64,
+    hash: Option<u64>,
+}
+
 fn selection_priority(
     row: &Value,
     source: (u32, &str),
@@ -881,35 +917,30 @@ fn selection_priority(
     source_rarity: Option<u64>,
     source_content: Option<&str>,
     preferred: Option<u32>,
-) -> (
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    u64,
-    Option<u64>,
-) {
+) -> SelectionPriority {
     let (fallback, bones, hash) = donor_priority(row);
     let same_identity = hash == Some(u64::from(source.0))
         || row["name"]
             .as_str()
             .is_some_and(|name| name.eq_ignore_ascii_case(source.1));
-    (
-        row["collection_backed"].as_bool() == Some(false),
-        row["unrelated_collection_condition"].as_bool() == Some(true),
-        !same_identity,
-        fallback,
-        source_content.is_none_or(|content| row["content_key"].as_str() != Some(content)),
-        source_bucket.is_some_and(|bucket| row["bucket"].as_u64() != Some(bucket)),
-        source_rarity.is_some_and(|rarity| row["rarity"].as_u64() != Some(rarity)),
-        hash != preferred.map(u64::from),
-        bones,
+    SelectionPriority {
+        unbacked_collection: row["collection_backed"].as_bool() == Some(false),
+        unrelated_collection: row["unrelated_collection_condition"].as_bool() == Some(true),
+        different_identity: !same_identity,
+        exotic_fallback: fallback,
+        different_content: source_content
+            .is_none_or(|content| row["content_key"].as_str() != Some(content)),
+        different_bucket: source_bucket
+            .is_some_and(|bucket| row["bucket"].as_u64() != Some(bucket)),
+        different_rarity: source_rarity
+            .is_some_and(|rarity| row["rarity"].as_u64() != Some(rarity)),
+        different_preferred: hash != preferred.map(u64::from),
+        // The import authors any socket its base lacks, so the base's layout only breaks ties:
+        // a base that already seats more of the source's sockets borrows fewer.
+        unplaced_sockets: row["unplaced_sockets"].as_u64().unwrap_or(0),
+        bone_count: bones,
         hash,
-    )
+    }
 }
 
 #[cfg(test)]

@@ -15,6 +15,9 @@ pub enum Family {
     Ornament,
     /// A weapon ornament of a stock weapon's ornament category, which that weapon takes.
     WeaponOrnament,
+    Artifact,
+    /// A whole source subclass, laid out on a stock subclass's trees.
+    Subclass,
 }
 
 impl Family {
@@ -90,6 +93,8 @@ impl Family {
             2025709351 => Self::Sparrow,
             2973005342 => Self::Shader,
             4274335291 => Self::Emblem,
+            1506418338 => Self::Artifact,
+            3284755031 => Self::Subclass,
             _ => return None,
         })
     }
@@ -105,6 +110,8 @@ impl Family {
             Self::Emblem => "emblem",
             Self::Ornament => "ornament",
             Self::WeaponOrnament => "weapon_ornament",
+            Self::Artifact => "artifact",
+            Self::Subclass => "subclass",
         }
     }
 
@@ -119,6 +126,8 @@ impl Family {
             Self::Emblem => "Emblem",
             Self::Ornament => "Universal Ornament",
             Self::WeaponOrnament => "Weapon Ornament",
+            Self::Artifact => "Artifact",
+            Self::Subclass => "Subclass",
         }
     }
 

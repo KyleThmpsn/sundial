@@ -1,9 +1,10 @@
 //! Private component closure, typed connections, registrations and replication.
 mod audio;
-mod boost;
 mod channel;
 mod fire;
+mod flow;
 mod rotor;
+mod trail;
 mod wheel;
 use super::{
     contact::{self, Contacts},
@@ -21,9 +22,10 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) use boost::Trails;
 pub(super) use channel::Channel;
 pub(in crate::halo_reach) use fire::launch;
+pub(super) use fire::secondary::{Secondary, close_carrier_shot};
+pub(super) use flow::Played;
 
 pub(super) struct Assembly {
     /// Symbol prefix of every node this assembly adds, so a vehicle and an entity it carries

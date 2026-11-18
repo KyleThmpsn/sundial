@@ -8,6 +8,15 @@ pub(super) fn read(
     at: usize,
     mut native: Option<&mut Reader>,
 ) -> Result<NativeNode> {
+    // Source 76BAA7 admits, with this byte set, only a struck combatant under a temporary team
+    // assignment whose remaining time is below `+17C` minus `+178` seconds (5319D0 reads the
+    // deadline). Shadowkeep keeps the assignment and its expiry, but its deadline getter C6CA60
+    // has one caller, effect kind 44, and no condition reads the state. Without the gate the
+    // companion effect would run on every hit, so the condition refuses.
+    ensure!(
+        p.u8(at + 0x175)? == 0,
+        "Source hit requires a target under a temporary team assignment, which no Shadowkeep condition tests"
+    );
     ensure!(
         (0.0..=1.0).contains(&p.f32(at)?)
             && p.u8(at + 4)? == 0xFF

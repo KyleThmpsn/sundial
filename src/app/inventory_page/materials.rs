@@ -16,6 +16,7 @@ impl SundialApp {
             return;
         };
         let stacks = document.character_stacks(index).to_vec();
+        let capacity = document.character_stack_capacity();
         let has_character = index < document.characters().characters().len();
         let items = super::sources::character_items(&self.document, index);
         if let Err(error) = &items {
@@ -25,8 +26,9 @@ impl SundialApp {
         let mut edit = None;
         ui.horizontal_wrapped(|ui| {
             ui.strong("Character Materials");
-            ui.weak(format!("{} / 32", stacks.len()));
-            ui.add_enabled_ui(has_character && items.is_ok() && stacks.len() < 32, |ui| {
+            ui.weak(format!("{} / {capacity}", stacks.len()));
+            let room = stacks.len() < capacity;
+            ui.add_enabled_ui(has_character && items.is_ok() && room, |ui| {
                 egui::ComboBox::from_id_salt(("add-character-material", index))
                     .selected_text("Add Material")
                     .show_ui(ui, |ui| {

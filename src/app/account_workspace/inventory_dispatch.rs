@@ -7,7 +7,7 @@ pub(in crate::app) fn profile_items(
 ) -> Result<Option<Vec<ProfileItemSnapshot>>, InventoryError> {
     match &document.account {
         AccountDocument::Json => crate::app::inventory::profile_items(&document.json),
-        AccountDocument::Sqlite(document) => Ok(Some(sqlite::profile_items(document))),
+        AccountDocument::Sunrise(document) => Ok(Some(sqlite::profile_items(document))),
         AccountDocument::Dawn(document) => Ok(Some(sqlite::profile_items(document))),
         AccountDocument::Blocked(_) => Err(blocked_inventory(document)),
     }
@@ -18,7 +18,7 @@ pub(in crate::app) fn dismantle_rewards(
 ) -> Result<Option<Vec<DismantleRewardSnapshot>>, InventoryError> {
     match &document.account {
         AccountDocument::Json => crate::app::inventory::dismantle_rewards(&document.json),
-        AccountDocument::Sqlite(document) => Ok(Some(sqlite::dismantle_rewards(document))),
+        AccountDocument::Sunrise(document) => Ok(Some(sqlite::dismantle_rewards(document))),
         AccountDocument::Dawn(document) => Ok(Some(sqlite::dismantle_rewards(document))),
         AccountDocument::Blocked(_) => Err(blocked_inventory(document)),
     }
@@ -32,7 +32,9 @@ pub(in crate::app) fn character_inventory(
         AccountDocument::Json => {
             crate::app::inventory::character_inventory(&document.json, character_index)
         }
-        AccountDocument::Sqlite(document) => sqlite::character_inventory(document, character_index),
+        AccountDocument::Sunrise(document) => {
+            sqlite::character_inventory(document, character_index)
+        }
         AccountDocument::Dawn(document) => {
             let mut items = sqlite::character_inventory(document, character_index)?;
             if let Some(items) = &mut items {
@@ -55,7 +57,7 @@ pub(in crate::app) fn add_profile_item(
         AccountDocument::Json => {
             crate::app::inventory::add_profile_item(&mut document.json, definition_hash, quantity)
         }
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::add_profile_item(document, definition_hash, quantity)
         }
         AccountDocument::Blocked(reason) => {
@@ -96,7 +98,7 @@ pub(in crate::app) fn apply_profile_item_action(
         AccountDocument::Json => {
             crate::app::inventory::apply_profile_item_action(&mut document.json, location, action)
         }
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::apply_profile_item_action(document, location, action)
         }
         AccountDocument::Blocked(reason) => {
@@ -116,7 +118,7 @@ pub(in crate::app) fn add_dismantle_reward(
         AccountDocument::Json => {
             crate::app::inventory::add_dismantle_reward(&mut document.json, definition_hash)
         }
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::add_dismantle_reward(document, definition_hash)
         }
         AccountDocument::Blocked(reason) => {
@@ -137,7 +139,7 @@ pub(in crate::app) fn apply_dismantle_reward_action(
             location,
             action,
         ),
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::apply_dismantle_reward_action(document, location, action)
         }
         AccountDocument::Blocked(reason) => {
@@ -159,7 +161,7 @@ pub(in crate::app) fn add_inventory_item(
         AccountDocument::Json => {
             crate::app::inventory::add_inventory_item(&mut document.json, character_index, item)
         }
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::add_inventory_item(document, character_index, item)
         }
         AccountDocument::Blocked(reason) => {
@@ -183,7 +185,7 @@ pub(in crate::app) fn apply_inventory_item_action(
         AccountDocument::Json => {
             crate::app::inventory::apply_inventory_item_action(&mut document.json, location, action)
         }
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::apply_inventory_item_action(document, location, action)
         }
         AccountDocument::Blocked(reason) => {
@@ -206,7 +208,7 @@ pub(in crate::app) fn remove_character_inventory_items(
             character_index,
             item_indices,
         ),
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::remove_character_inventory_items(document, character_index, item_indices)
         }
         AccountDocument::Blocked(reason) => {
@@ -239,7 +241,7 @@ pub(in crate::app) fn swap_inventory_item_with_equipment(
             location,
             slot,
         ),
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::swap_inventory_item_with_equipment(document, location, slot)
         }
         AccountDocument::Blocked(reason) => {
@@ -261,7 +263,7 @@ pub(in crate::app) fn persisted_inventory_item_abilities(
 ) -> Option<sundial_account::CharacterAbilities> {
     match &document.account {
         AccountDocument::Json | AccountDocument::Blocked(_) => None,
-        AccountDocument::Sqlite(document) => sqlite::inventory_item_abilities(document, _location),
+        AccountDocument::Sunrise(document) => sqlite::inventory_item_abilities(document, _location),
         AccountDocument::Dawn(document) => sqlite::inventory_item_abilities(document, _location),
     }
 }
@@ -277,7 +279,7 @@ pub(in crate::app) fn move_inventory_item_to_character(
             location,
             destination_character_index,
         ),
-        AccountDocument::Sqlite(document) => sqlite::move_inventory_item_to_character(
+        AccountDocument::Sunrise(document) => sqlite::move_inventory_item_to_character(
             document,
             location,
             destination_character_index,
@@ -304,7 +306,7 @@ pub(in crate::app) fn move_equipment_item_to_inventory(
             character_index,
             slot,
         ),
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::move_equipment_item_to_inventory(document, character_index, slot)
         }
         AccountDocument::Blocked(reason) => {

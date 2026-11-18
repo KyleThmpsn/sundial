@@ -202,7 +202,7 @@ pub(in crate::halo_reach) fn overlay(
                 );
                 q.iter_mut().for_each(|v| *v /= norm);
             }
-            let q = multiply(bone.rotation, q);
+            let q = product(bone.rotation, q);
             let mut position = bone.translation;
             if !track.translation.is_empty() {
                 let (lo, hi, t) = span(track.translation.len(), frame);

@@ -726,7 +726,7 @@ pub(super) type Discovered = (Vec<Property>, Vec<(u32, Property)>, BTreeSet<(u32
 /// apart with that part's graph, since it belongs on that part's card. Last come the slots of
 /// its effect-flow nodes that create a part only behind a channel gate, by owner and offset.
 pub(super) fn properties_of(manager: &PackageManager, tag: u32, payload: &[u8]) -> Discovered {
-    let Ok(mut graph) = load_weapon_runtime_graph_for_entity(manager, 0, 0, tag, payload) else {
+    let Ok(mut graph) = load_runtime_graph_for_entity(manager, 0, 0, tag, payload) else {
         return (Vec::new(), Vec::new(), BTreeSet::new());
     };
     graph.scope_fields();
@@ -878,7 +878,7 @@ pub(super) const fn flight_hint(kind: Kind) -> &'static str {
 
 /// One settings record of a Component Modifiers root: its amount and its other numbers.
 pub(super) struct Record {
-    pub(super) amount: WeaponRuntimeField,
+    pub(super) amount: RuntimeField,
     pub(super) numbers: Vec<(u32, i64)>,
 }
 
@@ -929,7 +929,7 @@ impl Record {
 
 /// The tiles of a Component Modifiers root's records. A record is the settings record's fields
 /// in order, starting at its amount.
-pub(super) fn modifiers_in(fields: &[WeaponRuntimeField]) -> Vec<Property> {
+pub(super) fn modifiers_in(fields: &[RuntimeField]) -> Vec<Property> {
     let mut records: Vec<Record> = Vec::new();
     for field in fields
         .iter()
@@ -1077,23 +1077,20 @@ pub(super) fn cards(nodes: Vec<Node>, parents: &BTreeMap<u32, u32>) -> Vec<Card>
 
 /// Sets the override for one field, or removes it when the value is stock.
 pub(super) fn put(
-    values: &mut Vec<WeaponRuntimeValueOverride>,
-    field: &WeaponRuntimeField,
-    value: WeaponRuntimeValue,
+    values: &mut Vec<RuntimeValueOverride>,
+    field: &RuntimeField,
+    value: RuntimeValue,
 ) {
     values.retain(|each| each.locator != field.locator);
     if value != field.value {
-        values.push(WeaponRuntimeValueOverride {
+        values.push(RuntimeValueOverride {
             locator: field.locator.clone(),
             value,
         });
     }
 }
 
-pub(super) fn own(
-    values: &[WeaponRuntimeValueOverride],
-    field: &WeaponRuntimeField,
-) -> Option<WeaponRuntimeValue> {
+pub(super) fn own(values: &[RuntimeValueOverride], field: &RuntimeField) -> Option<RuntimeValue> {
     values
         .iter()
         .find(|each| each.locator == field.locator)

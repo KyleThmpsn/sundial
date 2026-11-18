@@ -1,6 +1,6 @@
 //! Allocate damage profiles in the private runtime family before binding movement attack rows.
 use super::*;
-use crate::{NewTagSpec, NewTagStorageMode, appended_tags::AppendedTagAllocator};
+use crate::{NewTagSpec, NewTagStorageMode, package::appended_tags::AppendedTagAllocator};
 use sundial::package_authoring::{ability_damage, sandbox_perk::program::AbilityRowModifier};
 
 pub(super) fn resolve(

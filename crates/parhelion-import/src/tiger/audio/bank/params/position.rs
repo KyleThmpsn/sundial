@@ -72,11 +72,15 @@ pub(super) fn switch_curve(r: &mut Read<'_>, w: &mut Write, count: u16) -> Resul
     Ok(())
 }
 
+/// `omit_diffraction` lets a sound that asks for geometry diffraction lower as a plain
+/// positioned sound. Version 113 has no spatial geometry, so its sounds always take the direct
+/// path.
 pub(super) fn emit(
     r: &mut Read<'_>,
     w: &mut Write,
     attenuation: Option<u32>,
     position_switch: bool,
+    omit_diffraction: bool,
 ) -> Result<()> {
     let bits = r.u8()?;
     ensure!(
@@ -108,9 +112,10 @@ pub(super) fn emit(
         "unvalidated positioning switch flags"
     );
     ensure!(
-        spatial & 0x80 == 0,
+        spatial & 0x80 == 0 || omit_diffraction,
         "diffraction needs a native implementation"
     );
+    let spatial = spatial & 0x7F;
     let mode = spatial & 3;
     ensure!(mode <= 2, "unknown spatialization mode");
     if bits & 0x60 != 0 {

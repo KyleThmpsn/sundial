@@ -1,4 +1,5 @@
 //! Health components retain their region and provider contracts across formats.
+use super::component::object;
 use super::*;
 
 mod filter;
@@ -193,13 +194,19 @@ fn resource(
     put(&mut output.0, to + 4, &0u32.to_le_bytes())
 }
 
+/// Appends a zeroed record of `class` and returns its offset, on a 16-byte boundary with its
+/// class word in the four bytes before it. The client's stream walker steps from a class word to
+/// the next boundary of the class's own alignment, 16 bytes for the effect pool `80804C42`, and a
+/// sealed owner is walked from its instance to its schema view. A pool on an 8-byte boundary was
+/// read 8 bytes late there and the client faulted while preparing for orbit. A boundary of 16
+/// also holds for a class that aligns to 8.
 fn typed(output: &mut Payload, class: u32, size: usize) -> Result<usize> {
     let at = output
         .0
         .len()
-        .checked_add(11)
+        .checked_add(19)
         .context("health record alignment")?
-        & !7;
+        & !15;
     output
         .0
         .resize(at.checked_add(size).context("health record extent")?, 0);
@@ -271,26 +278,4 @@ fn check_pair(
         "health record pair or parent differs at {instance:X}"
     );
     Ok(())
-}
-
-fn object(
-    source: &Payload,
-    output: &Payload,
-    from: usize,
-    sc: u32,
-    to: usize,
-    nc: u32,
-) -> Result<Relocation> {
-    Ok(Relocation {
-        source: Object {
-            owner: source.u32(source.pointer(16)?)?,
-            class: sc,
-            offset: from as u64,
-        },
-        target: Object {
-            owner: output.u32(output.pointer(16)?)?,
-            class: nc,
-            offset: to as u64,
-        },
-    })
 }

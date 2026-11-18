@@ -1,3 +1,4 @@
+//! Destiny definition hash text and the FNV-1 name hashes.
 use serde_json::Value;
 
 /// Formats a Destiny definition hash as canonical hexadecimal text.
@@ -44,6 +45,18 @@ pub(crate) fn fnv1_name_hash(name: &str) -> u32 {
     })
 }
 
+/// Computes the FNV-1 hash of `text` as written, the client's hash for names and keys.
+pub(crate) const fn fnv1(text: &str) -> u32 {
+    let bytes = text.as_bytes();
+    let mut hash = FNV1_EMPTY_HASH;
+    let mut at = 0;
+    while at < bytes.len() {
+        hash = hash.wrapping_mul(0x0100_0193) ^ bytes[at] as u32;
+        at += 1;
+    }
+    hash
+}
+
 pub(crate) const FNV1_EMPTY_HASH: u32 = 0x811C_9DC5;
 
 #[cfg(test)]
@@ -55,8 +68,6 @@ mod tests {
         assert_eq!(parse_hash_hex("0xE516CF40"), Some(0xE516_CF40));
         assert_eq!(parse_hash_hex("0Xe516cf40"), Some(0xE516_CF40));
         assert_eq!(format_hash_hex(0x123), "0x00000123");
-        assert_eq!(format_hash_decimal(0x123), "291");
-        assert_eq!(format_hash_hex_and_decimal(0x123), "0x00000123 · 291");
         assert_eq!(parse_hash_hex("E516CF40"), None);
         assert_eq!(parse_hash_hex("0xnope"), None);
         assert_eq!(parse_unsigned_value(&Value::from(42)), Some(42));

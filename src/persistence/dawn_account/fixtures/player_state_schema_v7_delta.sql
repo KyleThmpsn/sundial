@@ -1,0 +1,12 @@
+ALTER TABLE character_items ADD COLUMN movement_ability INTEGER NOT NULL DEFAULT 4 CHECK(movement_ability BETWEEN 0 AND 63);
+ALTER TABLE character_items ADD COLUMN grenade_ability INTEGER NOT NULL DEFAULT 7 CHECK(grenade_ability BETWEEN 0 AND 63);
+ALTER TABLE character_items ADD COLUMN super_ability INTEGER NOT NULL DEFAULT 10 CHECK(super_ability BETWEEN 0 AND 63);
+ALTER TABLE character_items ADD COLUMN melee_ability INTEGER NOT NULL DEFAULT 11 CHECK(melee_ability BETWEEN 0 AND 63);
+ALTER TABLE character_items ADD COLUMN class_ability INTEGER NOT NULL DEFAULT 2 CHECK(class_ability BETWEEN 0 AND 63);
+ALTER TABLE characters ADD COLUMN selected_title_record INTEGER NOT NULL DEFAULT 65535 CHECK(selected_title_record BETWEEN 0 AND 65535);
+CREATE TABLE world_reward_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT, account_soid TEXT NOT NULL, character_soid TEXT NOT NULL, definition_hash INTEGER NOT NULL CHECK(definition_hash BETWEEN 1 AND 4294967295), quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 10000), kind INTEGER NOT NULL CHECK(kind IN(0,1)));
+CREATE INDEX world_reward_owner ON world_reward_outbox(account_soid,character_soid,id);
+ALTER TABLE characters ADD COLUMN customization BLOB NOT NULL DEFAULT X'000000000000000000000000000000000000000000000000000000000000000000000000' CHECK(length(customization)=36);
+CREATE TABLE IF NOT EXISTS recent_collectibles(position INTEGER PRIMARY KEY CHECK(position BETWEEN 0 AND 5), collectible INTEGER NOT NULL CHECK(collectible BETWEEN 0 AND 65535));
+CREATE TABLE IF NOT EXISTS item_values(instance_soid TEXT NOT NULL, lane INTEGER NOT NULL CHECK(lane BETWEEN 0 AND 7), value INTEGER NOT NULL CHECK(value BETWEEN -2147483648 AND 2147483647), PRIMARY KEY(instance_soid,lane), FOREIGN KEY(instance_soid) REFERENCES character_items(instance_soid) ON DELETE CASCADE);
+PRAGMA user_version=7;

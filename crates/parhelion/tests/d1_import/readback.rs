@@ -1,6 +1,8 @@
 use super::*;
 mod dynamics;
 
+pub(crate) use dynamics::{check as check_graph_dynamics, check_query};
+
 fn markers(p: &Payload, at: usize, class: u32) -> Result<Vec<Vec<u32>>> {
     p.array(at, 64, Some(class))?
         .into_iter()

@@ -5,7 +5,7 @@ use super::*;
 pub const CATALOG: &[Behavior] = &[
     Behavior {
         id: "hard-light",
-        name: "Element Switch",
+        name: "Damage Type Switch",
         source_name: "Hard Light",
         source_item_hash: 0xF5DE_4480,
         source: BehaviorSource::Record {
@@ -23,13 +23,13 @@ pub const CATALOG: &[Behavior] = &[
         },
         intrinsic_plug: Some(0xD738A749),
         trait_plug: Some(0x9C3304DA),
-        effect: BehaviorEffect::ElementSwitch,
+        effect: BehaviorEffect::DamageTypeSwitch,
         caution: None,
         summary: "Hold Reload to cycle the damage type. Needs The Fundamentals.",
     },
     Behavior {
         id: "borealis",
-        name: "Element Switch",
+        name: "Damage Type Switch",
         source_name: "Borealis",
         source_item_hash: 0xBB46_CCD3,
         source: BehaviorSource::Record {
@@ -39,7 +39,7 @@ pub const CATALOG: &[Behavior] = &[
         },
         intrinsic_plug: Some(0xB7A6F964),
         trait_plug: Some(0x1DE798BC),
-        effect: BehaviorEffect::ElementSwitch,
+        effect: BehaviorEffect::DamageTypeSwitch,
         caution: None,
         summary: "Hold Reload to cycle the damage type. Needs The Fundamentals.",
     },
@@ -896,7 +896,7 @@ pub const CATALOG: &[Behavior] = &[
 
 /// Virtual identifier meaning "whichever record drives The Fundamentals in this weapon's family".
 /// Recipes use it so a saved weapon never names Hard Light or Borealis directly.
-pub const ELEMENT_SWITCH: &str = "element-switch";
+pub const DAMAGE_TYPE_SWITCH: &str = "element-switch";
 
 /// The catalogue entry a saved recipe refers to.
 #[must_use]
@@ -906,10 +906,10 @@ pub fn behavior(id: &str) -> Option<&'static Behavior> {
 
 /// The record that makes The Fundamentals cycle damage types inside one content owner.
 #[must_use]
-pub fn element_switch_for_owner(owner_tag: u32) -> Option<&'static Behavior> {
+pub fn damage_type_switch_for_owner(owner_tag: u32) -> Option<&'static Behavior> {
     CATALOG
         .iter()
-        .find(|entry| entry.owner_tag() == Some(owner_tag) && entry.switches_element())
+        .find(|entry| entry.owner_tag() == Some(owner_tag) && entry.switches_damage_type())
 }
 
 /// Every record a weapon in this owner can graft.
@@ -927,13 +927,13 @@ pub fn catalog_for_type(type_name: &str) -> impl Iterator<Item = &'static Behavi
         .filter(move |entry| entry.reaches_type(type_name))
 }
 
-/// Whether a weapon of this type can switch elements.
+/// Whether a weapon of this type can switch damage types.
 ///
 /// Every weapon can. A family that holds no record of its own has one copied into its content
 /// owner at build time, so this is no longer a question of which family the weapon belongs to.
 #[must_use]
-pub fn switches_element_for_type(_type_name: &str) -> bool {
-    CATALOG.iter().any(Behavior::switches_element)
+pub fn switches_damage_type_for_type(_type_name: &str) -> bool {
+    CATALOG.iter().any(Behavior::switches_damage_type)
 }
 
 /// The behavior-carrying record for the same weapon as this firing graph.
@@ -942,7 +942,7 @@ pub fn switches_element_for_type(_type_name: &str) -> bool {
 /// the block, and a record inside the content owner that carries the behavior array. The picker
 /// offers one choice per weapon and prefers the graph, so before this the record half was never
 /// applied and a perk that needed it did nothing at all. Graviton Lance was reported that way,
-/// with no detonation on a hand cannon, while Hard Light looked fine because element switching
+/// with no detonation on a hand cannon, while Hard Light looked fine because damage type switching
 /// lives entirely in its record and reaches the weapon through its own control.
 pub(super) fn paired_record(entry: &Behavior) -> Option<&'static Behavior> {
     if !entry.has_graph() {
@@ -988,9 +988,9 @@ pub(super) fn resolve_request(
     id: &str,
     owner_tag: u32,
 ) -> AuthoringResult<Option<&'static Behavior>> {
-    if id == ELEMENT_SWITCH {
+    if id == DAMAGE_TYPE_SWITCH {
         // A family without a record of its own gets one appended instead.
-        return Ok(element_switch_for_owner(owner_tag));
+        return Ok(damage_type_switch_for_owner(owner_tag));
     }
     let entry = behavior(id)
         .ok_or_else(|| invalid(format!("Unknown additional weapon behavior \"{id}\"")))?;
@@ -1058,17 +1058,17 @@ pub(super) const BURST_SOURCES: &[&str] = &[
 /// Hard Light and Borealis each appear twice, once for the graph that carries their firing and
 /// once for the record that carries the reload hold. Choosing either half should give both.
 #[must_use]
-pub fn source_switches_element(entry: &Behavior) -> bool {
-    CATALOG
-        .iter()
-        .any(|other| other.switches_element() && other.source_item_hash == entry.source_item_hash)
+pub fn source_switches_damage_type(entry: &Behavior) -> bool {
+    CATALOG.iter().any(|other| {
+        other.switches_damage_type() && other.source_item_hash == entry.source_item_hash
+    })
 }
 
-/// The weapon whose element-switch record is copied into families that have none.
-pub(super) fn element_switch_source() -> Option<(u32, u32)> {
+/// The weapon whose damage type switch record is copied into families that have none.
+pub(super) fn damage_type_switch_source() -> Option<(u32, u32)> {
     CATALOG
         .iter()
-        .find(|entry| entry.switches_element())
+        .find(|entry| entry.switches_damage_type())
         .and_then(|entry| match entry.source {
             BehaviorSource::Record {
                 owner_tag,

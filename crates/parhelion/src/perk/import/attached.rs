@@ -1,114 +1,13 @@
 //! Private attachment imports retain separate controller and entity lifetimes.
 use super::*;
-use parhelion_import::d2_mot::{gameplay::perks::attached as source, native::attachment};
-use std::collections::{BTreeMap, BTreeSet};
-use sundial::package_authoring::sandbox_perk::program::{
-    Asset, AttachmentTarget, ImportedAsset, NativeGroup, Position, native_draft,
+use parhelion_import::d2_mot::{
+    gameplay::perks::attached::{self as source, attach_action, compile_hosted},
+    native::attachment,
 };
+use std::collections::{BTreeMap, BTreeSet};
+use sundial::package_authoring::sandbox_perk::program::{Asset, ImportedAsset, Position};
 
 const ROOT: u32 = 0x80BC57DD;
-const EMPTY: u32 = 0x811C9DC5;
-
-fn attach(
-    source: &lower::attachment::Attachment,
-    graph: u32,
-    namespace: &str,
-    retained_graphs: &BTreeSet<u32>,
-    timed_graphs: &BTreeMap<u32, f32>,
-) -> Result<Action, String> {
-    if !source.retained || source.stacks_name != EMPTY {
-        return Err("Attachment retention or creation stacks require translation".into());
-    }
-    let lifetime = match source.cleanup {
-        lower::attachment::Cleanup::Independent => independent_key(namespace)?,
-        lower::attachment::Cleanup::Automatic | lower::attachment::Cleanup::UnlessParentIsHost
-            if retained_graphs.contains(&source.graph) =>
-        {
-            EMPTY
-        }
-        lower::attachment::Cleanup::Automatic | lower::attachment::Cleanup::UnlessParentIsHost
-            if timed_graphs.contains_key(&source.graph) =>
-        {
-            independent_key(namespace)?
-        }
-        lower::attachment::Cleanup::Automatic | lower::attachment::Cleanup::UnlessParentIsHost => {
-            return Err(
-                "Component-sensitive attachment cleanup still requires a qualified native lifetime"
-                    .into(),
-            );
-        }
-    };
-    Ok(Action::Attach {
-        asset: Asset {
-            graph,
-            ..Default::default()
-        },
-        mode: AttachmentTarget::from_byte(source.target),
-        keys: [lifetime, source.removal_name],
-        float_bits: [source.removal_value.to_bits(); 4],
-    })
-}
-
-fn independent_key(namespace: &str) -> Result<u32, String> {
-    let key = format!("{namespace}/independent-attachment")
-        .bytes()
-        .fold(EMPTY, |hash, byte| {
-            hash.wrapping_mul(16777619) ^ u32::from(byte)
-        });
-    if matches!(key, 0 | u32::MAX | EMPTY) {
-        return Err("The private attachment lifetime key is reserved".into());
-    }
-    Ok(key)
-}
-
-fn hosted(
-    input: attachment::ActionInput<'_>,
-    template: u32,
-    namespace: &str,
-) -> anyhow::Result<attachment::CompiledAction> {
-    let source = source::hosted(input.reader, input.payload, input.selectors)?;
-    let actions = source
-        .attachments
-        .iter()
-        .map(|action| {
-            let graph = input.graphs.get(&action.graph).ok_or_else(|| {
-                anyhow::anyhow!("hosted attachment is outside the private closure")
-            })?;
-            attach(
-                action,
-                *graph,
-                namespace,
-                input.retained_graphs,
-                input.timed_graphs,
-            )
-            .map_err(anyhow::Error::msg)
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let program = Program {
-        name: format!("Imported Controller {:08X}", input.source),
-        trigger: Trigger::Native,
-        native_trigger: Some(node(source.activation.node)),
-        native_removal: Some(node(source.removal)),
-        duration_ms: 0,
-        cooldown_ms: 0,
-        actions,
-        additional_groups: vec![NativeGroup {
-            activation: vec![NativeNode {
-                kind: 0,
-                bytes: vec![0, 0, 128, 63, 255, 0, 0, 0],
-            }],
-            effects: source.modifiers.into_iter().map(node).collect(),
-            ..Default::default()
-        }],
-        ..Program::default()
-    };
-    // These selectors already use the closure's private category dictionary.
-    // Package compilation would resolve temporary tags as resident resources
-    // and rebuild those masks against unrelated stock category indices.
-    let draft = native_draft(&program).map_err(anyhow::Error::msg)?;
-    let payload = Payload(draft.graph.emit().map_err(anyhow::Error::msg)?);
-    Ok(attachment::CompiledAction { payload, template })
-}
 
 fn rename(manifest: &mut Value, prefix: &str) -> Result<(), String> {
     let name = |value: &str| format!("{prefix}-{value}");
@@ -211,7 +110,7 @@ pub(super) fn prepare(
         &roots.into_iter().collect::<Vec<_>>(),
         &parameters,
         &BTreeSet::new(),
-        |input| hosted(input, template, &namespace),
+        |input| compile_hosted(input, template, &namespace),
     )
     .map_err(error)?;
     let prefix = format!(
@@ -231,13 +130,14 @@ pub(super) fn prepare(
         let (graph, action) = match effect {
             source::Effect::Attach(action) => (
                 action.graph,
-                attach(
+                attach_action(
                     action,
                     ROOT,
                     &namespace,
                     &converted.retained_graphs,
                     &converted.timed_graphs,
-                )?,
+                )
+                .map_err(error)?,
             ),
             source::Effect::Spawn(action) => (
                 action.graph,
@@ -309,7 +209,7 @@ pub(super) fn prepare(
     native.finish().map_err(error)?;
     let provenance = json!({"status":"experimental attachment candidate","gameplay_verified":false,
         "source_plug":request.plug_hash,"source_action":source.assignment.action_tag,
-        "source_controller_sha256":digest(&source.assignment.controller.0),
+        "source_controller_sha256":sha256_hex(&source.assignment.controller.0),
         "presentation":presentation.report,"attachments":converted.manifest["attachments"]["conversion"]});
     let plug = Plug {
         presentation: &presentation,

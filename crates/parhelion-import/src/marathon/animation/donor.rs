@@ -5,8 +5,9 @@
 //! shell insert and `chamber_1` instead. A source weapon that reloads by magazine on a shell-fed
 //! donor never plays its reload. An exotic donor's runtime keeps its own effects, such as a
 //! shotgun's flames, so ordinary donors come first. With source animation, the first ordinary
-//! donor in the importer's order that requests every magazine reload the source plays is chosen,
-//! else the first such exotic, else the first ordinary donor.
+//! donor in the importer's order that requests every source magazine reload is chosen. The native
+//! shell-reload composition can instead take its layout-equivalent magazine base while keeping
+//! its ordinary firing components. An exotic is considered only when neither ordinary route fits.
 //!
 //! Without source animation the donor's own clips play, and each source weapon bone follows the
 //! donor equipment bone of its name, else its nearest named ancestor's. Every row of one native
@@ -531,7 +532,7 @@ fn motion(
 /// The index of the donor to build on and the choice's report. An exotic donor keeps its own
 /// runtime effects beneath the import, so ordinary donors come first. With `source_animation`,
 /// the first ordinary donor whose first-person states request every magazine reload the source
-/// plays, else the first such exotic, else the first ordinary donor. Otherwise the earliest
+/// plays or admits the native magazine composition, else the first such exotic. Otherwise the earliest
 /// ordinary donor whose own animation best fits the source, and an exotic only for a type with no
 /// ordinary donor.
 pub(in crate::marathon) fn choose(
@@ -561,6 +562,14 @@ pub(in crate::marathon) fn choose(
         report["exotics_left_out"] = json!(names);
     }
     Ok((index, report))
+}
+
+/// Both magazine reloads must carry weapon-local motion before a shell carrier changes behavior.
+pub(super) fn magazine(source: &mut Reader, root: u32) -> Result<bool> {
+    let wanted = Source::read(source, root, false)?;
+    Ok(RELOADS
+        .iter()
+        .all(|(name, _)| wanted.reloads.contains_key(&source::fnv(name))))
 }
 
 /// The earliest of the `allowed` donors whose own animation best fits the source.
@@ -697,13 +706,17 @@ fn by_reloads(
     let mut rejected = Vec::new();
     for &index in order {
         let (hash, name) = &donors[index];
-        let requested = crate::tiger::shadowkeep::item_tag(native, *hash)
-            .and_then(|tag| native::requested_actions(native, tag));
+        let requested = crate::tiger::shadowkeep::item_tag(native, *hash).and_then(|tag| {
+            let actions = native::requested_actions(native, tag)?;
+            let adapted =
+                reloads.len() == RELOADS.len() && native::magazine_candidate(native, tag)?;
+            Ok((actions, adapted))
+        });
         match requested {
-            Ok(actions) if reloads.is_subset(&actions) => {
+            Ok((actions, adapted)) if adapted || reloads.is_subset(&actions) => {
                 return Ok((
                     index,
-                    json!({"source_magazine_reloads":names,"chosen_by":"reloads","rejected":rejected}),
+                    json!({"source_magazine_reloads":names,"chosen_by":"reloads","magazine_composition":adapted,"rejected":rejected}),
                 ));
             }
             Ok(_) => rejected.push(json!({"donor":format!("{hash:08X}"),"name":name,

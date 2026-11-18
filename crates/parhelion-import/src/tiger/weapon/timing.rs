@@ -1,4 +1,4 @@
-//! Source firing and reload timing written into the native base's stat translator.
+//! Source calibration written into the native base's stat translator.
 //!
 //! A weapon's stat translator (binding `2F981564`) holds one table per translation group. Each
 //! table translates stat values through sampled curves and routes them to component inputs. The
@@ -6,6 +6,12 @@
 //! translation-column ordinals. Each scope copies the source table's curve samples into the
 //! native curves its destinations read, so the source stat values the recipe carries give the
 //! source's timing.
+//!
+//! Rise of Iron also qualifies broader calibration and gives admitted curves private columns
+//! through `calibration`. It preserves native column identities and never freezes a curve into
+//! a literal to resolve shared storage. The matched timing path below serves modern imports.
+//! Marathon reload and handling calibration qualify the source layout and append private
+//! dynamic columns using the same native storage contract.
 //!
 //! The source and native tables share their shape in every supported version. A [`Dialect`]
 //! names where each version keeps its arrays, how wide its rows are and how it numbers translated
@@ -17,7 +23,13 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use sundial::package_authoring::{entity::weapon_component_bindings, runtime};
+use sundial::package_authoring::{
+    entity::{WEAPON_STAT_INPUT_DEFINITIONS, weapon_component_bindings},
+    runtime,
+};
+mod calibration;
+mod marathon;
+pub(crate) use marathon::translate as marathon_timing;
 
 /// The empty FNV-1 name.
 const EMPTY_NAME: u32 = 0x811C_9DC5;
@@ -471,32 +483,6 @@ pub(crate) struct Translator {
     pub dialect: &'static Dialect,
 }
 
-/// The investment stat definition behind each Weapon Stats input. The investment constants blob
-/// lists one per input, with an extra entry after input 5. The stock routes place Reload Speed at
-/// input 9, Handling at 14, Aim Assistance at 17 and Recoil Direction at 18, so its entries from
-/// the seventh on belong one input earlier. Input 2 has none.
-const STAT_INPUTS: [Option<u16>; 19] = [
-    Some(14),
-    Some(24),
-    None,
-    Some(32),
-    Some(17),
-    Some(22),
-    Some(20),
-    Some(16),
-    Some(21),
-    Some(27),
-    Some(18),
-    Some(15),
-    None,
-    Some(25),
-    Some(26),
-    Some(26),
-    Some(26),
-    Some(30),
-    Some(31),
-];
-
 /// The source's carried stat values by Weapon Stats input, for routes that take a literal. Rows
 /// are investment stat hashes with their values.
 fn stat_inputs(native: &mut Reader, rows: &[(u32, f64)]) -> Result<BTreeMap<u32, f32>> {
@@ -504,7 +490,7 @@ fn stat_inputs(native: &mut Reader, rows: &[(u32, f64)]) -> Result<BTreeMap<u32,
     let mut stats = BTreeMap::new();
     for &(hash, value) in rows {
         let input = definitions.get(&hash).and_then(|&index| {
-            STAT_INPUTS
+            WEAPON_STAT_INPUT_DEFINITIONS
                 .iter()
                 .position(|&definition| definition == Some(index))
         });
@@ -527,13 +513,16 @@ pub(crate) fn translate(
     donor: u32,
     stats: &[(u32, f64)],
 ) -> Result<Value> {
+    if std::ptr::eq(source.dialect, &RISE_OF_IRON) {
+        return calibration::translate(source, native, donor);
+    }
     let manager = sundial::package_authoring::PackageManager::new(
         &native.manager.package_dir,
         native.manager.version,
         Some(native.manager.platform),
     )
     .map_err(anyhow::Error::msg)?;
-    let runtime = runtime::load_weapon_runtime_entity_for_item_with_manager(&manager, donor)
+    let runtime = runtime::load_runtime_entity_for_item_with_manager(&manager, donor)
         .map_err(anyhow::Error::msg)?;
     let bindings =
         weapon_component_bindings(&runtime.payload, TRANSLATOR).map_err(anyhow::Error::msg)?;

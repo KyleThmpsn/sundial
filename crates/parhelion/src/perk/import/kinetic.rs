@@ -186,7 +186,7 @@ pub(super) fn prepare(
     native.finish().map_err(error)?;
     let provenance = json!({"status":"experimental compatibility candidate","gameplay_verified":false,
         "full_perk_installable":false,"source_plug":request.plug_hash,"source_action":source.assignment.action_tag,
-        "source_controller_sha256":digest(&source.assignment.controller.0),"behavior":source.report,
+        "source_controller_sha256":sha256_hex(&source.assignment.controller.0),"behavior":source.report,
         "presentation":presentation.report,"particles":manifest["particles"],"attachments":manifest["attachments"]["conversion"]});
     let plug = Plug {
         presentation: &presentation,

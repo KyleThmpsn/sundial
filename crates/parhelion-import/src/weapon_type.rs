@@ -3,8 +3,10 @@
 
 /// Phrases in priority order: a narrower phrase precedes any broader one it contains, so
 /// "submachine" wins over "machine gun" and "grenade launcher" over "launcher".
-const PHRASES: [(&str, &str); 30] = [
+const PHRASES: [(&str, &str); 32] = [
     ("submachine", "Submachine Gun"),
+    ("needler", "Submachine Gun"),
+    ("needle rifle", "Scout Rifle"),
     ("shotgun", "Shotgun"),
     ("sniper", "Sniper Rifle"),
     ("grenade launcher", "Grenade Launcher"),

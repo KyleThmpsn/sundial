@@ -7,10 +7,6 @@ pub(super) struct Extra {
     count: usize,
 }
 
-fn relative(bytes: &mut [u8], field: usize, target: usize) -> Result<()> {
-    put(bytes, field, &(target as i64 - field as i64).to_le_bytes())
-}
-
 pub(super) fn prepare(
     original: &Payload,
     section: usize,

@@ -75,6 +75,49 @@ pub(crate) fn collectible_clone_template(
     Ok((template, unlock))
 }
 
+/// The stock arrays of `other`, another mod's copy of the presentation nodes table, whose stock
+/// entries it changed: each stock node's child-node and collectible array, by node and array
+/// field, where one of the rows `stock` holds there is missing or differs. A mod that puts its
+/// own entries first takes those rows. One that only adds entries after them leaves them alone.
+pub(crate) fn changed_stock_arrays(
+    stock: &[u8],
+    other: &[u8],
+) -> AuthoringResult<std::collections::BTreeSet<(usize, usize)>> {
+    let (stock_count, _, stock_rows, _) = array_at(stock, 8)?;
+    let (other_count, _, other_rows, _) = array_at(other, 8)?;
+    let mut changed = std::collections::BTreeSet::new();
+    for node in 0..stock_count.min(STOCK_PRESENTATION_NODE_COUNT) {
+        for (array, size) in [
+            (
+                PRESENTATION_NODE_CHILD_NODES_OFFSET,
+                PRESENTATION_NODE_CHILD_NODE_ROW_SIZE,
+            ),
+            (
+                PRESENTATION_NODE_COLLECTIBLES_OFFSET,
+                PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE,
+            ),
+        ] {
+            let own = stock_rows + node * PRESENTATION_NODE_ROW_SIZE + array;
+            if read_u64(stock, own)? == 0 {
+                continue;
+            }
+            let (count, _, rows, _) = array_at(stock, own)?;
+            let theirs = other_rows + node * PRESENTATION_NODE_ROW_SIZE + array;
+            // The other mod's rows at the stock rows' places, when it still holds that many.
+            let kept = if node < other_count && read_u64(other, theirs)? >= count as u64 {
+                let (_, _, their_rows, _) = array_at(other, theirs)?;
+                other.get(their_rows..their_rows + count * size)
+            } else {
+                None
+            };
+            if kept != stock.get(rows..rows + count * size) {
+                changed.insert((node, array));
+            }
+        }
+    }
+    Ok(changed)
+}
+
 /// The collectible indices a presentation node lists as children, in package order.
 pub(crate) fn node_collectible_children(nodes: &[u8], node: u16) -> AuthoringResult<Vec<usize>> {
     let (node_count, _, node_rows, _) = array_at(nodes, 8)?;

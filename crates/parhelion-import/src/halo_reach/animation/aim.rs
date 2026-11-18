@@ -7,6 +7,7 @@
 //! bones, clip templates and turn axes, so the native aim convention holds, and takes from the source
 //! the pivots the gun turns about, the yaw coverage and the pitch limits.
 use super::{codec::Motion, playback};
+use crate::math::axis_angle;
 use crate::{
     halo_reach::{Scene, model::Model, rig},
     tiger::{
@@ -78,17 +79,6 @@ pub(in crate::halo_reach) fn placements(scene: &Scene) -> Result<Vec<[f32; 16]>>
         placement.push(transform);
     }
     Ok(placement)
-}
-
-fn axis_angle(q: [f32; 4]) -> ([f32; 3], f32) {
-    let q = if q[3] < 0. { q.map(|v| -v) } else { q };
-    let angle = 2. * q[3].clamp(-1., 1.).acos();
-    let s = (1. - q[3] * q[3]).max(0.).sqrt();
-    if s < 1e-6 {
-        ([0.; 3], 0.)
-    } else {
-        ([q[0] / s, q[1] / s, q[2] / s], angle)
-    }
 }
 
 fn wrap(angle: f32) -> f32 {

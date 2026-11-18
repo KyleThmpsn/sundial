@@ -2,8 +2,8 @@
 use super::*;
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::fs;
+use sundial::storage::sha256_hex;
 
 #[derive(Deserialize)]
 struct Snapshot {
@@ -20,10 +20,6 @@ struct Case {
     entry: parhelion_import::halo_reach::browse::Entry,
     stock_character: BTreeMap<String, Snapshot>,
     output: PathBuf,
-}
-
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 #[test]
@@ -67,7 +63,7 @@ fn reimport_from_installed_character_bank_stages_against_stock() -> Result<()> {
     let installed = manager
         .read_tag(tiger_pkg::TagHash(bank.tag))
         .map_err(anyhow::Error::msg)?;
-    let installed_sha256 = digest(&installed);
+    let installed_sha256 = sha256_hex(&installed);
     ensure!(
         installed_sha256 != bank.sha256,
         "Case has no modified character bank"
@@ -130,7 +126,7 @@ fn reimport_from_installed_character_bank_stages_against_stock() -> Result<()> {
         let file = character["files"][key]
             .as_str()
             .context("Character source file")?;
-        let hash = digest(&fs::read(reference.directory.join(file))?);
+        let hash = sha256_hex(&fs::read(reference.directory.join(file))?);
         ensure!(
             hash == expected.sha256,
             "Prepared {key} still contains installed modifications"

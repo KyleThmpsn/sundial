@@ -2820,6 +2820,7 @@ dependencies = [
  "bcdec_rs",
  "egui",
  "egui-phosphor",
+ "flate2",
  "fs2",
  "hex",
  "image",

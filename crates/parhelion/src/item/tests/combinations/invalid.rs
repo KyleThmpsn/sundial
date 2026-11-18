@@ -53,8 +53,8 @@ fn mutation(recipe: &mut WeaponRecipe, case: usize, sockets: usize) {
         }
         15 => recipe.overrides.trait_indices = Some(vec![u16::MAX - 1]),
         16 => recipe.overrides.base_sandbox_perks = Some(vec![u16::MAX - 1]),
-        // An appearance from another weapon type used to be case 17. Cross-type appearances
-        // build now, with the appearance weapon's rig or parts pinned to the base rig.
+        // An appearance from another weapon type is not an invalid case. It builds, with the
+        // appearance weapon's rig or parts pinned to the base rig.
         _ => unreachable!(),
     }
 }

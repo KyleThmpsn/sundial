@@ -1,4 +1,4 @@
-//! The main page for subclasses. A subclass keeps its base's element or shows another damage type
+//! The main page for subclasses. A subclass keeps its base's damage type or shows another's
 //! icon, and is for every class, its base's or another. Each ability and each attunement path node is based on a stock one of any
 //! class, and can be authored: a name, a description, an icon and perks of its own, including
 //! custom perks from the perk workbench. An attunement can come from another stock subclass and

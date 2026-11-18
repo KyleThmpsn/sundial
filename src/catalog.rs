@@ -1,3 +1,5 @@
+//! The installed game catalog: items, plugs, collections and progression read from the packages,
+//! with search.
 use std::{
     collections::{HashMap, HashSet},
     fs,

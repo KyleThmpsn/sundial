@@ -53,7 +53,7 @@ pub(super) fn selection(
         read_selection_view(owner, tag, (definition, root), &selection, &marker, &masks)
     });
     json!({"views":views,"native_marker_metadata":0x80C2262Au32,
-        "marker_metadata_sha256":sha(&marker.0),"label_registry_sha256":sha(&registry.0)})
+        "marker_metadata_sha256":sha256_hex(&marker.0),"label_registry_sha256":sha256_hex(&registry.0)})
 }
 
 #[allow(clippy::cognitive_complexity)]
@@ -142,7 +142,7 @@ pub(super) fn readback(owner: &Payload, tag: u32, witness: &Payload) -> (usize, 
         recipient,
         json!({"wrapper":wrapper,"action":action,"recipient":recipient,
         "definition":action_definition,"tracking_capacity":rows.len(),"mutable_boundary":boundary,
-        "witness":0x80BC2BF4u32,"witness_sha256":sha(&witness.0),"damage_resource":null}),
+        "witness":0x80BC2BF4u32,"witness_sha256":sha256_hex(&witness.0),"damage_resource":null}),
     )
 }
 

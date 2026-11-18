@@ -48,8 +48,8 @@ const FIGURE_ROW_HEIGHT: f32 = 0.74;
 /// Gap after the damage type glyph that leads the figure.
 const FIGURE_GLYPH_GAP: f32 = 1.5;
 /// The symbol face fills its em where a digit does not, so a glyph is set smaller to match.
-const ELEMENT_GLYPH_SCALE: f32 = 0.50;
-/// The energy lockup: its damage type glyph, then its capacity, bold in the type's own colour.
+const DAMAGE_TYPE_GLYPH_SCALE: f32 = 0.50;
+/// The energy lockup: its energy type glyph, then its capacity, bold in the type's own colour.
 /// It is the figure drawn small, so the glyph takes the same share of the figure beside it.
 const ENERGY_VALUE_SCALE: f32 = 1.31;
 const ENERGY_VALUE_WEIGHT: f32 = 0.9;
@@ -100,8 +100,8 @@ fn muted() -> egui::Color32 {
 
 /// A damage type's glyph in the game's symbol face, and the colour the game tints it and the
 /// figure beside it with. Kinetic has neither.
-const fn element_mark(element: ItemDamageType) -> Option<(char, egui::Color32)> {
-    match element {
+const fn damage_type_mark(damage_type: ItemDamageType) -> Option<(char, egui::Color32)> {
+    match damage_type {
         ItemDamageType::Kinetic => None,
         ItemDamageType::Arc => Some(('\u{E143}', egui::Color32::from_rgb(120, 209, 245))),
         ItemDamageType::Solar => Some(('\u{E140}', egui::Color32::from_rgb(245, 140, 56))),
@@ -321,17 +321,18 @@ struct Title {
     /// Stat row the title took, which the block under it leaves out.
     consumed: Option<usize>,
     /// The damage type that leads the figure and tints it.
-    element: Option<ItemDamageType>,
+    damage_type: Option<ItemDamageType>,
     /// The energy armor carries, set between the rule and the label.
     energy: Option<Energy>,
     /// The ammunition a weapon draws, whose mark leads the label.
     ammo: Option<ItemWeaponAmmoType>,
 }
 
-/// The energy fitted to a piece of armor, and the damage type that holds it.
+/// The energy fitted to a piece of armor. Its energy type is Arc, Solar or Void, drawn with that
+/// damage type's glyph and colour.
 struct Energy {
     capacity: i32,
-    element: Option<ItemDamageType>,
+    energy_type: Option<ItemDamageType>,
 }
 
 struct StatRow {
@@ -622,7 +623,7 @@ fn power_title(catalog: &Catalog, hash: u64, plugs: &[u64], armor: bool) -> Titl
     let mut title = Title {
         shown: true,
         value,
-        element: catalog.item_damage_type(hash),
+        damage_type: catalog.item_damage_type(hash),
         ..Title::default()
     };
     title.ammo = catalog
@@ -670,13 +671,13 @@ fn energy_of(catalog: &Catalog, hash: u64, plugs: &[u64]) -> Option<Energy> {
         let name = catalog.item_stat_definition(row)?.name.to_lowercase();
         (capacity > 0 && name.contains("energy capacity")).then(|| Energy {
             capacity,
-            element: [
+            energy_type: [
                 ("arc", ItemDamageType::Arc),
                 ("solar", ItemDamageType::Solar),
                 ("void", ItemDamageType::Void),
             ]
             .into_iter()
-            .find_map(|(word, element)| name.contains(word).then_some(element)),
+            .find_map(|(word, energy_type)| name.contains(word).then_some(energy_type)),
         })
     })
 }
@@ -875,10 +876,11 @@ fn draw_figure(ui: &mut egui::Ui, catalog: &Catalog, title: &Title, scale: Scale
         centre: top + box_height * FIGURE_MIDDLE,
         anchor: top + box_height * TEXT_ANCHOR,
     };
-    let mark = title.element.and_then(element_mark);
+    let mark = title.damage_type.and_then(damage_type_mark);
     let tint = mark.map_or(TEXT, |(_, tint)| tint);
     if let Some(mark) = mark
-        && let Some(advance) = draw_element(ui, mark, size * ELEMENT_GLYPH_SCALE, x, row.centre)
+        && let Some(advance) =
+            draw_damage_type(ui, mark, size * DAMAGE_TYPE_GLYPH_SCALE, x, row.centre)
     {
         x += advance + scale.px(FIGURE_GLYPH_GAP);
     }
@@ -906,7 +908,7 @@ fn draw_figure(ui: &mut egui::Ui, catalog: &Catalog, title: &Title, scale: Scale
 
 /// Paints a damage type's glyph at `x` with its ink centred on `line`, and returns its width.
 /// Nothing is drawn without the install's symbol face.
-fn draw_element(
+fn draw_damage_type(
     ui: &egui::Ui,
     (glyph, tint): (char, egui::Color32),
     size: f32,
@@ -925,7 +927,7 @@ fn draw_element(
     Some(width)
 }
 
-/// The energy armor carries beside its Power: the damage type's glyph, then the capacity, bold in
+/// The energy armor carries beside its Power: the energy type's glyph, then the capacity, bold in
 /// that type's colour. Returns where the row continues.
 fn draw_energy(ui: &egui::Ui, energy: &Energy, row: Row, mut x: f32, scale: Scale) -> f32 {
     let size = scale.body * ENERGY_VALUE_SCALE;
@@ -935,10 +937,10 @@ fn draw_energy(ui: &egui::Ui, energy: &Energy, row: Row, mut x: f32, scale: Scal
     // glyph centres on, rather than the Power figure's, which is far larger.
     let top = row.anchor - height * TEXT_ANCHOR;
     let middle = top + height * FIGURE_MIDDLE;
-    let mark = energy.element.and_then(element_mark);
+    let mark = energy.energy_type.and_then(damage_type_mark);
     let tint = mark.map_or(TEXT, |(_, tint)| tint);
     if let Some(mark) = mark
-        && let Some(advance) = draw_element(ui, mark, size * ELEMENT_GLYPH_SCALE, x, middle)
+        && let Some(advance) = draw_damage_type(ui, mark, size * DAMAGE_TYPE_GLYPH_SCALE, x, middle)
     {
         x += advance + scale.px(ENERGY_GLYPH_GAP);
     }

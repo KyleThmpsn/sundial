@@ -8,7 +8,7 @@ use crate::tiger::{
 mod channel;
 mod light;
 mod optic;
-mod query;
+pub(super) mod query;
 mod sequence;
 
 /// A stock weapon part entity: render component, markers and channel bank, each bound to the

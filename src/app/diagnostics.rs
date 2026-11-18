@@ -216,7 +216,7 @@ fn append_path_section(report: &mut String, context: &ReportContext<'_>) {
         AccountSourceKind::Json => {
             append_path(report, "active_account_json", context.settings_path);
         }
-        AccountSourceKind::Sqlite | AccountSourceKind::Dawn => append_path(
+        AccountSourceKind::Sunrise | AccountSourceKind::Dawn => append_path(
             report,
             "active_account_database",
             &context.account_source.database_path,

@@ -11,7 +11,7 @@ pub(super) fn secondary_only(
     manager: &PackageManager,
     entity: &[u8],
     owners: &BTreeSet<u32>,
-) -> AuthoringResult<WeaponRuntimeResourcePatch> {
+) -> AuthoringResult<RuntimeResourcePatch> {
     let guns = weapon_component_bindings(entity, INPUT_BINDING).map_err(invalid)?;
     let melee = weapon_component_bindings(entity, MELEE_BINDING).map_err(invalid)?;
     let ([gun], [melee]) = (guns.as_slice(), melee.as_slice()) else {
@@ -80,7 +80,7 @@ pub(super) fn secondary_only(
             ));
         }
     }
-    Ok(WeaponRuntimeResourcePatch {
+    Ok(RuntimeResourcePatch {
         binding_hash: MELEE_BINDING,
         resource_index: 0,
         offset: 0x140,

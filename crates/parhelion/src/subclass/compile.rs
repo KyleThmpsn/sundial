@@ -12,7 +12,7 @@
 //! [`Planner`] and [`Compiler`].
 use std::collections::BTreeMap;
 
-use sundial::package_authoring::runtime::WeaponRuntimeValueOverride;
+use sundial::package_authoring::runtime::RuntimeValueOverride;
 use tiger_pkg::TagHash;
 
 use super::authoring::{AuthoredEntry, CompiledEntry, Follow, ResolvedList};
@@ -46,7 +46,7 @@ pub(crate) trait Planner {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EntityChanges<'a> {
     pub(crate) imported: Option<&'a super::ImportedAbility>,
-    pub(crate) values: &'a [WeaponRuntimeValueOverride],
+    pub(crate) values: &'a [RuntimeValueOverride],
     pub(crate) palettes: &'a [PaletteEdit],
     pub(crate) tints: &'a [TintEdit],
     pub(crate) grade: Option<EffectGrade>,
@@ -123,7 +123,7 @@ struct EntityPlan {
     row: u8,
     source: TagHash,
     imported: Option<super::ImportedAbility>,
-    values: Vec<WeaponRuntimeValueOverride>,
+    values: Vec<RuntimeValueOverride>,
     palettes: Vec<PaletteEdit>,
     tints: Vec<TintEdit>,
     grade: Option<EffectGrade>,

@@ -43,7 +43,7 @@ struct IconKey {
     /// A subclass icon, shown without a rarity plate or watermark.
     plain: bool,
     /// The art the icon shows in place of its image: a vehicle's silhouette or a generated icon.
-    art: Option<crate::icon_art::Request>,
+    art: Option<crate::icon::art::Request>,
     /// A mod perk's own image, shown as it is in place of an item icon.
     perk: Option<u64>,
 }
@@ -277,7 +277,7 @@ fn draw_recipe_search(
             ),
             "Search recipes",
         )
-        .on_hover_text("Search by name, item type, element or ammo.");
+        .on_hover_text("Search by name, item type, damage type or ammo.");
         if std::mem::take(focus) {
             search.request_focus();
         }
@@ -807,6 +807,82 @@ fn draw_bundled_recipe_selection(
     }
 }
 
+/// A choice from the Build Lists menu of Items in This Build.
+enum BuildListAction {
+    Load(String),
+    Save(String),
+    Delete(String),
+}
+
+/// The Build Lists menu: each saved list with its actions, then a name field that saves the
+/// selection being edited. Returns the choice made this frame.
+fn draw_build_lists(
+    ui: &mut egui::Ui,
+    lists: &[String],
+    name: &mut String,
+    busy: bool,
+) -> Option<BuildListAction> {
+    let mut action = None;
+    ui.menu_button("Build Lists", |ui| {
+        if lists.is_empty() {
+            ui.weak("No saved lists yet.");
+        }
+        for list in lists {
+            ui.menu_button(list.as_str(), |ui| {
+                if ui
+                    .button("Load")
+                    .on_hover_text(
+                        "Replaces the selection shown here with this list. The build changes \
+                         once you apply the selection.",
+                    )
+                    .clicked()
+                {
+                    action = Some(BuildListAction::Load(list.clone()));
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Replace with This Selection"))
+                    .on_hover_text("Saves the selection shown here over this list.")
+                    .clicked()
+                {
+                    action = Some(BuildListAction::Save(list.clone()));
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Delete"))
+                    .on_hover_text("Deletes this list. Its recipes stay in the library.")
+                    .clicked()
+                {
+                    action = Some(BuildListAction::Delete(list.clone()));
+                    ui.close();
+                }
+            });
+        }
+        ui.separator();
+        ui.label("Save This Selection As");
+        ui.horizontal(|ui| {
+            let field = ui.add(
+                egui::TextEdit::singleline(name)
+                    .hint_text("List Name…")
+                    .char_limit(crate::recipe_library::BUILD_LIST_NAME_LIMIT)
+                    .desired_width(180.0),
+            );
+            let entered =
+                field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            let save = ui
+                .add_enabled(!busy && !name.trim().is_empty(), egui::Button::new("Save"))
+                .clicked();
+            if (save || entered) && !busy && !name.trim().is_empty() {
+                action = Some(BuildListAction::Save(name.clone()));
+                ui.close();
+            }
+        });
+    })
+    .response
+    .on_hover_text("Save this selection under a name, or load one you set aside earlier.");
+    action
+}
+
 impl PackageAuthoringApp {
     pub(super) fn current_recipe_is_in_build(&self) -> bool {
         self.recipe_path
@@ -819,9 +895,65 @@ impl PackageAuthoringApp {
             self.build_selection_draft = Some(self.enabled_recipe_paths.clone());
             self.build_selection_error = None;
             self.build_selection_query.clear();
+            self.build_list_name.clear();
+            self.refresh_build_lists();
             self.recipe_search_focus_pending = true;
         }
         self.library_open = false;
+    }
+
+    fn refresh_build_lists(&mut self) {
+        self.build_lists = self
+            .recipe_library
+            .as_ref()
+            .and_then(|library| library.build_lists().ok())
+            .unwrap_or_default();
+    }
+
+    /// Carries out a Build Lists menu choice on the selection `draft`. Loading a list changes
+    /// only the draft, so the build follows it once the selection is applied.
+    fn run_build_list_action(
+        &mut self,
+        action: BuildListAction,
+        draft: &mut BTreeSet<PathBuf>,
+    ) -> Result<(), String> {
+        let library = self
+            .recipe_library
+            .as_ref()
+            .ok_or("Recipe library is unavailable")?;
+        match action {
+            BuildListAction::Load(name) => {
+                let loaded = library.build_list(&name, &self.recipe_entries, &self.map_entries)?;
+                *draft = loaded.paths;
+                self.log.push(LogEntry::info(if loaded.missing == 0 {
+                    format!("Loaded the build list {name}. Apply the selection to use it.")
+                } else {
+                    format!(
+                        "Loaded the build list {name}. {} of its recipes are no longer in the \
+                         library. Apply the selection to use it.",
+                        loaded.missing
+                    )
+                }));
+            }
+            BuildListAction::Save(name) => {
+                let name = library.save_build_list(
+                    &name,
+                    draft,
+                    &self.recipe_entries,
+                    &self.map_entries,
+                )?;
+                self.build_list_name.clear();
+                self.log
+                    .push(LogEntry::info(format!("Saved the build list {name}.")));
+            }
+            BuildListAction::Delete(name) => {
+                library.delete_build_list(&name)?;
+                self.log
+                    .push(LogEntry::info(format!("Deleted the build list {name}.")));
+            }
+        }
+        self.refresh_build_lists();
+        Ok(())
     }
 
     fn draw_library_controls(
@@ -989,6 +1121,7 @@ impl PackageAuthoringApp {
         let mut open = true;
         let mut apply = false;
         let mut cancel = false;
+        let mut list_action = None;
         egui::Window::new("Items in This Build")
             .open(&mut open)
             .default_width(620.0)
@@ -996,7 +1129,17 @@ impl PackageAuthoringApp {
             .resizable(true)
             .show(ctx, |ui| {
                 workbench_style(ui);
-                draw_bundled_recipe_selection(ui, &self.recipe_entries, &mut draft);
+                ui.horizontal(|ui| {
+                    draw_bundled_recipe_selection(ui, &self.recipe_entries, &mut draft);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        list_action = draw_build_lists(
+                            ui,
+                            &self.build_lists,
+                            &mut self.build_list_name,
+                            busy,
+                        );
+                    });
+                });
                 ui.weak("Shaders used in selected items' sockets are included automatically.");
                 draw_recipe_search(
                     ui,
@@ -1098,6 +1241,15 @@ impl PackageAuthoringApp {
                 drop(shown);
                 self.library_state.keep_listing(listing);
             });
+        if let Some(action) = list_action {
+            match self.run_build_list_action(action, &mut draft) {
+                Ok(()) => self.build_selection_error = None,
+                Err(error) => {
+                    self.build_selection_error = Some(error.clone());
+                    self.log.push(LogEntry::error(error));
+                }
+            }
+        }
         if apply {
             if let Err(error) = self.apply_build_selection(draft.clone()) {
                 self.build_selection_error = Some(error.clone());

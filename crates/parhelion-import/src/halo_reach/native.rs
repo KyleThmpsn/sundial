@@ -11,6 +11,7 @@ use crate::{
         reader::{Reader, write_json},
     },
 };
+use sundial::package_authoring::fnv1 as name_hash;
 mod attachment;
 mod firing_effect;
 mod fragment;
@@ -137,10 +138,6 @@ pub struct ImportRequest {
 
 fn hash(value: &Value, key: &str) -> Result<u32> {
     crate::graph::hash(value, key)
-}
-fn name_hash(name: &str) -> u32 {
-    name.bytes()
-        .fold(0x811c9dc5, |h, b| h.wrapping_mul(0x01000193) ^ u32::from(b))
 }
 
 fn skeleton(native: &mut Reader, entity: u32, item: u32, palette: usize) -> Result<Value> {
@@ -1398,14 +1395,24 @@ fn recipe(
     // the build accepts reload inputs from. A charged pair's weapon fires its tap barrel, and the
     // charged release perk fires the other. A Spew-Charge pair's weapon fires its charged barrel.
     let pair = super::firing::charged_pair(&scene.object.gameplay);
+    // Every weapon states its perk columns, whatever its barrels.
+    let weapon = recipe["kind"] != "sparrow";
     if barrels.len() != 1 && pair.is_none() {
-        return Ok((
-            recipe,
-            json!({"status":"Source barrel selection needs explicit controller translation",
-                "source":"halo_reach"}),
-        ));
+        let mut gameplay = json!({"status":"Source barrel selection needs explicit controller translation",
+            "source":"halo_reach"});
+        if weapon {
+            gameplay["loadout"] = super::firing::loadout::apply(
+                native,
+                hash(&entry.recipe["donor"], "item_hash")?,
+                &behavior["root"]["path"],
+                None,
+                &mut recipe,
+            )?;
+        }
+        return Ok((recipe, gameplay));
     }
-    let count = projectile_count(&barrels[pair.map_or(0, |pair| pair.fired())], behavior)?;
+    let fired = &barrels[pair.map_or(0, |pair| pair.fired())];
+    let count = projectile_count(fired, behavior)?;
     if recipe["overrides"].is_null() {
         recipe["overrides"] = json!({});
     }
@@ -1436,6 +1443,19 @@ fn recipe(
     }
     for (key, receipt) in receipts {
         gameplay[key] = receipt;
+    }
+    // The weapon states its perk columns, and a damage type its fired projectile or path decides.
+    if weapon {
+        let projectile = fired["projectile"]["datum"]
+            .as_u64()
+            .map(|datum| &behavior["nodes"][format!("{datum:08X}")]["data"]);
+        gameplay["loadout"] = super::firing::loadout::apply(
+            native,
+            donor,
+            &behavior["root"]["path"],
+            projectile,
+            &mut recipe,
+        )?;
     }
     Ok((recipe, gameplay))
 }

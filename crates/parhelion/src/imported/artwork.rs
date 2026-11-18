@@ -1,5 +1,5 @@
 //! Adopt a converter's generated artwork at the normal recipe persistence boundary.
-use crate::{WeaponRecipe, icon_edit::ImportedIcon};
+use crate::{WeaponRecipe, icon::edit::ImportedIcon};
 use serde_json::Value;
 use std::fs;
 

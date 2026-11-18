@@ -78,8 +78,7 @@ impl BarrelControls {
 
 fn read_defaults(source: &Source) -> Read {
     use sundial::package_authoring::runtime::{
-        load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_entity_with_manager,
+        load_runtime_entity_at_pattern_index_with_manager, load_runtime_entity_with_manager,
     };
     let manager = open_shadowkeep_package_manager(&source.packages)?;
     let entity = crate::runtime::load_effective_runtime_entity(&manager, &source.key)?;
@@ -88,9 +87,9 @@ fn read_defaults(source: &Source) -> Read {
         .iter()
         .map(|&(binding, pattern, item)| {
             let donor = if let Some(pattern) = pattern {
-                load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, pattern)?
+                load_runtime_entity_at_pattern_index_with_manager(&manager, pattern)?
             } else {
-                load_weapon_runtime_entity_with_manager(&manager, item)?
+                load_runtime_entity_with_manager(&manager, item)?
             };
             Ok((binding, donor.payload))
         })

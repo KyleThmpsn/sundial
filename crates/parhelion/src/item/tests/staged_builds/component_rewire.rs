@@ -20,16 +20,16 @@ use sundial::package_authoring::{
         graft_weapon_component_bindings_or_rewire, weapon_component_bindings,
     },
     runtime::{
-        WeaponRuntimeEntitySource, load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_entity_with_manager,
+        RuntimeEntitySource, load_runtime_entity_at_pattern_index_with_manager,
+        load_runtime_entity_with_manager,
     },
 };
 
 /// One authored weapon and the table its staged entity must carry.
 struct Case {
     recipe: crate::WeaponRecipe,
-    host: WeaponRuntimeEntitySource,
-    donor: WeaponRuntimeEntitySource,
+    host: RuntimeEntitySource,
+    donor: RuntimeEntitySource,
     bindings: Vec<u32>,
     expected: Vec<u8>,
 }
@@ -94,8 +94,7 @@ fn find_case(
             .into_iter()
             .map(|weapon| {
                 let entity =
-                    load_weapon_runtime_entity_at_pattern_index_with_manager(manager, weapon.2)
-                        .unwrap();
+                    load_runtime_entity_at_pattern_index_with_manager(manager, weapon.2).unwrap();
                 (weapon, entity)
             })
             .collect::<Vec<_>>()
@@ -202,7 +201,7 @@ fn verify(
 ) {
     let name = &case.recipe.name;
     let hash = case.recipe.identity.item_hash.parse_u32().unwrap();
-    let authored = load_weapon_runtime_entity_with_manager(staged, hash).unwrap();
+    let authored = load_runtime_entity_with_manager(staged, hash).unwrap();
     assert_ne!(
         authored.entity_tag, case.host.entity_tag,
         "{name}: the weapon has its own runtime entity"

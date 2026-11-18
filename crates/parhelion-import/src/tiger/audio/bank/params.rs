@@ -1,12 +1,19 @@
 use super::*;
 mod position;
 
-fn property(id: u8) -> Result<u8> {
-    // This source bank dialect adds a property at 0x38. Shared object IDs
-    // establish 0x39 as PriorityDistanceOffset, 0x3A as DelayTime and 0x3B
-    // as TransitionTime. Attenuation is consequently 0x56, not 0x55.
+/// A source property identity in stock version 150 numbering. Monument of Triumph's banks add
+/// a property at 0x38: shared object IDs establish 0x39 as PriorityDistanceOffset, 0x3A as
+/// DelayTime and 0x3B as TransitionTime, and attenuation as 0x56. Marathon's banks keep the stock
+/// numbering, where attenuation is 0x55 and names attenuation objects of the same bank.
+fn stock(id: u8, inserted: bool) -> Result<u8> {
+    if !inserted {
+        return Ok(id);
+    }
     ensure!(id != 0x38, "unvalidated source property 38");
-    let id = if id >= 0x39 { id - 1 } else { id };
+    Ok(if id >= 0x39 { id - 1 } else { id })
+}
+
+fn property(id: u8) -> Result<u8> {
     Ok(match id {
         0 => 0,
         1 => 2,
@@ -94,7 +101,12 @@ pub(super) struct Properties {
     pub position_switch: bool,
 }
 
-pub(super) fn props(r: &mut Read<'_>, w: &mut Write, ranged: bool) -> Result<Properties> {
+pub(super) fn props(
+    r: &mut Read<'_>,
+    w: &mut Write,
+    ranged: bool,
+    inserted: bool,
+) -> Result<Properties> {
     let count = r.u8()? as usize;
     let ids = r.take(count)?.to_vec();
     let width = if ranged { 8 } else { 4 };
@@ -102,7 +114,8 @@ pub(super) fn props(r: &mut Read<'_>, w: &mut Write, ranged: bool) -> Result<Pro
     let mut keep = Vec::new();
     let mut properties = Properties::default();
     for (index, id) in ids.into_iter().enumerate() {
-        if id == 0x56 {
+        let id = stock(id, inserted)?;
+        if id == 0x55 {
             ensure!(!ranged, "randomized attenuation identity");
             ensure!(
                 properties
@@ -143,10 +156,22 @@ pub(super) fn rtpcs(r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<
 fn curves(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, position_switch: bool) -> Result<bool> {
     let mut switched = false;
     let count = r.u16()?;
+    let counted = w.bytes.len();
     w.u16(count);
+    let mut kept = count;
     for _ in 0..count {
         let id = r.u32()?;
         let kind = r.u8()?;
+        // Kind 4 is a curve a modulator drives. Left out, its property keeps its own value.
+        if kind == 4 && c.omit_modulators {
+            r.u8()?;
+            r.var()?;
+            r.take(5)?;
+            let points = r.u16()?;
+            r.take(usize::from(points) * 12)?;
+            kept -= 1;
+            continue;
+        }
         ensure!(
             kind <= 1,
             "source RTPC kind {kind} needs a native controller"
@@ -189,7 +214,61 @@ fn curves(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, position_switch: boo
             w.copy(r, usize::from(points) * 12)?;
         }
     }
+    w.bytes[counted..counted + 2].copy_from_slice(&kept.to_le_bytes());
     Ok(switched)
+}
+
+/// An effect's parameter curves. Their parameter identities are the plugin's own, so they pass
+/// through when both versions share the plugin's parameter block (`own`). Only the row layout
+/// changes: the accumulation enumeration starts one lower and the parameter is one byte.
+pub(super) fn effect_curves(
+    r: &mut Read<'_>,
+    w: &mut Write,
+    c: &mut Convert,
+    own: bool,
+) -> Result<()> {
+    let count = r.u16()?;
+    ensure!(
+        own || count == 0,
+        "effect plugin RTPC conversion is unsupported"
+    );
+    let counted = w.bytes.len();
+    w.u16(count);
+    let mut kept = count;
+    for _ in 0..count {
+        let id = r.u32()?;
+        let kind = r.u8()?;
+        let accumulation = r.u8()?;
+        let parameter = r.var()?;
+        if kind == 4 && c.omit_modulators {
+            r.take(5)?;
+            let points = r.u16()?;
+            r.take(usize::from(points) * 12)?;
+            kept -= 1;
+            continue;
+        }
+        ensure!(
+            kind <= 1,
+            "source effect RTPC kind {kind} needs a native controller"
+        );
+        ensure!(
+            parameter < 256 && (1..=3).contains(&accumulation),
+            "unsupported effect RTPC parameter {parameter:02X} or accumulation {accumulation}"
+        );
+        w.u32(id);
+        if kind == 0 {
+            c.dependencies.params.insert(id);
+        }
+        w.u8(kind);
+        w.u8(accumulation - 1);
+        w.u8(parameter as u8);
+        w.copy(r, 5)?; // Curve ID and scaling.
+        let points = r.u16()?;
+        w.u16(points);
+        w.copy(r, usize::from(points) * 12)?;
+    }
+    w.bytes[counted..counted + 2].copy_from_slice(&kept.to_le_bytes());
+    Ok(())
 }
 
 fn states(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, owner: u32) -> Result<()> {
@@ -280,21 +359,59 @@ pub(super) fn node(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, id: u32) ->
         }
     }
     r.u8()?;
-    ensure!(r.u8()? == 0, "source metadata plugin requires conversion");
+    // Metadata plugins have no version 113 field. System Output Settings only tells a newer
+    // output device whether to take the sound as an audio object, so it is left out.
+    for _ in 0..r.u8()? {
+        r.u8()?;
+        let plugin = r.u32()?;
+        ensure!(
+            r.u8()? == 1 && c.source_plugins.get(&plugin) == Some(&super::SYSTEM_OUTPUT_SETTINGS),
+            "source metadata plugin requires conversion"
+        );
+    }
     w.u8(0); // No attached effect override in this supported subset.
-    w.copy(r, 4)?; // Output bus remains global.
-    w.object(r)?;
+    // The output bus stays in the global namespace. A routed bank names the one native bus
+    // wherever the source names a bus of its own.
+    let bus = r.u32()?;
+    w.u32(match c.output_bus {
+        Some(native) if bus != 0 => native,
+        _ => bus,
+    });
+    // A held element sits under its repeating container, which takes the element's parent.
+    let parent = r.u32()?;
+    w.reference(
+        match c.held.as_mut().and_then(|plan| plan.wraps.get_mut(&id)) {
+            Some(wrap) => {
+                wrap.parent = Some(parent);
+                wrap.container
+            }
+            None => parent,
+        },
+        Kind::Object,
+    );
     w.copy(r, 1)?;
-    let properties = props(r, w, false)?;
-    props(r, w, true)?;
+    let properties = props(r, w, false, c.inserted_property)?;
+    props(r, w, true, c.inserted_property)?;
     let position_switch = r.bytes.get(r.at..r.at + 2) == Some(&[3, 0x0A]);
     let position_at = w.bytes.len();
-    position::emit(r, w, properties.attenuation, properties.position_switch)?;
+    position::emit(
+        r,
+        w,
+        properties.attenuation,
+        properties.position_switch,
+        c.omit_diffraction,
+    )?;
     let aux = r.u8()?;
     ensure!(aux & 0x10 == 0, "reflection bus override is unsupported");
-    w.u8(aux);
-    if aux & 8 != 0 {
-        w.copy(r, 16)?;
+    if aux & 8 != 0 && c.output_bus.is_some() {
+        // Four sends to the source game's own auxiliary buses, which a routed bank cannot name.
+        r.take(16)?;
+        w.u8(aux & !8);
+    } else {
+        w.u8(aux);
+        if aux & 8 != 0 {
+            w.copy(r, 16)?;
+        }
     }
     ensure!(r.u32()? == 0, "reflection bus requires native conversion");
     w.copy(r, 6)?;

@@ -126,6 +126,59 @@ fn state_node(p: &Payload, row: usize) -> Result<(u64, Option<usize>)> {
     ))
 }
 
+/// The source empty-name route remains the legacy oracle's fixed-input contract. Translated
+/// exact-name selectors retain that route at each input's root record.
+fn default_weights(p: &Payload, kind: u64, at: usize) -> Result<Vec<usize>> {
+    if kind == 1 {
+        return p.array(at, 8, Some(0x80803439));
+    }
+    ensure!(kind == 2, "Translated action has an unsupported state kind");
+    let choices = p.array(at, 16, Some(0x80803437))?;
+    let records = p.array(at + 32, 28, Some(0x8080347D))?;
+    let operations = p.array(at + 48, 4, Some(0x8080347C))?;
+    let mut index = 0;
+    let mut seen = BTreeSet::new();
+    loop {
+        ensure!(
+            seen.insert(index),
+            "Translated default selector has a cycle"
+        );
+        let op = p.u32(*operations.get(index).context("Default operation extent")?)?;
+        ensure!(
+            op & 0xFF00 == 0 && op & 255 < 24,
+            "Invalid default operation"
+        );
+        let row = *records
+            .get((op >> 16) as usize)
+            .context("Default record extent")?;
+        ensure!(
+            p.u32(row + 16)? == 0x811C9DC5,
+            "Default record lost its empty-name route"
+        );
+        let result = p.u16(row + 24)? as i16;
+        if result < 0 {
+            return p.array(
+                *choices
+                    .get((!result) as usize)
+                    .context("Default choice extent")?,
+                8,
+                Some(0x80803439),
+            );
+        }
+        ensure!(result > 0, "Default selector has a zero result");
+        index = (result - 1) as usize;
+    }
+}
+
+fn default_pairing(row: &Value) -> bool {
+    row["inputs"].as_object().is_some_and(|inputs| {
+        inputs.keys().all(|key| {
+            !matches!(key.as_str(), "1" | "10" | "12")
+                && (key != "18" || matches!(row["action"].as_str(), Some("6D507AD8" | "28F43BD2")))
+        })
+    })
+}
+
 fn names(skeleton: &Payload) -> Result<Vec<u32>> {
     skeleton
         .array(skeleton.pointer(24)? + 0x80, 16, Some(0x80808A08))?
@@ -330,6 +383,7 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
             .as_array()
             .context("Weapon-local pairing report")?
             .iter()
+            .filter(|row| default_pairing(row))
             .map(|row| {
                 Ok((
                     format!(
@@ -471,26 +525,22 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
             emitted_names.insert(action);
             let node = nodes[states.u32(row + 4)? as usize];
             let (kind, at) = state_node(&states, node)?;
-            let weights = match (kind, at) {
-                (1, Some(at)) => states.array(at, 8, Some(0x80803439))?,
-                _ => Vec::new(),
-            };
+            let stock_node = *stock_names
+                .get(&action)
+                .with_context(|| format!("State {action:08X} is not the carrier's"))?;
+            if state_node(&states, node)? == state_node(&stock_states, stock_node)? {
+                fallback += 1;
+                continue;
+            }
+            let weights = default_weights(&states, kind, at.context("Translated state payload")?)?;
+            ensure!(
+                !weights.is_empty(),
+                "Translated action has no default choices"
+            );
             let chosen = weights
                 .iter()
                 .map(|&w| Ok(states.u32(w)? as usize))
                 .collect::<Result<Vec<_>>>()?;
-            if chosen.iter().all(|&d| d < carrier_descriptors) {
-                // An untranslated action keeps the carrier's node in place.
-                let stock_node = *stock_names
-                    .get(&action)
-                    .with_context(|| format!("State {action:08X} is not the carrier's"))?;
-                ensure!(
-                    state_node(&states, node)? == state_node(&stock_states, stock_node)?,
-                    "Untranslated action {action:08X} leaves the carrier's state"
-                );
-                fallback += 1;
-                continue;
-            }
             ensure!(
                 chosen.iter().all(|&d| d >= carrier_descriptors),
                 "Translated action {action:08X} mixes in carrier descriptors"
@@ -631,7 +681,7 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
                         kind >> 16 == 5
                             && vocabulary
                                 .contains(&(clip_payload.u32(at + 4)?, clip_payload.u32(at + 8)?)),
-                        "Clip {tag:08X} names a cue the carrier never uses"
+                        "Clip {tag:08X} names a cue outside the carrier's event vocabulary"
                     ),
                     0x80809033 => {
                         let resource = clip_payload.u32(at + 0x18)?;
@@ -662,22 +712,67 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
             }
         }
         // The carrier's supplemental layers serve its own descriptors. A translated descriptor
-        // dispatches to no supplemental pose or to the layer route the carrier gives one of the
-        // actions that select it, checked below.
+        // retains the carrier's movement layers while omitting incompatible additive firing
+        // offsets. Original descriptors and the routes they address remain unchanged.
         let (pose_tag, pose, pose_data) = one(&fp, 0x80803640)?;
         let layers = staged.tag(pose.u32(pose_data + 0x11C)?, Some(0x808034EB))?;
         let (_, stock_pose, stock_pose_data) = one(&stock_fp, 0x80803640)?;
         let stock_layers =
             original.tag(stock_pose.u32(stock_pose_data + 0x11C)?, Some(0x808034EB))?;
-        for (field, stride, class) in [
-            (8, 24, 0x80803724),
-            (24, 24, 0x80803721),
-            (56, 32, 0x808034EF),
-        ] {
+        for (field, stride, class) in [(8, 24, 0x80803724), (24, 24, 0x80803721)] {
             ensure!(
                 rows(&layers, field, stride, class)? == rows(&stock_layers, field, stride, class)?,
-                "Pose layer table changes the carrier's layers or routes"
+                "Pose layer table changes the carrier's layers"
             );
+        }
+        let route_edges = |payload: &Payload| -> Result<Vec<[Vec<[u16; 2]>; 2]>> {
+            payload
+                .array(56, 32, Some(0x808034EF))?
+                .into_iter()
+                .map(|row| {
+                    let family = |at| {
+                        payload
+                            .array(at, 4, Some(0x808034F1))?
+                            .into_iter()
+                            .map(|edge| Ok([payload.u16(edge)?, payload.u16(edge + 2)?]))
+                            .collect::<Result<Vec<_>>>()
+                    };
+                    Ok([family(row)?, family(row + 16)?])
+                })
+                .collect()
+        };
+        let original_routes = route_edges(&stock_layers)?;
+        let emitted_routes = route_edges(&layers)?;
+        ensure!(
+            emitted_routes.starts_with(&original_routes),
+            "Original pose layer route changed"
+        );
+        let mut removable = BTreeSet::new();
+        let layer_clips = stock_bank.array(8, 4, Some(0x80808F48))?;
+        for (index, row) in stock_layers
+            .array(8, 24, Some(0x80803724))?
+            .into_iter()
+            .enumerate()
+        {
+            if ![0xFC23AA50, 0xD3B8D0AC, 0xE4E61EE3].contains(&stock_layers.u32(row + 16)?) {
+                continue;
+            }
+            let mut modes = Vec::new();
+            for choice in stock_layers.array(row, 16, Some(0x8080372E))? {
+                for option in stock_layers.array(choice, 64, Some(0x80803730))? {
+                    for weight in stock_layers.array(option, 12, Some(0x80803737))? {
+                        let tag = stock_bank.u32(
+                            *layer_clips
+                                .get(stock_layers.u32(weight)? as usize)
+                                .context("Layer clip")?,
+                        )?;
+                        modes.push(original.tag(tag, Some(0x80808F49))?.u8(0x181)?);
+                    }
+                }
+            }
+            if !modes.is_empty() && modes.iter().all(|mode| *mode == 1) {
+                removable.insert(index as u16);
+            }
         }
         let dispatch = rows(&layers, 40, 2, 0x80800006)?;
         let stock_dispatch = rows(&stock_layers, 40, 2, 0x80800006)?;
@@ -685,23 +780,16 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
             dispatch.len() / 2 == descriptors.len() && dispatch.starts_with(&stock_dispatch),
             "Pose dispatch does not cover the bank or changes the carrier's entries"
         );
-        // A translated descriptor dispatches to no supplemental pose or to a route the stock
-        // carrier gives one of its selecting actions. A translated sprint loop takes the carrier's
-        // route when the carrier has one, since source loops are held poses.
+        // Compare route edges instead of relocated relative pointers. Every retained edge must
+        // match a carrier route for the action, including sprint and non-additive exceptions.
         let entry =
             |bytes: &[u8], at: usize| u16::from_le_bytes([bytes[at * 2], bytes[at * 2 + 1]]);
         let mut selecting = BTreeMap::<usize, BTreeSet<u32>>::new();
-        for row in states.array(8, 8, Some(0x8080342E))? {
-            let name = states.u32(row)?;
-            let node = states.array(24, 16, Some(0x8080342F))?[states.u32(row + 4)? as usize];
-            if states.u64(node)? != 1 {
-                continue;
-            }
-            for weight in states.array(states.pointer(node + 8)?, 8, Some(0x80803439))? {
-                selecting
-                    .entry(states.u32(weight)? as usize)
-                    .or_default()
-                    .insert(name);
+        for action in routed.keys() {
+            let name = u32::from_str_radix(action, 16)?;
+            for descriptor in parhelion_import::tiger::animation::state::descriptors(&states, name)?
+            {
+                selecting.entry(descriptor).or_default().insert(name);
             }
         }
         let stock_routes = |action: u32| -> Result<BTreeSet<u16>> {
@@ -725,9 +813,20 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
                 for &action in &actions {
                     allowed.extend(stock_routes(action)?);
                 }
+                let actual = emitted_routes
+                    .get(have as usize)
+                    .context("Translated layer route")?;
                 ensure!(
-                    allowed.contains(&have),
-                    "Translated descriptor {d} dispatches to layer route {have}, which no selecting action's carrier route uses"
+                    allowed.iter().any(|&old| {
+                        let expected = &original_routes[old as usize];
+                        let first = expected[0]
+                            .iter()
+                            .filter(|edge| !removable.contains(&edge[1]))
+                            .copied()
+                            .collect::<Vec<_>>();
+                        actual[0] == first && actual[1] == expected[1]
+                    }),
+                    "Translated descriptor {d} changes layers beyond its incompatible donor firing offsets"
                 );
                 layered += 1;
             }
@@ -762,6 +861,8 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
         // Hand targets come from the source placement.
         let (_, markers, _) = one(&runtime_owners, 0x80808507)?;
         let rows = parhelion_import::tiger::markers::read_native(&markers)?;
+        let binds = parhelion_import::tiger::animation::pose::bind(&equipment)?;
+        let root = binds.first().context("Equipment root bind")?.inverse();
         for (name, frame) in expected["hand_targets"]
             .as_object()
             .context("Hand targets")?
@@ -771,24 +872,39 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
                 .iter()
                 .find(|r| r.name == name)
                 .context("Hand target marker is absent")?;
+            ensure!(row.binding[0] == 0, "Hand target uses another body group");
+            let bind = *binds
+                .get(row.binding[1] as usize)
+                .context("Hand target bone")?;
+            let mut local = [0.; 8];
+            local[..4].copy_from_slice(&row.orientation);
+            local[4..].copy_from_slice(&row.position);
+            let target =
+                root.then(bind)
+                    .then(parhelion_import::tiger::animation::pose::Pose::checked(
+                        local,
+                    )?);
             for lane in 0..3 {
                 ensure!(
-                    (f64::from(row.position[lane]) - frame["position"][lane].as_f64().unwrap())
+                    (f64::from(target.0[4 + lane]) - frame["position"][lane].as_f64().unwrap())
                         .abs()
                         < 1e-5,
                     "Hand target {name:08X} keeps a donor position"
                 );
             }
         }
-        // Targets the carrier lacks are appended from the source placement, bound to the root.
+        // Targets the carrier lacks retain a valid equipment bone. Their source bind position
+        // is checked above, independently of whether that bone is the root.
         for name in expected["appended_targets"]
             .as_array()
             .context("Appended hand targets")?
         {
             let name = hex(name)?;
             ensure!(
-                rows.iter().any(|r| r.name == name && r.binding == [0, 0]),
-                "Appended hand target {name:08X} is absent or bound to a bone"
+                rows.iter().any(|r| r.name == name
+                    && r.binding[0] == 0
+                    && (r.binding[1] as usize) < binds.len()),
+                "Appended hand target {name:08X} is absent or outside its equipment rig"
             );
         }
         // Mechanism motion: decode each emitted reload clip and evaluate native FK. A reload the
@@ -879,6 +995,7 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
             .as_array()
             .context("Weapon-local pairing report")?
             .iter()
+            .filter(|row| default_pairing(row))
             .map(|row| {
                 (
                     format!(

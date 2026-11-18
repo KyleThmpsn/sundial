@@ -1,4 +1,4 @@
-//! Preserve native fixed-element identities when their behavior is unchanged.
+//! Preserve native fixed damage type identities when their behavior is unchanged.
 use super::*;
 
 pub(super) fn keeps_stock_identity(perk: &WeaponSandboxPerkRuntimeOverride) -> bool {
@@ -22,7 +22,7 @@ mod tests {
     }
 
     #[test]
-    fn only_unmodified_fixed_element_markers_keep_stock_identity() {
+    fn only_unmodified_fixed_damage_markers_keep_stock_identity() {
         for index in [83, 84, 85, 449, 450, 451] {
             assert!(keeps_stock_identity(&effect(index)));
         }

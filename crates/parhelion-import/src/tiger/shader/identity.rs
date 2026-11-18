@@ -4,6 +4,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use sundial::storage::sha256_hex;
 
 #[cfg(test)]
 mod tests;
@@ -72,10 +73,6 @@ struct Entry {
 #[derive(Default)]
 pub struct Catalog {
     entries: BTreeMap<(Stage, [u8; 32]), Entry>,
-}
-
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 fn key(header: &[u8], code: &[u8]) -> [u8; 32] {
@@ -245,8 +242,8 @@ impl Catalog {
         Ok(Some(Reuse {
             tag: entry.tag,
             stage,
-            header_sha256: digest(&header.0),
-            bytecode_sha256: digest(code),
+            header_sha256: sha256_hex(&header.0),
+            bytecode_sha256: sha256_hex(code),
         }))
     }
 }

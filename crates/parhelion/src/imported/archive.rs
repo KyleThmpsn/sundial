@@ -361,6 +361,7 @@ fn restore_folder(graph: &str) -> Result<(PathBuf, &'static str), String> {
         .unwrap_or("d2_mot");
     let conversion = match (importer, graph["kind"].as_str()) {
         (_, Some("shader")) => "shader",
+        ("d1_roi", Some("artifact")) => "artifact",
         ("d1_roi", _) => "armor",
         ("halo_reach", _) => "vehicle",
         _ => "gear",
@@ -458,7 +459,7 @@ fn asset_files(raw: &str) -> Result<Vec<String>, String> {
     let graph: Value = sundial::package_authoring::parse_json(raw).map_err(|e| e.to_string())?;
     if !matches!(
         graph["kind"].as_str(),
-        Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament")
+        Some("artifact" | "shader" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament")
     ) {
         return Err("Embedded native asset graph is not reusable gear".into());
     }

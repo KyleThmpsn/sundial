@@ -1,4 +1,5 @@
-//! The private driver seat camera follows the source driver seat's camera track.
+//! The private driver seat camera follows the source driver seat's camera track. `driver` owns
+//! the private copy of the entity that holds the camera.
 //!
 //! Both engines keep the third-person seat camera on a track of points, each an offset from a
 //! pivot paired with a view rotation, and look the track up by the view's pitch. The camera
@@ -13,7 +14,7 @@
 //! `517010` and `516EC0` at uniform knots `1 / (n - 1)`. Directions are each rotation applied to
 //! the forward axis. Its caller `5168B4` bisects `t` over the track until the interpolated
 //! direction has the requested pitch, then evaluates the offset there.
-use super::{Scene, assembly::Assembly, secondary::Bundle};
+use super::{Scene, assembly::Assembly, bundle::Bundle};
 use crate::{
     halo_reach::{native::seat, rig},
     presentation::{Graph, put},
@@ -28,7 +29,7 @@ const DRIVER: u64 = 1 << 2;
 const THIRD_PERSON: u64 = 1 << 4;
 
 /// One source control point, an offset in world units and the view's forward direction.
-struct Point {
+pub(super) struct Point {
     offset: [f64; 3],
     forward: [f64; 3],
 }
@@ -90,7 +91,7 @@ fn offset(track: &[Point], pitch: f64) -> [f64; 3] {
 /// The driver seat's source camera: its pivot marker and its first track's control points, when
 /// the seat has a third-person camera with a track the source can interpolate, or a marker the
 /// camera sits on.
-fn source(scene: &Scene) -> Result<Option<(String, Vec<Point>)>> {
+pub(super) fn source(scene: &Scene) -> Result<Option<Track>> {
     let seats = scene.object.gameplay["seats"]
         .as_array()
         .context("Source vehicle seats")?;
@@ -260,7 +261,7 @@ fn locator(payload: &Payload, definition: usize, event: usize) -> Result<Option<
 }
 
 /// The carrier components whose instance struct has `class`.
-fn owners(assembly: &Assembly, class: u32) -> Vec<u32> {
+pub(super) fn owners(assembly: &Assembly, class: u32) -> Vec<u32> {
     assembly
         .payloads
         .iter()
@@ -325,32 +326,22 @@ fn place(assembly: &mut Assembly, bones: &Value, name: u32, pivot: [f32; 3]) -> 
     )
 }
 
-pub(super) fn build(
+/// The source camera of [`source`]: its pivot marker and its track's control points.
+pub(super) type Track = (String, Vec<Point>);
+
+/// Rebuilds the seat camera rails of `bundle`, the private copy of the driver seat's secondary
+/// entity, from the source `track`, and moves the rails' locator markers onto the source pivot.
+pub(super) fn rails(
     native: &mut Reader,
     graph: &mut Graph,
     assembly: &mut Assembly,
     scene: &Scene,
     bones: &Value,
+    bundle: &mut Bundle,
+    (marker, track): Track,
 ) -> Result<Value> {
-    let Some((marker, track)) = source(scene)? else {
-        return Ok(json!({"retained":true,
-            "limits":["The source driver seat has no third-person camera track, so the carrier camera is kept."]}));
-    };
-    if owners(assembly, 0x808042ad).is_empty() {
-        return Ok(json!({"retained":true,
-            "limits":["The carrier has no driver seat camera to follow the source track."]}));
-    }
     let metres = f64::from(scene.metres());
     let (pivot, pivot_report) = pivot(scene, &marker)?;
-    let driver = assembly.owner(0x808042ad)?;
-    let payload = &assembly.payloads[&driver];
-    let definition = usize::try_from(payload.u64(payload.pointer(16)? + 8)?)?;
-    ensure!(
-        payload.u32(definition - 4)? == 0x80803d7d,
-        "Driver camera owner differs"
-    );
-    let secondary = payload.u32(definition + 0x248)?;
-    let mut bundle = Bundle::read(native, secondary)?;
     let mut rails = BTreeMap::<u32, Option<u32>>::new();
     let mut moved = BTreeSet::new();
     let mut selected = Vec::new();
@@ -442,8 +433,6 @@ pub(super) fn build(
     for name in moved {
         placed.push(place(assembly, bones, name, pivot)?);
     }
-    let symbol = bundle.emit(graph, "vehicle-driver")?;
-    assembly.resource(driver, definition + 0x248, symbol)?;
     Ok(
         json!({"metres_per_source_unit":metres,"pivot":pivot,"source_pivot":pivot_report,
         "selections":selected,"locator_markers":placed,"gameplay_verified":false,

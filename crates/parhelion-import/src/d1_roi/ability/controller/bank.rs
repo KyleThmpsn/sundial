@@ -423,6 +423,40 @@ pub fn selected(
     )
 }
 
+/// The keys of a retained-family source bank outside `granted` whose rows select no effect graph.
+/// The subclass grid applies none of them, so other items do, as an armor talent grants a key to
+/// the Super. `None` when the bank belongs to another family.
+pub(in crate::d1_roi::ability) fn ungranted_keys(
+    source: &Source,
+    source_bank: u32,
+    granted: &BTreeSet<u32>,
+) -> Result<Option<BTreeSet<u32>>> {
+    let payload = source.read(source_bank)?;
+    let instance = payload.pointer(16)?;
+    let definition = payload.pointer(24)?;
+    if instance < 4
+        || definition < 4
+        || payload.u32(instance - 4)? != SOURCE_CLASSES.0
+        || payload.u32(definition - 4)? != SOURCE_CLASSES.1
+    {
+        return Ok(None);
+    }
+    let bank = read(source, source_bank)?;
+    let selecting = bank
+        .rows
+        .iter()
+        .filter(|row| row.resource.is_some())
+        .map(|row| row.key)
+        .collect::<BTreeSet<_>>();
+    Ok(Some(
+        bank.rows
+            .iter()
+            .map(|row| row.key)
+            .filter(|key| !granted.contains(key) && !selecting.contains(key))
+            .collect(),
+    ))
+}
+
 /// Admission for a self-revive choice requires the entire group to be the original flag and
 /// positive active-energy drain. Other properties need their own integration contract.
 pub(in crate::d1_roi::ability) fn revival_keys(

@@ -171,19 +171,20 @@ impl Position {
 /// array, each member's in rows of its own after the earlier members' ([`front`]). The members
 /// compile in a fixed order, the main mod first and then each importer. A stock child-node array
 /// still has one leading member: automatic entries lead in the first member to place any there.
-/// No member's automatic entries lead while another installed Sunrise mod changes the presentation
-/// nodes, so a Studio mod's entries merge beside them. An importer's own nodes take its automatic
-/// entries after whatever their template kept.
+/// No member's automatic entries lead an array whose stock entries another installed Sunrise mod
+/// changed, as a mod that leads it does. A mod that only adds entries after the stock ones, as a
+/// Studio mod does, changes none, and automatic entries still lead beside it. An importer's own
+/// nodes take its automatic entries after whatever their template kept.
 pub(crate) fn leads(position: Option<Position>, node: usize, array: usize) -> bool {
     let stock = node < crate::progression::STOCK_PRESENTATION_NODE_COUNT;
     let lead = if stock && array == crate::progression::PRESENTATION_NODE_COLLECTIBLES_OFFSET {
-        leads_stock_collectibles(position)
+        leads_stock_collectibles(position, node)
     } else {
         match position {
             Some(position) => position == Position::First,
             None => {
-                !crate::package_profile::presentation_nodes_shared()
-                    && (crate::package_profile::member().is_none()
+                !crate::package::profile::presentation_list_changed(node, array)
+                    && (crate::package::profile::member().is_none()
                         || (stock && !crate::mod_family::build::led_before(node, array)))
             }
         }
@@ -194,14 +195,17 @@ pub(crate) fn leads(position: Option<Position>, node: usize, array: usize) -> bo
     lead
 }
 
-/// What [`leads`] answers for a stock page's collectibles, which is the same for every member and
-/// needs nothing another member did: an entry set to First leads, and an automatic one does while
-/// no other installed mod changes the presentation nodes. The family counts the importers' entries
-/// from it before any member builds (`item::census`).
-pub(crate) fn leads_stock_collectibles(position: Option<Position>) -> bool {
+/// What [`leads`] answers for the collectibles of stock page `node`, which is the same for every
+/// member and needs nothing another member did: an entry set to First leads, and an automatic one
+/// does unless another installed mod changed the page's stock collectibles. The family counts
+/// the importers' entries from it before any member builds (`item::census`).
+pub(crate) fn leads_stock_collectibles(position: Option<Position>, node: usize) -> bool {
     match position {
         Some(position) => position == Position::First,
-        None => !crate::package_profile::presentation_nodes_shared(),
+        None => !crate::package::profile::presentation_list_changed(
+            node,
+            crate::progression::PRESENTATION_NODE_COLLECTIBLES_OFFSET,
+        ),
     }
 }
 
@@ -317,7 +321,8 @@ impl GearPage {
     #[must_use]
     pub const fn for_kind(kind: crate::ItemKind) -> Option<Self> {
         match kind {
-            crate::ItemKind::Sparrow
+            crate::ItemKind::Artifact
+            | crate::ItemKind::Sparrow
             | crate::ItemKind::Ship
             | crate::ItemKind::GhostShell
             | crate::ItemKind::Emblem

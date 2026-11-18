@@ -469,8 +469,8 @@ impl SundialApp {
             self.choose_install(ctx);
         }
         ui.add_space(8.0);
-        // One grid holds every fact about the installation. These used to be loose lines above and
-        // below a smaller grid, which printed the same paths and the same paragraph twice.
+        // One grid holds every fact about the installation, so each path and each paragraph
+        // prints once.
         egui::Grid::new("preferences_installation_grid")
             .num_columns(2)
             .spacing([12.0, 8.0])
@@ -500,7 +500,7 @@ impl SundialApp {
                 ui.colored_label(
                     match account_source.kind {
                         AccountSourceKind::Json => ui.visuals().text_color(),
-                        AccountSourceKind::Sqlite | AccountSourceKind::Dawn => {
+                        AccountSourceKind::Sunrise | AccountSourceKind::Dawn => {
                             ui.visuals().hyperlink_color
                         }
                         AccountSourceKind::Blocked => ui.visuals().error_fg_color,
@@ -706,7 +706,7 @@ impl SundialApp {
                     .clicked();
                 if matches!(
                     account_source.kind,
-                    AccountSourceKind::Sqlite | AccountSourceKind::Blocked
+                    AccountSourceKind::Sunrise | AccountSourceKind::Blocked
                 ) {
                     restore_account = ui
                         .button("Restore Backup…")

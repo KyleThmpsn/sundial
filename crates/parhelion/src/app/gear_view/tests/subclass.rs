@@ -49,8 +49,8 @@ pub(super) struct AuthoredSubclass {
 pub(super) struct AbilityValue {
     pub(super) entity: u32,
     pub(super) name: String,
-    pub(super) stock: WeaponRuntimeValue,
-    pub(super) edit: WeaponRuntimeValueOverride,
+    pub(super) stock: RuntimeValue,
+    pub(super) edit: RuntimeValueOverride,
 }
 
 /// A 32-bit float of `entity` outside its bank, doubled, as the Values tab would write it. The
@@ -267,7 +267,7 @@ pub(super) fn movement_value(
     label: &str,
 ) -> Option<ability_movement::MovementValue> {
     let payload = manager.read_tag(tiger_pkg::TagHash(entity)).ok()?;
-    let mut graph = load_weapon_runtime_graph_for_entity(manager, 0, 0, entity, &payload).ok()?;
+    let mut graph = load_runtime_graph_for_entity(manager, 0, 0, entity, &payload).ok()?;
     graph.scope_fields();
     ability_movement::discover(&graph)
         .into_iter()
@@ -600,7 +600,7 @@ pub(super) fn spawn_name(packages: &Path, entity: u32, graph: u32) -> String {
 /// since some abilities, such as Skip Grenade, declare every value natively and name none.
 pub(super) fn graph_value(manager: &PackageManager, entity: u32) -> Option<AbilityValue> {
     let payload = manager.read_tag(tiger_pkg::TagHash(entity)).ok()?;
-    let mut graph = load_weapon_runtime_graph_for_entity(manager, 0, 0, entity, &payload).ok()?;
+    let mut graph = load_runtime_graph_for_entity(manager, 0, 0, entity, &payload).ok()?;
     graph.scope_fields();
     // The page leaves the ability's bank out, since the build keeps banks stock.
     graph
@@ -616,8 +616,8 @@ pub(super) fn graph_value(manager: &PackageManager, entity: u32) -> Option<Abili
         .chain(graph.owners.iter().flat_map(|owner| &owner.roots))
         .flat_map(|root| &root.fields)
         .filter_map(|field| match field.value {
-            WeaponRuntimeValue::Float32Bits(bits)
-                if field.kind == WeaponRuntimeValueKind::Float32
+            RuntimeValue::Float32Bits(bits)
+                if field.kind == RuntimeValueKind::Float32
                     && f32::from_bits(bits).is_normal()
                     && f32::from_bits(bits).abs() < 1.0e30 =>
             {
@@ -628,16 +628,16 @@ pub(super) fn graph_value(manager: &PackageManager, entity: u32) -> Option<Abili
         .collect::<Vec<_>>();
     let (field, value) = floats
         .iter()
-        .find(|(field, _)| field.source == WeaponRuntimeFieldSource::GeneratedSchema)
+        .find(|(field, _)| field.source == RuntimeFieldSource::GeneratedSchema)
         .or(floats.first())
         .copied()?;
     Some(AbilityValue {
         entity,
         name: field.name.clone(),
         stock: field.value.clone(),
-        edit: WeaponRuntimeValueOverride {
+        edit: RuntimeValueOverride {
             locator: field.locator.clone(),
-            value: WeaponRuntimeValue::Float32Bits((value * 2.0).to_bits()),
+            value: RuntimeValue::Float32Bits((value * 2.0).to_bits()),
         },
     })
 }

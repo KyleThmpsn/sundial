@@ -16,6 +16,10 @@ pub(crate) struct Prepared {
     native_content_default: bool,
     #[serde(default)]
     native_barrel: Option<Barrel>,
+    /// The content row a carrier other than the base's own selection comes from, as its offset
+    /// from the content definition.
+    #[serde(default)]
+    native_carrier_row: Option<u64>,
     fingerprints: Vec<Fingerprint>,
     patches: Vec<NativeAssetResourcePatch>,
     #[serde(default)]
@@ -104,9 +108,26 @@ impl Prepared {
                 selected.push(row);
             }
         }
-        let row = match selected.as_slice() {
-            [] if self.native_content_default => definition + 0x80,
-            [row] if !self.native_content_default => *row,
+        let row = match (self.native_carrier_row, selected.as_slice()) {
+            // A carrier from another row of the same content owner: the default row or a
+            // whole variant row.
+            (Some(offset), _) => {
+                let Some(row) = usize::try_from(offset)
+                    .ok()
+                    .and_then(|offset| definition.checked_add(offset))
+                else {
+                    return Ok(false);
+                };
+                let variant = row
+                    .checked_sub(rows)
+                    .is_some_and(|within| within % 0x1C0 == 0 && within / 0x1C0 < count);
+                if row != definition + 0x80 && !variant {
+                    return Ok(false);
+                }
+                row
+            }
+            (None, []) if self.native_content_default => definition + 0x80,
+            (None, [row]) if !self.native_content_default => *row,
             _ => return Ok(false),
         };
         let selected_graph = u32_at(&content.owner, row + GRAPH_OFFSET)?;

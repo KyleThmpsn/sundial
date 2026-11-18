@@ -71,6 +71,21 @@ pub(super) fn additions(
                 duration: clip["duration"]
                     .as_f64()
                     .context("Prepared clip duration missing")? as f32,
+                dispatch: match clip.get("dispatch") {
+                    None => animation::bank::Dispatch::NONE,
+                    Some(pose) => {
+                        let alias = |key: &str| -> anyhow::Result<u16> {
+                            Ok(u16::try_from(pose[key].as_u64().with_context(|| {
+                                format!("Prepared clip {key} alias missing")
+                            })?)?)
+                        };
+                        animation::bank::Dispatch {
+                            route: pose["route"].as_u64().map(u16::try_from).transpose()?,
+                            aim: alias("aim")?,
+                            look: alias("look")?,
+                        }
+                    }
+                },
             })
         })
         .collect()

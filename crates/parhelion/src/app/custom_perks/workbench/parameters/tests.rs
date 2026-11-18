@@ -1,22 +1,18 @@
 use super::*;
 use sundial::package_authoring::runtime::{BindingHash, SchemaHandle};
 use sundial::package_authoring::runtime::{
-    WeaponRuntimeBinding, WeaponRuntimeOwner, WeaponRuntimeRoot, WeaponRuntimeRootKind,
+    RuntimeBinding, RuntimeOwner, RuntimeRoot, RuntimeRootKind,
 };
 
 pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
     let roots = [
-        (WeaponRuntimeRootKind::ComponentInstance, 0x8080_3B73, 0x144),
-        (
-            WeaponRuntimeRootKind::ComponentDefinition,
-            0x8080_388F,
-            0x88,
-        ),
+        (RuntimeRootKind::ComponentInstance, 0x8080_3B73, 0x144),
+        (RuntimeRootKind::ComponentDefinition, 0x8080_388F, 0x88),
     ]
     .into_iter()
     .map(|(root, schema, offset)| {
-        let field = WeaponRuntimeField {
-            locator: WeaponRuntimeFieldLocator {
+        let field = RuntimeField {
+            locator: RuntimeFieldLocator {
                 graph_tag: None,
                 binding_hash: BindingHash::new(1),
                 resource_index: 0,
@@ -30,13 +26,13 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
             owner_offset: offset,
             name: "Projectile".into(),
             path_label: "Projectile".into(),
-            kind: WeaponRuntimeValueKind::FixedBytes { size: 8 },
-            value: WeaponRuntimeValue::Bytes([1.0f32.to_le_bytes(), [0; 4]].concat()),
-            source: WeaponRuntimeFieldSource::OpaqueNativeType,
+            kind: RuntimeValueKind::FixedBytes { size: 8 },
+            value: RuntimeValue::Bytes([1.0f32.to_le_bytes(), [0; 4]].concat()),
+            source: RuntimeFieldSource::OpaqueNativeType,
             generated_kind: None,
             name_inferred: false,
         };
-        WeaponRuntimeRoot {
+        RuntimeRoot {
             kind: root,
             schema,
             owner_offset: 0,
@@ -47,11 +43,11 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
         }
     })
     .collect();
-    let graph = WeaponRuntimeGraph {
+    let graph = RuntimeGraph {
         item_hash: 1,
         pattern_global_id_hash: 0,
         entity_tag: 0x8152_82E1,
-        bindings: vec![WeaponRuntimeBinding {
+        bindings: vec![RuntimeBinding {
             binding_hash: 1,
             binding_label: "Projectile".into(),
             resource_index: 0,
@@ -61,7 +57,7 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
             resource_offset: 0,
         }],
         resources: vec![],
-        owners: vec![WeaponRuntimeOwner {
+        owners: vec![RuntimeOwner {
             owner_tag: 0x8152_82E7,
             anchor_binding_hash: 1,
             anchor_resource_index: 0,
@@ -139,7 +135,7 @@ fn guided_profiles_require_unique_paths_matching_owners_and_native_defaults() {
     assert!(guided::ProjectileSpeed::discover_all(&duplicate_graph).is_empty());
     let mut wrong_default = original.clone();
     for root in &mut wrong_default.graphs[0].1.owners[0].roots {
-        if let WeaponRuntimeValue::Bytes(bytes) = &mut root.fields[0].value {
+        if let RuntimeValue::Bytes(bytes) = &mut root.fields[0].value {
             bytes[..4].copy_from_slice(&30.0f32.to_le_bytes());
         }
     }
@@ -186,7 +182,7 @@ fn runtime_validation_blocks_unfinished_stale_ambiguous_and_wrong_type_edits() {
     assert!(!editor.validation_errors().is_empty());
     editor.value_text.clear();
     let original = editor.draft.clone();
-    editor.draft[0].value = WeaponRuntimeValue::Boolean(true);
+    editor.draft[0].value = RuntimeValue::Boolean(true);
     assert!(!editor.validation_errors().is_empty());
     editor.draft = original.clone();
     editor.draft[0].locator.binding_hash = BindingHash::new(999);
@@ -201,7 +197,7 @@ fn runtime_validation_blocks_unfinished_stale_ambiguous_and_wrong_type_edits() {
 
 pub(in crate::app) fn set_test_speed(
     loaded: &PrivatePerkRuntimeGraph,
-    draft: &mut Vec<WeaponRuntimeValueOverride>,
+    draft: &mut Vec<RuntimeValueOverride>,
     value: f32,
 ) {
     guided::ProjectileSpeed::discover(loaded)
@@ -211,7 +207,7 @@ pub(in crate::app) fn set_test_speed(
 }
 pub(in crate::app) fn test_speed(
     loaded: &PrivatePerkRuntimeGraph,
-    draft: &[WeaponRuntimeValueOverride],
+    draft: &[RuntimeValueOverride],
 ) -> f32 {
     guided::ProjectileSpeed::discover(loaded)
         .unwrap()

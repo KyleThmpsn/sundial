@@ -609,8 +609,8 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         // Kinetic, 2 Solar, 4 Arc, 8 Void. Stock witnesses agree across all four owners: void
         // perks set 8 (Abyssal Extractors, Horns of Doom, Oppressive Darkness), arc perks set
         // 4 (Conduction Tines, Volatile Conduction, Trinity Ghoul Catalyst), solar perks set
-        // 2 (Bring the Heat, Helium Spirals, Solar Rampart, Solar Plexus), and 0x0E is every
-        // element. The flag at +0x18 is 1 in exactly the rows whose mask is 0, in every owner.
+        // 2 (Bring the Heat, Helium Spirals, Solar Rampart, Solar Plexus), and 0x0E is all
+        // three. The flag at +0x18 is 1 in exactly the rows whose mask is 0, in every owner.
         //
         // The filter carries a second mask and flag on the same pattern. The flag at +0x19 is
         // set in exactly the nodes whose word at +0x04 is zero, with no exception in any of the

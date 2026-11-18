@@ -1,3 +1,4 @@
+//! Batch builds from the recipe library: snapshots, progress, reports and staging.
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -19,10 +20,10 @@ use crate::manifest::{
     canonical_map, canonical_recipe, selection_fingerprint,
 };
 #[cfg(test)]
-use crate::package_profile::{
+use crate::package::profile::{
     CANONICAL_ARTIFACT_FILE_NAMES, CANONICAL_PACKAGE_IDS, PARHELION_ASSET_PACKAGE_ID,
 };
-use crate::package_profile::{
+use crate::package::profile::{
     CANONICAL_PACKAGES, PACKAGE_HEADER_PREFIX_SIZE, PackageHeaderPrefix, SHADOWKEEP_HEADER_VERSION,
     authored_package, authored_package_for_file_name, authored_packages_for_file_names,
     canonical_package,
@@ -55,6 +56,9 @@ pub struct BatchBuildSnapshot {
     /// Whether imported items the Parhelion mod holds take their importer's badge there, rather
     /// than joining Project Sunrise. An importer's own mod always holds its badge.
     pub source_badges: bool,
+    /// Names of the selected artifact recipes a build for Dawn leaves out, since Dawn has no
+    /// artifact equipment slot.
+    pub dawn_artifacts: Vec<String>,
 }
 
 impl BatchBuildSnapshot {
@@ -62,8 +66,26 @@ impl BatchBuildSnapshot {
     /// stages the recipes, from the encodings it writes, since encoding an imported recipe packs
     /// its whole model.
     pub fn new(mut request: BatchBuildRequest) -> Result<Self, String> {
+        // Dawn has no artifact equipment slot, so a build for Dawn leaves artifacts out.
+        let selected = request.recipes.len();
+        let mut dawn_artifacts = Vec::new();
+        if crate::branding::Branding::for_packages(&request.package_directory)
+            == crate::branding::Branding::Dawn
+        {
+            request.recipes.retain(|recipe| {
+                let artifact = recipe.kind == crate::ItemKind::Artifact;
+                if artifact {
+                    dawn_artifacts.push(recipe.name.clone());
+                }
+                !artifact
+            });
+        }
         if request.recipes.is_empty() && request.maps.is_empty() {
-            return Err("No recipes or maps are included in the package set".to_owned());
+            return Err(if selected == 0 {
+                "No recipes or maps are included in the package set".to_owned()
+            } else {
+                "Every selected recipe is an artifact, which Dawn cannot equip".to_owned()
+            });
         }
         request.recipes.sort_by_cached_key(|recipe| {
             (
@@ -88,7 +110,23 @@ impl BatchBuildSnapshot {
             request,
             one_mod: false,
             source_badges: true,
+            dawn_artifacts,
         })
+    }
+
+    /// The build notice naming the artifact recipes a build for Dawn leaves out, if any.
+    pub fn dawn_artifacts_notice(&self) -> Option<String> {
+        match self.dawn_artifacts.as_slice() {
+            [] => None,
+            [name] => Some(format!(
+                "Dawn has no artifact slot, so this build leaves out the artifact {name}."
+            )),
+            names => Some(format!(
+                "Dawn has no artifact slot, so this build leaves out {} artifacts: {}.",
+                names.len(),
+                names.join(", ")
+            )),
+        }
     }
 
     /// The selection built with every item in the Parhelion mod when `one_mod` is set.
@@ -463,7 +501,7 @@ struct PlannedSnapshot {
     /// The class of each subclass base, which the manifest records for the install.
     subclass_classes: BTreeMap<u32, u8>,
     /// The build's turn with the package layout, held until its packages are staged.
-    profile: crate::package_profile::Profile,
+    profile: crate::package::profile::Profile,
 }
 
 /// One family member's build of its own recipes and maps.
@@ -475,7 +513,7 @@ struct MemberBuild {
     maps: Vec<usize>,
     bundle: NewWeaponProjectBundle,
     /// A mod-folder build's merge data, written beside its packages.
-    merge_data: Option<crate::merge_data::MergeData>,
+    merge_data: Option<crate::package::merge_data::MergeData>,
 }
 
 /// Compiles the request. On Sunrise's mod loader each importer whose content Sunrise can merge
@@ -492,16 +530,16 @@ fn compile_members(
     source: &Path,
     family: crate::mod_family::build::Family,
     (project, maps): (&WeaponProjectSpec, &[crate::map::MapRecipe]),
-    host: crate::package_profile::Host,
+    host: crate::package::profile::Host,
     branding: crate::branding::Branding,
     record: &mut dyn FnMut(&str, crate::AuthoringError) -> String,
     progress: &mut dyn FnMut(BuildProgress),
 ) -> Result<Vec<MemberBuild>, String> {
-    let mut compile = |recipes: &[usize],
-                       selected: &[usize],
-                       member: Option<MemberProgress>,
-                       progress: &mut dyn FnMut(BuildProgress)|
-     -> Result<NewWeaponProjectBundle, String> {
+    let compile = |recipes: &[usize],
+                   selected: &[usize],
+                   member: Option<MemberProgress>,
+                   progress: &mut dyn FnMut(BuildProgress)|
+     -> crate::AuthoringResult<NewWeaponProjectBundle> {
         let part = WeaponProjectSpec {
             weapons: recipes
                 .iter()
@@ -526,13 +564,13 @@ fn compile_members(
                 member,
             });
         })
-        .map_err(|error| record("Project compilation failed.", error))
     };
     let all_recipes = (0..project.weapons.len()).collect::<Vec<_>>();
     let all_maps = (0..maps.len()).collect::<Vec<_>>();
     if !host.is_standalone() {
         // One mod holds everything, so it builds once.
-        let bundle = compile(&all_recipes, &all_maps, None, progress)?;
+        let bundle = compile(&all_recipes, &all_maps, None, progress)
+            .map_err(|error| record("Project compilation failed.", error))?;
         family.commit();
         return Ok(vec![MemberBuild {
             owner: None,
@@ -564,6 +602,15 @@ fn compile_members(
     if let Some(censuses) = censuses {
         family.expect_collections(&censuses);
     }
+    // Planning already coupled the importers whose recipes share an imported ability with
+    // another member's, or every importer when one mod holds every item, so the log says why
+    // their recipes build with Parhelion's from the first pass.
+    let planned = coupling_notes(&crate::mod_family::build::coupled());
+    if !planned.is_empty() {
+        let mut event = BuildProgress::phase(BuildPhase::CompilingProject, 0, 0);
+        event.activity = Some(BuildActivity::Diagnostic(planned.join(" ")));
+        progress(event);
+    }
     // A later pass emits most packages of the pass before unchanged, and the turn keeps them.
     let passes = crate::turn_cache::Passes::begin();
     // An importer whose build reads the same family state as in the pass before keeps that build,
@@ -576,7 +623,10 @@ fn compile_members(
     // the main mod the rows the importers recorded in the pass before, which the next pass
     // records unchanged, or moves the main mod's automatic Collections entries behind an
     // importer's, so the passes end.
-    for pass in 1..=5 {
+    let mut pass = 0;
+    let mut completed_passes = 0;
+    'passes: while completed_passes < 5 {
+        pass += 1;
         passes.next();
         let parts = family.partitions(project.weapons.len(), maps.len());
         let main_builds = parts.iter().any(|part| part.owner.is_none());
@@ -601,12 +651,12 @@ fn compile_members(
             // An importer's records take the host its installed build had, so an unchanged
             // member builds the same bytes.
             let member_host = match part.owner {
-                Some(owner) => crate::package_profile::Host::standalone(
+                Some(owner) => crate::package::profile::Host::standalone(
                     crate::mod_family::build::member_host(owner)?,
                 ),
                 None => host,
             };
-            crate::package_profile::begin_partition(member_host, part.owner)?;
+            crate::package::profile::begin_partition(member_host, part.owner)?;
             let member = MemberProgress {
                 name: part.owner.map_or("Parhelion", |owner| owner.name()),
                 pass,
@@ -620,13 +670,13 @@ fn compile_members(
                 .and_then(|_| crate::mod_family::build::snapshot());
             let reusable = part.owner.zip(earlier.as_ref()).and_then(|(owner, now)| {
                 let (build, seen) = kept.remove(&owner)?;
-                let inputs = crate::mod_family::build::member_inputs(owner, now, &seen.reads)?;
+                let inputs = crate::mod_family::build::member_inputs(now, &seen.reads)?;
                 (seen.inputs == inputs && build.recipes == part.recipes && build.maps == part.maps)
                     .then_some((owner, build, seen))
             });
             if !verify_reuse && let Some((owner, build, seen)) = reusable {
                 crate::mod_family::build::replay(owner, &seen.before, &seen.after);
-                passes.built(part.owner);
+                passes.replayed(part.owner);
                 let mut event = BuildProgress::phase(BuildPhase::BuildingPayloads, 1, 1);
                 event.member = Some(member);
                 event.activity = Some(BuildActivity::Diagnostic(format!(
@@ -645,7 +695,19 @@ fn compile_members(
                 member.start(part.recipes.len(), part.maps.len()),
             ));
             progress(event);
-            let bundle = compile(&part.recipes, &part.maps, Some(member), progress)?;
+            let bundle = match compile(&part.recipes, &part.maps, Some(member), progress) {
+                Ok(bundle) => bundle,
+                Err(error) if part.owner.is_none() && pass == 1 && family.discard_seed() => {
+                    let mut event = BuildProgress::phase(BuildPhase::CompilingProject, 0, 0);
+                    event.activity = Some(BuildActivity::Diagnostic(format!(
+                        "Parhelion could not build with saved shared rows. Retrying without them. {error:#}"
+                    )));
+                    progress(event);
+                    kept.clear();
+                    continue 'passes;
+                }
+                Err(error) => return Err(record("Project compilation failed.", error)),
+            };
             passes.built(part.owner);
             if let Some((_, kept_build, _)) = &reusable
                 && !same_artifacts(&kept_build.bundle, &bundle)
@@ -661,9 +723,7 @@ fn compile_members(
                 (part.owner, earlier, crate::mod_family::build::snapshot())
             {
                 let reads = later.reads(owner);
-                if let Some(inputs) =
-                    crate::mod_family::build::member_inputs(owner, &earlier, &reads)
-                {
+                if let Some(inputs) = crate::mod_family::build::member_inputs(&earlier, &reads) {
                     watched.insert(
                         owner,
                         Watched {
@@ -681,7 +741,7 @@ fn compile_members(
                 .iter()
                 .map(|artifact| (artifact.plan.output_file_name.as_str(), artifact.bytes()))
                 .collect::<Vec<_>>();
-            let merge_data = crate::merge_data::describe(source, &files);
+            let merge_data = crate::package::merge_data::describe(source, &files);
             builds.push(MemberBuild {
                 owner: part.owner,
                 recipes: part.recipes,
@@ -691,9 +751,10 @@ fn compile_members(
             });
         }
         let outcome = family.finish_pass();
-        let review = review_pass(&family, &outcome, &builds, main_builds)?;
+        completed_passes += 1;
+        let review = review_pass(&outcome, &builds)?;
         if review.retry.is_empty() && family.settled(&outcome) {
-            crate::package_profile::end_partitions(host);
+            crate::package::profile::end_partitions(host);
             family.commit();
             return Ok(builds);
         }
@@ -705,7 +766,7 @@ fn compile_members(
                 if lists == 1 { "list" } else { "lists" }
             ));
         }
-        if pass < 5 {
+        if completed_passes < 5 {
             notes.push(format!("The mods build again in pass {}.", pass + 1));
         }
         let mut event = BuildProgress::phase(BuildPhase::CompilingProject, 0, 0);
@@ -759,77 +820,49 @@ struct PassReview {
 impl PassReview {
     /// The sentences the build log shows for the review's changes.
     fn notes(&self) -> Vec<String> {
-        self.retry
-            .host
-            .then(|| "Parhelion builds to hold the rows its importers share.".to_owned())
-            .into_iter()
-            .chain(self.retry.hosted.iter().map(|(importer, tables)| {
-                format!(
-                    "Parhelion now writes {} for {}.",
-                    sentence_list(tables.iter().map(|table| table.label())),
-                    importer.name()
-                )
-            }))
-            .chain(self.retry.coupled.iter().map(|(importer, reasons)| {
-                format!(
-                    "{} builds into Parhelion. {}",
-                    importer.name(),
-                    reasons.join(" ")
-                )
-            }))
-            .collect()
+        coupling_notes(&self.retry.coupled)
     }
 }
 
-/// Reviews a pass's member builds against what `family` already decided: which tables the main
-/// mod hosts and which importers build with it from the next pass on. It changes nothing itself.
+/// A sentence for each importer that builds with the main mod, with why.
+fn coupling_notes(coupled: &BTreeMap<Importer, Vec<String>>) -> Vec<String> {
+    coupled
+        .iter()
+        .map(|(importer, reasons)| {
+            format!(
+                "{} builds into Parhelion. {}",
+                importer.name(),
+                reasons.join(" ")
+            )
+        })
+        .collect()
+}
+
+/// Reviews a pass's member builds: which importers build with the main mod from the next pass
+/// on. It changes nothing itself.
 fn review_pass(
-    family: &crate::mod_family::build::Family,
     outcome: &crate::mod_family::build::Outcome,
     builds: &[MemberBuild],
-    main_builds: bool,
 ) -> Result<PassReview, String> {
-    use crate::mod_family::build::Shared;
-    let conflicts = crate::merge_data::conflicts(
+    let conflicts = crate::package::merge_data::conflicts(
         &builds
             .iter()
             .filter_map(|build| Some((build.owner, build.merge_data.as_ref()?)))
             .collect::<Vec<_>>(),
     );
     let mut retry = crate::mod_family::build::Retry::default();
-    // A table an importer's build adds rows to, which another member changes too, is written by
-    // the main mod's build with every member's rows, and the importer keeps everything else. A
-    // family whose recipes are all imported has no main mod build, so the main mod then builds
-    // without content of its own to hold them (`Retry::host`). An entry no shared table names, or
-    // merge data that can't be written, builds the whole importer with the main mod instead.
+    // The main mod's build writes every member's rows of the shared tables Sunrise can't merge,
+    // so an importer's build ships none of them and they can't clash. Each member adds its own
+    // rows to the tables Sunrise merges, the activity tables among them. An entry two members
+    // change that Sunrise wouldn't merge, or merge data that can't be written, builds the whole
+    // importer with the main mod instead.
     for (importer, conflict) in conflicts {
-        let produced = outcome.produced_by(Some(importer));
-        let already = family.hosting(importer);
-        let mut tables = BTreeSet::new();
-        let mut unhosted = !conflict.whole.is_empty();
-        for tag in conflict.entries.keys() {
-            match produced.get(tag) {
-                // An importer's activity tables are built on the main mod's, so they hold its
-                // rows and Sunrise serves them from the importer while it loads.
-                Some(Shared::Activities) if already.contains(&Shared::Activities) => {}
-                // A table the main mod hosts still clashes when the main mod didn't build.
-                Some(table) if !already.contains(table) || !main_builds => {
-                    tables.insert(*table);
-                }
-                _ => unhosted = true,
-            }
-        }
-        if unhosted {
-            retry.coupled.insert(importer, conflict.reasons());
-        } else if !tables.is_empty() {
-            retry.hosted.insert(importer, tables);
-            retry.host |= !main_builds;
-        }
+        retry.coupled.insert(importer, conflict.reasons());
     }
     // A perk accepts an imported ability by the root its subclass's build allocated, so a perk
-    // and a subclass in different members build together.
+    // and a subclass in different members build together. Planning couples the ones the recipes
+    // show before the first pass, and this finds any a build records beyond those.
     for (importer, reasons) in outcome.split_abilities() {
-        retry.hosted.remove(&importer);
         retry.coupled.entry(importer).or_default().extend(reasons);
     }
     // Every member's entries go before the stock entries of a Collections list, each member's in
@@ -872,7 +905,13 @@ fn plan_snapshot_naming(
     // investment records take the window's first id and the asset packages follow it.
     let directory = &snapshot.request.package_directory;
     let window = crate::install::package_window(directory).map_err(|error| error.to_string())?;
-    let (window, host) = if crate::install::uses_mod_loader(directory) {
+    // Dawn's composer takes only patches that keep their package's entry count, so a build for an
+    // install it composes writes the mod loader's layout too.
+    #[cfg(feature = "dawn")]
+    let composed = crate::parhelion_dawn::install::composes(directory);
+    #[cfg(not(feature = "dawn"))]
+    let composed = false;
+    let (window, host) = if crate::install::uses_mod_loader(directory) || composed {
         let Some(rest) = window.rest() else {
             return Err(
                 "The free package ids leave no room for the build's investment records".into(),
@@ -880,17 +919,17 @@ fn plan_snapshot_naming(
         };
         (
             rest,
-            crate::package_profile::Host::standalone(if window.descending {
+            crate::package::profile::Host::standalone(if window.descending {
                 window.top
             } else {
                 window.base
             }),
         )
     } else {
-        (window, crate::package_profile::Host::APPENDED)
+        (window, crate::package::profile::Host::APPENDED)
     };
     let waiting = Instant::now();
-    let profile = crate::package_profile::hold(window, host);
+    let profile = crate::package::profile::hold(window, host);
     if host.is_standalone() {
         let mut event = BuildProgress::phase(BuildPhase::InspectingSource, 0, 0);
         event.activity = Some(BuildActivity::Diagnostic(format!(
@@ -899,18 +938,19 @@ fn plan_snapshot_naming(
         )));
         progress(event);
     }
-    // Automatic Collections placement follows whether another mod changes the presentation nodes.
-    crate::package_profile::set_presentation_nodes_shared(
-        crate::install::other_mods_change(
+    // Automatic Collections placement follows which of the presentation nodes' lists another mod
+    // leads, which the build reads from these copies once it has the stock table.
+    crate::package::profile::set_presentation_node_copies(
+        crate::install::other_mods_entries(
             directory,
             sundial::package_authoring::mod_content::merge::recipes::PRESENTATION_NODES,
         )
         .map_err(|error| error.to_string())?,
     );
     if host.is_standalone() {
-        crate::package_profile::name_standalone_package(
+        crate::package::profile::name_standalone_package(
             host.id,
-            crate::package_profile::RECORDS_FAMILY,
+            crate::package::profile::RECORDS_FAMILY,
         )?;
     }
     progress(BuildProgress::artifact(
@@ -1070,8 +1110,8 @@ fn plan_snapshot_naming(
             failed.set(None);
             // The next compile starts from this turn's empty family session and allocations.
             crate::mod_family::build::begin_native();
-            crate::appended_tags::clear();
-            crate::package_profile::end_partitions(host);
+            crate::package::appended_tags::clear();
+            crate::package::profile::end_partitions(host);
             let mut event = BuildProgress::phase(BuildPhase::CompilingProject, 0, 0);
             event.activity = Some(BuildActivity::Diagnostic(format!(
                 "Compiling the other {} items without {}. Source checks are kept, and items the runtime cache holds are reused.",
@@ -1182,7 +1222,7 @@ fn inspect_source(
                 ));
             }
             authored.push(name);
-        } else if crate::package_profile::is_authored_standalone_package_id(header.package_id) {
+        } else if crate::package::profile::is_authored_standalone_package_id(header.package_id) {
             return Err(format!(
                 "Package id {:04X} is reserved for Parhelion assets but is occupied by {}",
                 header.package_id,
@@ -1325,6 +1365,7 @@ fn stage_planned(
         let mut merge_artifacts = Vec::new();
         let mut map_diagnostics = None;
         let mut mission_scripts = Vec::new();
+        let mut activity_packs = Vec::new();
         for build in &builds {
             let (directory, prefix) = match build.owner {
                 Some(owner) => (run_directory.join(owner.id()), format!("{}/", owner.id())),
@@ -1345,7 +1386,7 @@ fn stage_planned(
             let mut files = artifact_reports_with_progress(&paths, &mut progress)?;
             validate_outputs(&files)?;
             let merge_paths = match &build.merge_data {
-                Some(data) => crate::merge_data::stage(&directory, data)?,
+                Some(data) => crate::package::merge_data::stage(&directory, data)?,
                 None => Vec::new(),
             };
             let merge_paths = stage_kept_files(&directory, merge_paths)?;
@@ -1357,11 +1398,31 @@ fn stage_planned(
                 .collect::<Vec<_>>();
             let mut diagnostics = crate::map::diagnostics::stage(&directory, &selected)?;
             let mut scripts = crate::map::mission::stage(&directory, &selected)?;
+            let mut pack = match crate::map::pack::stage(
+                &directory,
+                &selected,
+                &snapshot.request.package_directory,
+            )? {
+                crate::map::pack::Staged::Pack(file) => Some(file),
+                crate::map::pack::Staged::None => None,
+                crate::map::pack::Staged::NotGenerated => {
+                    let mut event = BuildProgress::phase(BuildPhase::WritingPackages, 0, 0);
+                    event.activity = Some(BuildActivity::Diagnostic(
+                        "Sunrise has not generated its activity pack in this installation yet, so \
+                         the maps install without theirs and won't load. Start the game once, then \
+                         build again."
+                            .into(),
+                    ));
+                    progress(event);
+                    None
+                }
+            };
             for file in files
                 .iter_mut()
                 .chain(&mut merge_files)
                 .chain(&mut diagnostics)
                 .chain(&mut scripts)
+                .chain(&mut pack)
             {
                 file.file_name = format!("{prefix}{}", file.file_name);
             }
@@ -1372,6 +1433,7 @@ fn stage_planned(
                     .chain(&merge_files)
                     .chain(&diagnostics)
                     .chain(&scripts)
+                    .chain(&pack)
                     .cloned()
                     .collect(),
             });
@@ -1384,6 +1446,7 @@ fn stage_planned(
                 map_diagnostics = diagnostics;
             }
             mission_scripts.extend(scripts);
+            activity_packs.extend(pack);
         }
         if mission_scripts.len() != crate::mod_family::build::mission_scripts().len() {
             return Err("Mission controller belongs to an unselected map".to_owned());
@@ -1462,6 +1525,7 @@ fn stage_planned(
             merge_data: merge_artifacts,
             map_diagnostics,
             mission_scripts,
+            activity_packs,
         };
         manifest.mods = crate::mod_family::build::members(&parts)?;
         write_manifest(&manifest_path, &manifest)?;
@@ -1473,7 +1537,7 @@ fn stage_planned(
         ));
 
         let report = BuildReport {
-            mods: if crate::package_profile::host().is_standalone() {
+            mods: if crate::package::profile::host().is_standalone() {
                 let mut reports = crate::mod_family::reports(
                     &manifest.mods,
                     source_package_directory

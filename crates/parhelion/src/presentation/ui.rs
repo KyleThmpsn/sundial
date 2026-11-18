@@ -307,7 +307,7 @@ impl ImageEditor {
                         .branding
                         .badge()
                         .and_then(|default| {
-                            crate::badge_icon::preview_with_branding(
+                            crate::icon::badge::preview_with_branding(
                                 draft.as_ref().or(default.as_ref()),
                                 None,
                                 self.branding,
@@ -316,8 +316,10 @@ impl ImageEditor {
                         .map(|image| editor::color_image(&image))
                         .map_err(|e| e.to_string()),
                     Kind::Watermark => match draft.as_ref() {
-                        Some(artwork) => crate::watermark::render_custom_corner_preview(artwork)
-                            .map(|image| editor::color_image(&image)),
+                        Some(artwork) => {
+                            crate::icon::watermark::render_custom_corner_preview(artwork)
+                                .map(|image| editor::color_image(&image))
+                        }
                         None => self
                             .branding
                             .watermark()

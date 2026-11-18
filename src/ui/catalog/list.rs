@@ -43,22 +43,11 @@ impl BrowserList<'_> {
         self.draw_layout(ui, row, |ui, index, _| detail(ui, index), false, 0)
     }
 
-    /// The same, saying how many rows a wider search would add.
+    /// The same, saying how many rows a wider search would add, with the detail told whether
+    /// its row was double-clicked this frame. A picker takes a double-click as its Use button.
     ///
     /// A list can come back empty because the default listing hides what the game never
     /// names, which is not something the reader can see from an empty box.
-    pub fn draw_body_reporting_hidden<T>(
-        &self,
-        ui: &mut egui::Ui,
-        row: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
-        mut detail: impl FnMut(&mut egui::Ui, usize) -> Option<T>,
-        hidden: usize,
-    ) -> Option<T> {
-        self.draw_layout(ui, row, |ui, index, _| detail(ui, index), false, hidden)
-    }
-
-    /// [`Self::draw_body_reporting_hidden`], with the detail told whether its row was
-    /// double-clicked this frame. A picker takes a double-click as its Use button.
     pub fn draw_body_activating<T>(
         &self,
         ui: &mut egui::Ui,

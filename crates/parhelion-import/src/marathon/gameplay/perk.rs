@@ -14,6 +14,7 @@ mod icon;
 use super::*;
 pub(crate) use icon::inventory_icon;
 use std::sync::Arc;
+use sundial::package_authoring::fnv1;
 
 /// Item definitions by identity, with the definition tag at row +0x10.
 const ITEMS: u32 = 0x8080_9685;
@@ -62,18 +63,6 @@ const REUSABLE_CHOICES: usize = 4;
 /// The most choices a column holds: the rows one 64-bit ownership mask covers, also the largest
 /// Shadowkeep randomized set.
 const ROLL_POOL: usize = 64;
-
-/// FNV-1 of an identifier. Both games name slots and plug categories this way.
-const fn fnv1(name: &str) -> u32 {
-    let bytes = name.as_bytes();
-    let mut hash = 0x811C_9DC5_u32;
-    let mut at = 0;
-    while at < bytes.len() {
-        hash = hash.wrapping_mul(0x0100_0193) ^ bytes[at] as u32;
-        at += 1;
-    }
-    hash
-}
 
 /// Source slots and the Shadowkeep plug categories whose lane presents the same part.
 const PARTS: [(u32, &[u32]); 4] = [

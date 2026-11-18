@@ -165,7 +165,7 @@ impl Imported {
         manager: &PackageManager,
         entity: &[u8],
         symbols: &BTreeMap<String, TagHash>,
-    ) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    ) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
         use sha2::{Digest, Sha256};
         let bindings = weapon_component_bindings(entity, BINDING).map_err(invalid)?;
         let [binding] = bindings.as_slice() else {
@@ -292,7 +292,7 @@ impl Imported {
                     .checked_sub(resource)
                     .and_then(|n| u32::try_from(n).ok())
                     .ok_or_else(|| invalid("Sword mechanics patch lies outside its resource"))?;
-                Ok(WeaponRuntimeResourcePatch {
+                Ok(RuntimeResourcePatch {
                     binding_hash: BINDING,
                     resource_index: u16::try_from(binding.resource_index)
                         .map_err(|_| invalid("Sword resource index overflows"))?,
@@ -333,8 +333,8 @@ struct Bank {
 }
 
 pub(super) struct Edits {
-    pub appends: Vec<WeaponRuntimeResourceAppend>,
-    pub patches: Vec<WeaponRuntimeResourcePatch>,
+    pub appends: Vec<RuntimeResourceAppend>,
+    pub patches: Vec<RuntimeResourcePatch>,
 }
 
 fn descriptor_patch(
@@ -342,7 +342,7 @@ fn descriptor_patch(
     descriptor: usize,
     target: usize,
     count: usize,
-) -> AuthoringResult<WeaponRuntimeResourcePatch> {
+) -> AuthoringResult<RuntimeResourcePatch> {
     let offset = descriptor
         .checked_sub(resource)
         .and_then(|value| u32::try_from(value).ok())
@@ -355,7 +355,7 @@ fn descriptor_patch(
         .to_le_bytes()
         .to_vec();
     bytes.extend_from_slice(&relative(pointer, target)?.to_le_bytes());
-    Ok(WeaponRuntimeResourcePatch {
+    Ok(RuntimeResourcePatch {
         binding_hash: BINDING,
         resource_index: 0,
         offset,
@@ -698,7 +698,7 @@ pub(super) fn edits(
         next = next
             .checked_add(bytes.len())
             .ok_or_else(|| invalid("Sword profile owner growth overflows"))?;
-        appended.push(WeaponRuntimeResourceAppend {
+        appended.push(RuntimeResourceAppend {
             binding_hash: BINDING,
             resource_index: 0,
             bytes,
@@ -706,6 +706,8 @@ pub(super) fn edits(
             arrays: Vec::new(),
             pointers: Vec::new(),
             references: Vec::new(),
+            retained_pointers: Vec::new(),
+            retained_bytes: Vec::new(),
         });
     }
     let mut bytes = Vec::new();
@@ -721,7 +723,7 @@ pub(super) fn edits(
         target,
         key_capacity + 1,
     )?);
-    appended.push(WeaponRuntimeResourceAppend {
+    appended.push(RuntimeResourceAppend {
         binding_hash: BINDING,
         resource_index: 0,
         bytes,
@@ -729,6 +731,8 @@ pub(super) fn edits(
         arrays: Vec::new(),
         pointers: Vec::new(),
         references: Vec::new(),
+        retained_pointers: Vec::new(),
+        retained_bytes: Vec::new(),
     });
     Ok(Edits {
         appends: appended,

@@ -398,6 +398,22 @@ fn convex(
     Ok(shape)
 }
 
+/// A packfile whose only object is one convex hull, the form a native cone query shape names.
+/// The stock `template` of the same form supplies the class names and the shape's header.
+pub(crate) fn convex_shape(template: &[u8], hull: &Hull) -> Result<Vec<u8>> {
+    let template = Template::read(template, "hkpConvexVerticesShape")?;
+    let shape = template.object("hkpConvexVerticesShape", 128)?;
+    let (minimum, maximum) = hull.bounds()?;
+    let mut w = Writer {
+        data: Vec::new(),
+        local: Vec::new(),
+        references: Vec::new(),
+        objects: Vec::new(),
+    };
+    convex(&mut w, &shape, hull, minimum, maximum)?;
+    w.finish(template)
+}
+
 /// Solid convex parts followed by separate triangle meshes for native hit bodies.
 pub(crate) fn vehicle_shapes(
     template: &[u8],

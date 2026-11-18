@@ -23,6 +23,16 @@ const RGBA_DECISION: u32 = 7;
 /// value type lies in it.
 const ENUM_POOL: usize = 0x98;
 const ENUM_POOL_CLASS: u32 = 0x80804696;
+/// The value type of a decision choosing between two component names, as the decision in stock
+/// table `80BC73D0` that names a tooltip has.
+const NAME_DECISION: u32 = 6;
+/// The header's descriptor of the pool of four-byte names. A decision's two names and a
+/// button's tooltip name (property `218`) lie in it.
+const NAME_POOL: usize = 0xE8;
+const NAME_POOL_CLASS: u32 = 0x80804692;
+/// A binding's conversion comparing a hash source with one hash: kind 3, operator 0 and the
+/// hash, as stock table `80BC73D0` compares an item's display style.
+const HASH_COMPARISON: u32 = 0x808046DA;
 /// The identity of a table's default property object. Every stock table with component
 /// properties has exactly one. Its other objects are variants holding sparse overrides, and no
 /// stock decision appears in one.
@@ -61,6 +71,28 @@ pub struct ColorSwitch {
     pub when_true: Endpoint,
     pub when_false: Endpoint,
     pub outputs: Vec<Endpoint>,
+}
+
+/// A native decision between two component names by a hash comparison. Its value type and
+/// names are stored and its condition is bound through a conversion, as stock table
+/// `80BC73D0` stores its tooltip decision. Its index is the old hierarchy count.
+pub struct NameSwitch {
+    pub name: u32,
+    /// The hash-valued source and the hash it is compared with.
+    pub condition: Endpoint,
+    pub equals: u32,
+    pub when_true: u32,
+    pub when_false: u32,
+    pub outputs: Vec<Endpoint>,
+}
+
+/// Each import of a widget table: the imported table and the zero-based index its first
+/// component takes.
+pub fn imports(data: &[u8]) -> Result<Vec<(u32, u16)>, String> {
+    array(data, 0x08, 12, 0x80804607)?
+        .into_iter()
+        .map(|at| Ok((u32_at(data, at)?, u16_at(data, at + 4)?)))
+        .collect()
 }
 
 fn array(data: &[u8], descriptor: usize, stride: usize, class: u32) -> Result<Vec<usize>, String> {
@@ -235,6 +267,39 @@ pub fn remove_bindings(source: &[u8], remove: &[Binding]) -> Result<Vec<u8>, Str
         .collect::<Vec<_>>();
     let mut data = source.to_vec();
     relocated_array(&mut data, 0x58, 0x808046D8, 56, &kept, 0, &[8, 32, 48])?;
+    finish(&mut data)?;
+    Ok(data)
+}
+
+/// Remove one pathless property the default object sets on a component. A root table can set
+/// a property on an imported component, which otherwise keeps the value its own table gives it.
+/// The removed value stays in its pool and the component's other properties keep theirs.
+pub fn remove_property(source: &[u8], component: u16, property: u32) -> Result<Vec<u8>, String> {
+    let objects = array(source, 0x48, 64, 0x8080462A)?;
+    let object = default_object(source, &objects)?;
+    let mut rows = Vec::new();
+    for at in array(source, object + 32, 24, 0x808046D4)? {
+        if u64_at(source, at)? == u64::from(component) {
+            rows.push(at);
+        }
+    }
+    let [row] = rows[..] else {
+        return Err("The UI component has no single property row".into());
+    };
+    let mut kept = Vec::new();
+    let mut removed = 0;
+    for at in array(source, row + 8, 24, 0x80804858)? {
+        if u64_at(source, at + 8)? == u64::from(property) && path(source, at)?.is_empty() {
+            removed += 1;
+        } else {
+            kept.push(at);
+        }
+    }
+    if removed != 1 || kept.is_empty() {
+        return Err("The expected UI property is missing, repeated or the only one".into());
+    }
+    let mut data = source.to_vec();
+    relocated_array(&mut data, row + 8, 0x80804858, 24, &kept, 0, &[0, 16])?;
     finish(&mut data)?;
     Ok(data)
 }
@@ -415,6 +480,192 @@ fn enum_value(data: &mut Vec<u8>, value: u32) -> Result<usize, String> {
         }
     }
     Ok(start + rows.len() * 4)
+}
+
+/// The rows of a four-byte value pool holding `values`, adding the ones no row holds. A grown
+/// pool moves to the end of the payload, and every value naming one of its rows names the moved
+/// row.
+fn pool_values(
+    data: &mut Vec<u8>,
+    descriptor: usize,
+    class: u32,
+    values: &[u32],
+) -> Result<Vec<usize>, String> {
+    let rows = array(data, descriptor, 4, class)?;
+    let mut held = rows
+        .iter()
+        .map(|&at| u32_at(data, at))
+        .collect::<Result<Vec<_>, _>>()?;
+    let before = held.len();
+    for &value in values {
+        if !held.contains(&value) {
+            held.push(value);
+        }
+    }
+    let position = |value: u32| held.iter().position(|&found| found == value);
+    if held.len() == before {
+        return values
+            .iter()
+            .map(|&value| Ok(rows[position(value).ok_or("UI pool value is absent")?]))
+            .collect();
+    }
+    let fields = value_fields(data)?;
+    let bytes = held
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let start = append_array(data, descriptor, class, held.len(), &bytes)?;
+    if let Some(&old) = rows.first() {
+        let moved = old..old + rows.len() * 4;
+        for field in fields {
+            let delta = i64_at(data, field)?;
+            if delta == 0 {
+                continue;
+            }
+            let target = relative_offset(field, 0, delta)?;
+            if moved.contains(&target) {
+                put_pointer(data, field, start + (target - old))?;
+            }
+        }
+    }
+    values
+        .iter()
+        .map(|&value| Ok(start + position(value).ok_or("UI pool value is absent")? * 4))
+        .collect()
+}
+
+/// Add one name decision to a root table's default property object, with its class name, local
+/// class row, bindings and hierarchy entry after the last childless child of the root.
+pub fn name_switch(
+    widget: &[u8],
+    hierarchy: &[u8],
+    switch: &NameSwitch,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let first = component_count(hierarchy)?;
+    let count = usize::from(first) + 1;
+    if count >= 0x7FFF {
+        return Err("Too many UI components".into());
+    }
+    let names = array(widget, 0x18, 4, 0x80804618)?;
+    let classes = array(widget, 0x38, 16, 0x80804622)?;
+    if names.len() != classes.len() {
+        return Err("UI component names and classes differ".into());
+    }
+    for &at in &names {
+        if u32_at(widget, at)? == switch.name {
+            return Err("Duplicate UI component name".into());
+        }
+    }
+    for &at in &classes {
+        let encoded = u64_at(widget, at + 8)?;
+        if encoded & 0xFFFF != 0 || encoded >> 16 >= u64::from(first) {
+            return Err("UI local class index is outside its hierarchy".into());
+        }
+    }
+    if switch.condition.component >= first
+        || switch.outputs.is_empty()
+        || switch
+            .outputs
+            .iter()
+            .any(|target| target.component >= first)
+    {
+        return Err("UI name decision endpoint is outside the hierarchy".into());
+    }
+    let objects = array(widget, 0x48, 64, 0x8080462A)?;
+    let mut tree_rows = array(hierarchy, 8, 4, 0x80804616)?
+        .into_iter()
+        .map(|at| Ok((u16_at(hierarchy, at)?, u16_at(hierarchy, at + 2)?)))
+        .collect::<Result<Vec<_>, String>>()?;
+    let sibling = tree_rows
+        .iter()
+        .rposition(|&(parent, child)| {
+            parent == 0 && !tree_rows.iter().any(|&(other, _)| other == child)
+        })
+        .ok_or("The UI root has no childless child")?;
+    tree_rows.insert(sibling + 1, (0, first));
+
+    let mut data = widget.to_vec();
+    let value_type = pool_values(&mut data, ENUM_POOL, ENUM_POOL_CLASS, &[NAME_DECISION])?[0];
+    let chosen = pool_values(
+        &mut data,
+        NAME_POOL,
+        NAME_POOL_CLASS,
+        &[switch.when_true, switch.when_false],
+    )?;
+    let mut name_rows = copied_rows(widget, &names, 4)?;
+    name_rows.extend_from_slice(&switch.name.to_le_bytes());
+    let mut class_rows = copied_rows(widget, &classes, 16)?;
+    class_rows.extend_from_slice(&DECISION.to_le_bytes());
+    class_rows.extend_from_slice(&(u64::from(first) << 16).to_le_bytes());
+    append_array(&mut data, 0x18, 0x80804618, names.len() + 1, &name_rows)?;
+    append_array(&mut data, 0x38, 0x80804622, classes.len() + 1, &class_rows)?;
+    let object = default_object(&data, &objects)?;
+    let components = array(&data, object + 32, 24, 0x808046D4)?;
+    let rows = relocated_array(
+        &mut data,
+        object + 32,
+        0x808046D4,
+        24,
+        &components,
+        1,
+        &[16],
+    )?;
+    let component = rows + components.len() * 24;
+    write_bytes(&mut data, component, &u32::from(first).to_le_bytes())?;
+    let properties = append_array(&mut data, component + 8, 0x80804858, 3, &[0; 72])?;
+    for (ordinal, (selector, value)) in [
+        (0x201u64, value_type),
+        (0x203, chosen[0]),
+        (0x204, chosen[1]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let property = properties + ordinal * 24;
+        write_path(&mut data, property, &[])?;
+        write_bytes(&mut data, property + 8, &selector.to_le_bytes())?;
+        put_pointer(&mut data, property + 16, value)?;
+    }
+    let old_bindings = array(widget, 0x58, 56, 0x808046D8)?;
+    let rows = relocated_array(
+        &mut data,
+        0x58,
+        0x808046D8,
+        56,
+        &old_bindings,
+        1 + switch.outputs.len(),
+        &[8, 32, 48],
+    )?;
+    let decision = |property| Endpoint {
+        component: first,
+        path: Vec::new(),
+        property,
+    };
+    let condition = rows + old_bindings.len() * 56;
+    write_endpoint(&mut data, condition, &switch.condition)?;
+    write_endpoint(&mut data, condition + 24, &decision(0x202))?;
+    align(&mut data, 4);
+    data.extend_from_slice(&HASH_COMPARISON.to_le_bytes());
+    let conversion = data.len();
+    data.extend_from_slice(&[3, 0, 0, 0]);
+    data.extend_from_slice(&switch.equals.to_le_bytes());
+    put_pointer(&mut data, condition + 48, conversion)?;
+    for (ordinal, target) in switch.outputs.iter().enumerate() {
+        let at = condition + (1 + ordinal) * 56;
+        write_endpoint(&mut data, at, &decision(0x205))?;
+        write_endpoint(&mut data, at + 24, target)?;
+    }
+    let mut tree = hierarchy.to_vec();
+    let rows = tree_rows
+        .into_iter()
+        .flat_map(|(parent, child)| parent.to_le_bytes().into_iter().chain(child.to_le_bytes()))
+        .collect::<Vec<_>>();
+    append_array(&mut tree, 8, 0x80804616, count, &rows)?;
+    write_bytes(&mut tree, 24, &((count as u32) * 0x10001).to_le_bytes())?;
+    finish(&mut data)?;
+    finish(&mut tree)?;
+    component_count(&tree)?;
+    Ok((data, tree))
 }
 
 /// The table's default property object.

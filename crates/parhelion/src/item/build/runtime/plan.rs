@@ -85,8 +85,8 @@ pub(in crate::item::build) fn author(
     let particle_symbols = BTreeMap::new();
     // Sunrise's mod loader refuses a patch that adds entries, so there every private copy starts
     // past the package's table and goes to the standalone packages that take its overflow.
-    let private_perk_runtime_append_start = if crate::package_profile::host().is_standalone() {
-        crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT
+    let private_perk_runtime_append_start = if crate::package::profile::host().is_standalone() {
+        crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT
     } else {
         extended_overlay_append_start(package_directory, PRIVATE_PERK_RUNTIME_PACKAGE_ID)?
     };
@@ -211,6 +211,8 @@ pub(in crate::item::build) fn author(
         .enumerate()
         .map(|(ordinal, (donor, plans))| {
             catalog.weapon = Some(ordinal);
+            // An entry's perks bind the subclass's own effect groups.
+            catalog.effects = Some(ordinal);
             let mut compiler = custom_plugs::RecordCompiler {
                 manager: &sources.manager,
                 catalog: &mut catalog,

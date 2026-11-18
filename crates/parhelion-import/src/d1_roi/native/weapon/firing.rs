@@ -2,6 +2,7 @@
 use super::*;
 mod presentation;
 mod projectile;
+mod sword;
 mod timing;
 
 pub(super) fn prepare(assembly: &mut Assembly<'_>, source: &Value, donor: u32) -> Result<Value> {
@@ -11,6 +12,16 @@ pub(super) fn prepare(assembly: &mut Assembly<'_>, source: &Value, donor: u32) -
     let timing = match result {
         Ok(report) => report,
         Err(error) => {
+            crate::cancellation::check()?;
+            json!({"status":"unsupported","reason":format!("{error:#}")})
+        }
+    };
+    // A sword's attacks translate onto the base's sword owner. A refusal leaves every attack
+    // the base's and names no key, so no talent writes one nothing reads.
+    let sword = match sword::prepare(assembly, source, donor) {
+        Ok(report) => report,
+        Err(error) => {
+            assembly.sword_keys.clear();
             crate::cancellation::check()?;
             json!({"status":"unsupported","reason":format!("{error:#}")})
         }
@@ -49,6 +60,7 @@ pub(super) fn prepare(assembly: &mut Assembly<'_>, source: &Value, donor: u32) -
         }
     };
     Ok(json!({"timing":timing,
+        "sword":sword,
         "projectile":projectile,
         "presentation":presentation,
         "gameplay_verified":false}))

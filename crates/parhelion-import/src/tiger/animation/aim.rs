@@ -17,6 +17,7 @@
 //! and its previous and next edges. Clip byte `+0x143` names the kind, 1 for an open chain and 2 for
 //! a closed one. `C81C70` projects the relative aim onto an open chain and clamps it at both ends.
 //! `C82120` adds the closing edge. The relative yaw is the aim yaw less the entity's own facing.
+use crate::math::axis_angle;
 use crate::{
     presentation::{append, put},
     tiger::payload::{Payload, compact},
@@ -135,17 +136,6 @@ pub fn vertices(clip: &Payload) -> Result<(Vec<[f32; 2]>, bool)> {
             .collect::<Result<_>>()?,
         closed,
     ))
-}
-
-fn axis_angle(q: [f32; 4]) -> ([f32; 3], f32) {
-    let q = if q[3] < 0. { q.map(|v| -v) } else { q };
-    let angle = 2. * q[3].clamp(-1., 1.).acos();
-    let s = (1. - q[3] * q[3]).max(0.).sqrt();
-    if s < 1e-6 {
-        ([0.; 3], 0.)
-    } else {
-        ([q[0] / s, q[1] / s, q[2] / s], angle)
-    }
 }
 
 pub fn rotation(axis: [f32; 3], angle: f32) -> [f32; 4] {

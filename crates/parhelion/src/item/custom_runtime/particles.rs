@@ -354,7 +354,7 @@ impl ImportedParticles {
         entity: &[u8],
         symbols: &BTreeMap<String, TagHash>,
         keyed_override: bool,
-    ) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    ) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
         let Some(sword) = &self.sword else {
             return Ok(Vec::new());
         };

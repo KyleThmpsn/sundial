@@ -45,7 +45,7 @@ fn pack(
 }
 
 fn package_id(index: usize) -> Option<u16> {
-    crate::package_profile::window().nth(index)
+    crate::package::profile::window().nth(index)
 }
 
 /// Records where each tag of `group` moves under `plan`, after checking each is where its cached
@@ -405,7 +405,7 @@ impl Pending<'_> {
         assignments: &mut Vec<u8>,
         animation: &mut AnimationCache,
     ) -> Result<Restored, Reason> {
-        let allocation = crate::appended_tags::checkpoint();
+        let allocation = crate::package::appended_tags::checkpoint();
         let mut reason = Reason::RelocationRejected;
         let restored = (|| {
             // No live state changes until all allocations, references and assignment rows agree.
@@ -685,7 +685,7 @@ impl Pending<'_> {
                 // Native indexes also retain package IDs beyond the authored allocation
                 // domain. Those memberships cannot move, and must not become private tags.
                 .filter(|(package, _)| {
-                    *package <= crate::package_profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID
+                    *package <= crate::package::profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID
                 })
                 .map(|&(package, entry)| TagHash::new(package, entry).0);
             for reference in all

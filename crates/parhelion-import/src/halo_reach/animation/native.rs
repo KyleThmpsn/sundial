@@ -1,6 +1,7 @@
 //! Explicit source motion on appended native vehicle controls.
 mod wheel;
 use super::{codec::Motion, playback};
+use crate::math::product;
 use crate::{
     halo_reach::{Scene, rig},
     presentation::{Graph, put},
@@ -52,17 +53,6 @@ pub(in crate::halo_reach) struct Bundle {
     table: Option<(u32, Payload)>,
 }
 
-fn multiply(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    let [x, y, z, w] = a;
-    let [i, j, k, r] = b;
-    [
-        w * i + x * r + y * k - z * j,
-        w * j - x * k + y * r + z * i,
-        w * k + x * j - y * i + z * r,
-        w * r - x * i - y * j - z * k,
-    ]
-}
-
 fn source_bones(scene: &Scene, first: usize) -> Result<Vec<animation::rig::Bone>> {
     let bones = &scene.models[0].model.bones;
     let objects = rig::world(bones)?;
@@ -75,7 +65,7 @@ fn source_bones(scene: &Scene, first: usize) -> Result<Vec<animation::rig::Bone>
         );
         let rotation = rig::quaternion(
             bone.parent
-                .map_or(bone.rotation, |p| multiply(rotations[p], bone.rotation)),
+                .map_or(bone.rotation, |p| product(rotations[p], bone.rotation)),
         )?;
         rotations.push(rotation);
         let inverse = rig::inverse_rigid(&objects[index]);

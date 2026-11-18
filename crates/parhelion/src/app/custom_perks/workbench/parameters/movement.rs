@@ -115,7 +115,7 @@ pub(in crate::app::custom_perks) fn draw_parameter(
     loaded: &PrivatePerkRuntimeGraph,
     tag: u32,
     parameter: &Parameter,
-    draft: &mut Vec<WeaponRuntimeValueOverride>,
+    draft: &mut Vec<RuntimeValueOverride>,
 ) -> Option<Result<(), String>> {
     let current = parameter.value(draft);
     let mut value = current.clone().unwrap_or(parameter.original());

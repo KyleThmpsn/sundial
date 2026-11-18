@@ -26,6 +26,8 @@ default-members = [
     "crates/sundial-suite",
     "crates/parhelion",
 ]
+# Local tooling with its own workspace, absent from a fresh clone.
+exclude = ["crates/parhelion-dawn"]
 resolver = "2"
 
 [workspace.package]

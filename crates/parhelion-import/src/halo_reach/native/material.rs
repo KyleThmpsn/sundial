@@ -1894,6 +1894,7 @@ fn analytical_lighting(
 /// second diffuse-light draw. Native cubemap grids carry broad spatial colour separately.
 /// Native W affects both direct and environment light, so optional baked visibility controls
 /// inherit that coupling. Exposure and base albedo never participate in visibility selection.
+/// The base color and metalness carry the surface's own specular color ([`NATIVE_METAL`]).
 fn native_finish(lightmap: &Lightmap) -> String {
     use super::lighting;
     let fog = if lightmap.screen_fog || lightmap.fog.is_none() {
@@ -1902,7 +1903,7 @@ fn native_finish(lightmap: &Lightmap) -> String {
         "fog.a"
     };
     format!(
-        "float bakedLevel=dot(lightIndirect,float3(0.2126,0.7152,0.0722))*max(bakedControl.w,0);float nativeVisibility=clamp({open:.9}*sqrt(max(bakedLevel,0)/{reference:.9}),{low:.9},{high:.9});nativeVisibility*=pow(saturate(lightNativeMask),1.0/{power:.9})*sqrt(saturate({fog}));o0=float4(saturate(albedo.rgb),0.04);o1=float4(saturate(n*((1-roughness)*0.125+0.375)+0.5),0);o2=float4(0,0.5,0,saturate(nativeVisibility));",
+        "float bakedLevel=dot(lightIndirect,float3(0.2126,0.7152,0.0722))*max(bakedControl.w,0);float nativeVisibility=clamp({open:.9}*sqrt(max(bakedLevel,0)/{reference:.9}),{low:.9},{high:.9});nativeVisibility*=pow(saturate(lightNativeMask),1.0/{power:.9})*sqrt(saturate({fog}));{NATIVE_METAL}o0=float4(nativeBase,0.04);o1=float4(saturate(n*((1-roughness)*0.125+0.375)+0.5),0);o2=float4(nativeMetal,0.5,0,saturate(nativeVisibility));",
         open = lighting::OPEN,
         low = lighting::RANGE[0],
         high = lighting::RANGE[1],
@@ -2457,8 +2458,8 @@ pub(in crate::halo_reach) fn change_color_inputs(material: &Material) -> usize {
     change_colors(material).max(emission)
 }
 
-/// The specular color at normal incidence of a native dielectric (`F0 = 0.04 + 0.84 * metalness`,
-/// with metalness zero on every converted surface).
+/// The specular color at normal incidence of a native dielectric (`F0 = 0.04 + 0.84 * metalness`
+/// at metalness zero). Only an opaque level surface writes another metalness ([`NATIVE_METAL`]).
 const NATIVE_DIELECTRIC_F0: f32 = 0.04;
 
 /// The value a surface stores as `roughness`, one minus the native smoothness `s`, for a Reach
@@ -2475,6 +2476,47 @@ fn native_roughness(slope: &str, strength: &str) -> String {
         "(1-saturate((1-sqrt(saturate({slope})))/0.9)*saturate(({strength})/{NATIVE_DIELECTRIC_F0:.2}))"
     )
 }
+
+/// The scale from a Reach highlight's strength to the reflectance at normal incidence of an
+/// energy-normalized lobe, the unit of the native specular color. The Beckmann highlight of
+/// `calc_material_analytic_specular` is `D G F / (pi NV)` with `D` lacking its own divisor of
+/// pi, four times a microfacet lobe's `D G F / (4 NL NV)` times `NL`. The Phong highlight of
+/// `analytical_Phong_specular` is `cos^p * (1 + p)`, which reflects `2 pi` times the light a
+/// unit lobe does. A terrain layer's `calc_phong_outgoing_light` is `cos^p * (p + 1) / (2 pi)`,
+/// a unit lobe already.
+const BECKMANN_LOBE: &str = "4";
+const PHONG_LOBE: &str = "6.283185307";
+const TERRAIN_LOBE: &str = "1";
+
+/// The statements that declare an opaque level surface's `reachReflectance`, the reflectance of
+/// its Reach highlight at normal incidence, and the `roughness` that follows from it. `highlight`
+/// is the highlight's Beckmann slope, its strength and its lobe scale. A surface without a
+/// highlight reflects nothing and stays fully rough.
+///
+/// Taking the analytical highlight as the surface's whole reflectance is a translation choice.
+/// Reach scales its area and environment specular by separate contributions, and the native
+/// surface holds one specular color for the sun, local lights and cube reflection.
+fn level_roughness(highlight: Option<(&str, &str, &str)>) -> String {
+    match highlight {
+        Some((slope, strength, lobe)) => format!(
+            "float reachReflectance=saturate({lobe}*({strength}));float roughness={};",
+            native_roughness(slope, "reachReflectance")
+        ),
+        None => "float reachReflectance=0;float roughness=1;".into(),
+    }
+}
+
+/// The statements that give an opaque level surface its native base color `nativeBase` and
+/// metalness `nativeMetal` from its albedo and `reachReflectance`. The native specular color is
+/// `0.04 * (1 - X) + X * base` and its diffuse color `(1 - X) * base` for metalness `X`. With
+/// `base = albedo / (1 - X)` the diffuse color stays the albedo, and `X` solves
+/// `0.04 * (1 - X) + X * d / (1 - X) = reachReflectance` for the albedo's luminance `d`. `X`
+/// stops where the base's brightest channel reaches one, and at 0.96. A base cannot tint a
+/// highlight it has no color for, so a surface too dark to reach the dielectric's 0.04 this way
+/// keeps metalness zero, as does every surface whose highlight is no stronger than that.
+/// With metalness zero on every surface, each drew a dielectric's highlight and cube reflection
+/// whatever strength its Reach material asked for.
+const NATIVE_METAL: &str = "float3 nativeDiffuse=saturate(albedo.rgb);float nativeLuma=dot(nativeDiffuse,float3(0.2126,0.7152,0.0722));float nativeGain=max(reachReflectance-0.04,0);float nativeSum=nativeLuma+reachReflectance-0.08;float nativeMetal=min(2*nativeGain/(nativeSum+sqrt(nativeSum*nativeSum+0.16*nativeGain)+0.0000001),min(0.96,1-max(nativeDiffuse.r,max(nativeDiffuse.g,nativeDiffuse.b))));nativeMetal=0.04*(1-nativeMetal)+nativeMetal*nativeLuma/(1-nativeMetal)>0.04?nativeMetal:0;float3 nativeBase=nativeDiffuse/(1-nativeMetal);";
 
 /// Reach's specular mask for a surface's `specular_mask` option, as `calc_specular_mask_ps` reads
 /// it: the unlit albedo's alpha, the specular mask texture's alpha, their product, or one. `None`

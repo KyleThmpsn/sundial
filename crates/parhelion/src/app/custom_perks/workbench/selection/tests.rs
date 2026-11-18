@@ -175,7 +175,7 @@ fn native_custom_picker_uses_uninstalled_perks_for_exact_choices_and_supports_cr
         .unwrap();
     perk.icon = Some(crate::perk::Icon::Image {
         name: "Saved Selection".into(),
-        image: crate::icon_edit::ImportedIcon::from_bytes(&png.into_inner()).unwrap(),
+        image: crate::icon::edit::ImportedIcon::from_bytes(&png.into_inner()).unwrap(),
     });
     perk.effects.push(PerkRecipe::effect(405));
     perk.stats.push(WeaponStatOverride {

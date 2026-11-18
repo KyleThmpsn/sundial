@@ -428,6 +428,9 @@ impl Source {
         if let Some(effect) = firing_effect {
             graph["firing_effect"] = effect;
         }
+        if let Some(human) = assembly.human.take() {
+            human.write(&directory, &mut graph)?;
+        }
         progress("Saving the weapon recipe…".into());
         crate::io::write_json(&directory.join("asset-graph.json"), &graph)?;
         crate::graph::check_particle_bindings(&directory)?;
@@ -566,7 +569,7 @@ fn weapon_limitations(
     };
     let mut limitations = [
         animation_limit,
-        "Base stats use source investment values. Qualified firing curves retain source timing and charge inputs. Qualified projectile counterparts retain native behavior with source response operands. Unsupported firing graphs and other stat translation use the selected native donor.",
+        "Base stats use source investment values. Qualified firing, reload, handling, aiming, recoil, velocity, magazine, reserve, damage, precision, hip-fire accuracy and blast radius routes use dynamic source calibration. Unsupported stat routes and runtime controllers retain native behavior. Qualified projectile counterparts retain native behavior with source response operands.",
         "Matched named audio uses source banks and media with the native event's trigger and acoustic settings. Other audio uses the selected native runtime. Supported sight lights retain source transforms and live parameters on native shaders. Other auxiliary sight effects require separate translation.",
         "Unsupported talent choices, scaled source stat adjustments and talent progression are not translated.",
     ]
@@ -578,6 +581,18 @@ fn weapon_limitations(
         format!("Third-person poses retain native behavior: {}", first_person_animation["character_reason"].as_str().unwrap_or("source holding profile was not converted"))
     });
     limitations.extend(approximations.iter().cloned());
+    match firing["sword"]["status"].as_str() {
+        Some("translated") => limitations.push(
+            "Sword attacks use the source's selection, timing, movement, ammunition cost and keyed heavy attacks on native attack rows. Their effects, damage profiles and guards retain native behavior.".into(),
+        ),
+        Some(_) => limitations.push(format!(
+            "Sword attacks retain native behavior: {}",
+            firing["sword"]["reason"]
+                .as_str()
+                .unwrap_or("the source sword owner was not translated")
+        )),
+        None => {}
+    }
     if firing["projectile"]["status"] == "retained_native" {
         limitations.extend(
             firing["projectile"]["compatibility"]

@@ -24,15 +24,16 @@ use crate::account::{
 };
 use crate::persistence::native_account::snapshot::{self, Snapshot};
 
-/// The tables a cleanup may change. `item_sockets` and `item_rolls` follow their item through
-/// its cascade, and `metadata` carries the advanced revision. A change anywhere else came from
-/// something the review did not plan, such as a trigger, and is refused.
-const CLEANED: [&str; 7] = [
+/// The tables a cleanup may change. `item_sockets`, `item_rolls` and schema 7's `item_values`
+/// follow their item through its cascade, and `metadata` carries the advanced revision. A change
+/// anywhere else came from something the review did not plan, such as a trigger, and is refused.
+const CLEANED: [&str; 8] = [
     "metadata",
     "character_items",
     "profile_items",
     "item_sockets",
     "item_rolls",
+    "item_values",
     "dismantle_rewards",
     "durable_flags",
 ];

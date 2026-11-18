@@ -449,7 +449,7 @@ fn single_item_preservation_moves_the_original_roll_with_the_old_item() {
 #[test]
 fn storage_limits_follow_runtime_not_settings_version() {
     let (dir, dawn) = fixture();
-    crate::persistence::sqlite_account::tests::create_fixture(
+    crate::persistence::sunrise_account::tests::create_fixture(
         &dir.path().join("data/investment.sqlite3"),
         1,
     );

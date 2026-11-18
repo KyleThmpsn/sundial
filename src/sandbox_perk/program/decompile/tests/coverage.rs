@@ -18,7 +18,7 @@ fn out_of_range_probability_is_preserved_and_refused_for_authoring() {
             decompile(&decoded, "Invalid Probability", |tag| tag)
                 .unwrap_err()
                 .0
-                .contains("probability")
+                .contains("chance")
         );
     }
 }

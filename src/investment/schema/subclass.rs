@@ -4,7 +4,7 @@ use crate::package_payload::native_array_at;
 
 /// Stock unlock-flag rows: Titan Class, Hunter Class and Warlock Class. These are table indexes in
 /// the Shadowkeep corpus, not item hashes or list indexes.
-const CLASS_FLAGS: [u32; 3] = [0x10E, 0x0F5, 0x115];
+pub(super) const CLASS_FLAGS: [u32; 3] = [0x10E, 0x0F5, 0x115];
 
 /// Reads the stock subclass's single class-flag requirement, or no requirement for an
 /// unrestricted subclass. Unknown condition shapes are rejected rather than called neutral.

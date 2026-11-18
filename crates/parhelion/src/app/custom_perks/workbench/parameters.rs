@@ -27,7 +27,7 @@ pub(super) use native::{draw_card_values, unlisted_changes};
 pub(crate) struct PrivatePerkRuntimeGraph {
     pub(super) action_tag: u32,
     pub(super) action_payload: Vec<u8>,
-    pub(super) graphs: Vec<(u32, WeaponRuntimeGraph)>,
+    pub(super) graphs: Vec<(u32, RuntimeGraph)>,
     pub(super) warnings: Vec<String>,
     /// Failures that prevent validating runtime edits, separate from reference-index notices.
     pub(super) graph_errors: Vec<String>,
@@ -56,7 +56,7 @@ pub(in crate::app) struct PerkEditor {
     pub(super) key: PerkEditorKey,
     pub(super) plug_label: String,
     pub(super) packages: PathBuf,
-    pub(super) draft: Vec<WeaponRuntimeValueOverride>,
+    pub(super) draft: Vec<RuntimeValueOverride>,
     pub(super) action_draft: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
     pub(super) projectile_draft: Vec<ProjectileSelection>,
     pub(super) original_projectile_draft: Vec<ProjectileSelection>,
@@ -64,7 +64,7 @@ pub(in crate::app) struct PerkEditor {
     /// Weapon names by item hash, for assets named after the pattern that fires them.
     pub(super) item_names: BTreeMap<u32, entity::catalog::ItemName>,
     pub(super) pending_movement: Option<(u32, Vec<(entity::projectile::parameters::Kind, u32)>)>,
-    pub(super) original_draft: Vec<WeaponRuntimeValueOverride>,
+    pub(super) original_draft: Vec<RuntimeValueOverride>,
     pub(super) original_action_draft: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
     pub(super) parameter_error: Option<String>,
     pub(super) graph: Option<Arc<PrivatePerkRuntimeGraph>>,
@@ -74,7 +74,7 @@ pub(in crate::app) struct PerkEditor {
     pub(super) query: String,
     /// The Component Properties search, cleared with each opened effect.
     pub(super) property_query: String,
-    pub(super) value_text: BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
+    pub(super) value_text: BTreeMap<(RuntimeFieldLocator, u8), String>,
     pub(super) show_all_native_values: bool,
     /// A conversion the user requested. The workbench applies it and closes the editor.
     pub(super) conversion: Option<sundial::package_authoring::sandbox_perk::program::Program>,
@@ -128,7 +128,7 @@ pub(super) fn load_entity_parameters(
     let payload = manager
         .read_tag(tiger_pkg::TagHash(entity))
         .map_err(|error| error.to_string())?;
-    let mut graph = load_weapon_runtime_graph_for_entity(&manager, 0, 0, entity, &payload)?;
+    let mut graph = load_runtime_graph_for_entity(&manager, 0, 0, entity, &payload)?;
     graph.scope_fields();
     let names = sundial::package_authoring::tft::cached_only(packages)?;
     let graphs = vec![(entity, graph)];
@@ -217,7 +217,7 @@ pub(in crate::app) fn load_private_perk_runtime_graph(
     };
     // Action-only perks are valid. A failed graph must not hide editable action values.
     for source in graphs {
-        match load_weapon_runtime_graph_for_entity(
+        match load_runtime_graph_for_entity(
             &manager,
             key.source_plug_hash,
             0,
@@ -295,7 +295,7 @@ impl PerkEditor {
         packages: PathBuf,
         key: PerkEditorKey,
         plug_label: String,
-        draft: Vec<WeaponRuntimeValueOverride>,
+        draft: Vec<RuntimeValueOverride>,
         action_draft: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
         projectile_draft: Vec<ProjectileSelection>,
         ctx: &egui::Context,
@@ -337,7 +337,7 @@ impl PerkEditor {
         key: PerkEditorKey,
         label: String,
         entity: u32,
-        values: Vec<WeaponRuntimeValueOverride>,
+        values: Vec<RuntimeValueOverride>,
         ctx: &egui::Context,
     ) -> Self {
         // Build the same isolated editor without starting a stock-perk load.

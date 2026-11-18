@@ -517,6 +517,28 @@ struct Endpoint {
     selector: u64,
 }
 
+/// The comparison row of a kept consumer a left-out component supplies.
+///
+/// A settings input is disconnected in the private graph, so it compares as a disconnected row.
+/// Fusion carrier `80EF0CEB` feeds category `80C70C0E`'s settings from `808094A0` owner
+/// `80FA36E3`, where carrier `80BBB1B9` leaves the same owner's unconnected. Any other input
+/// names the left-out supplier, so the comparison can check that nothing kept reads it.
+fn left_out_link(
+    kind: usize,
+    path: String,
+    a: &Endpoint,
+    b: &Endpoint,
+    channel: u32,
+    flags: u32,
+) -> Value {
+    if path.ends_with("/settings") {
+        return json!({"kind":kind,"consumer":path,"consumer_namespace":a.namespace,
+            "provider":null,"provider_namespace":b.namespace,"selected":{"channel":0},"flags":flags});
+    }
+    json!({"kind":kind,"consumer":path,"provider":"left_out",
+        "owner":b.tag,"class":b.class,"channel":channel})
+}
+
 impl Graph {
     /// Retained roles whose source owner is a qualified variant of the shared one, with the
     /// source values their private copies take. In every role with a variant field, the carrier's
@@ -975,8 +997,7 @@ impl Graph {
                 if self.left_out_tag(b.tag) && b.selector < 0xFFFF {
                     let (path, _) =
                         self.consumer(&a, inputs, &mut seen, (&mut occurrences, &mut inputs_seen))?;
-                    links.push(json!({"kind":kind,"consumer":path,"provider":"left_out",
-                        "owner":b.tag,"class":b.class,"channel":channel}));
+                    links.push(left_out_link(kind, path, &a, &b, channel, flags));
                     continue;
                 }
                 let (path, name) =

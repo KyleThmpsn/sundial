@@ -45,6 +45,18 @@ impl Profile {
             == Some("add_src_times_srcalpha")
     }
 
+    /// The lifetime of the profile's samples in seconds.
+    pub(in crate::halo_reach) fn life(&self) -> f32 {
+        self.life
+    }
+
+    /// The profile's greatest half width in metres.
+    pub(in crate::halo_reach) fn radius(&self, metres: f32) -> Result<f32> {
+        let [a, b] = self.width.bounds()?;
+        ensure!(a > 0. && b > 0., "Source contrail width is not positive");
+        Ok(a.max(b) * metres * 0.5)
+    }
+
     /// The mean linear color a palettized profile's palette multiplies its color by, or white for a
     /// diffuse-only profile. The palette row sits at the profile's palette coordinate and the base
     /// map's red channel indexes it, so the mean runs over the base map's texels, each weighted by
@@ -547,9 +559,7 @@ pub(in crate::halo_reach) fn emit(
         speed.is_finite() && speed > 0. && (2.0..=96.).contains(&profiles),
         "Source contrail exceeds native sample capacity"
     );
-    let [a, b] = profile.width.bounds()?;
-    ensure!(a > 0. && b > 0., "Source contrail width is not positive");
-    let radius = a.max(b) * metres * 0.5;
+    let radius = profile.radius(metres)?;
     let material = material(
         cache,
         pages,

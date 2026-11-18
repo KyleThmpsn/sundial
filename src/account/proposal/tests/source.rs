@@ -34,7 +34,7 @@ fn verify_selected_source(version: u64) {
     let inactive_dawn = crate::persistence::dawn_path(&settings);
     crate::persistence::dawn_account::tests::create_fixture(&inactive_dawn);
     let dawn_before = read(&inactive_dawn).unwrap();
-    crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&database, 3);
     let db = rusqlite::Connection::open(&database).unwrap();
     db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE extension(value TEXT); INSERT INTO extension VALUES('keep');").unwrap();
     let mut equipped = item(20, 200);
@@ -45,7 +45,7 @@ fn verify_selected_source(version: u64) {
     }});
     std::fs::write(&settings, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
     let json_before = std::fs::read(&settings).unwrap();
-    let sqlite_before = crate::persistence::sqlite_account::snapshot::read(&database).unwrap();
+    let sqlite_before = crate::persistence::sunrise_account::snapshot::read(&database).unwrap();
     let plan = proposal(&settings);
     let active = if version == 18 { &database } else { &settings };
     assert_eq!(&plan.settings_path, active);
@@ -62,7 +62,7 @@ fn verify_selected_source(version: u64) {
             document.pointer("/state/account/extension")
         );
         assert_eq!(
-            crate::persistence::sqlite_account::snapshot::read(&database).unwrap(),
+            crate::persistence::sunrise_account::snapshot::read(&database).unwrap(),
             sqlite_before
         );
     } else {

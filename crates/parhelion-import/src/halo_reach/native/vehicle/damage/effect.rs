@@ -1,6 +1,7 @@
 //! Source debris and particles scheduled by private native effect entities.
-use super::super::{fragment, secondary::Bundle};
+use super::super::{bundle::Bundle, fragment};
 use super::*;
+use crate::math::product;
 use crate::{
     halo_reach::{
         cache::{Cache, Tag},
@@ -359,15 +360,6 @@ fn vector<const N: usize>(value: &Value, field: &str) -> Result<[f32; N]> {
         ensure!(result.is_finite(), "Nonfinite source effect parameter");
     }
     Ok(out)
-}
-
-fn product(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    [
-        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
-        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
-        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
-        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
-    ]
 }
 
 fn angles([yaw, pitch]: [f32; 2]) -> Result<[f32; 4]> {
@@ -1675,7 +1667,7 @@ pub(super) fn build(
                         let (position, orientation) = seat::frame(bones, bone, anchor)?;
                         markers.push(markers::Marker {
                             name: marker,
-                            binding: [1, u32::try_from(bone)?],
+                            binding: [markers::EFFECT_GROUP, u32::try_from(bone)?],
                             position: [position[0], position[1], position[2], 1.],
                             orientation,
                             row: 0,

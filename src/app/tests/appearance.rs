@@ -123,7 +123,7 @@ fn character_appearance_ui_edit_undo_save_and_reload() {
     let initial = native.default_appearance(0, 0).unwrap();
     let directory = TestDirectory::new("character appearance ui");
     let database = directory.0.join("data/investment.sqlite3");
-    crate::persistence::sqlite_account::tests::versions::fixture(&database, "v3-fresh");
+    crate::persistence::sunrise_account::tests::versions::fixture(&database, "v3-fresh");
     let db = rusqlite::Connection::open(&database).unwrap();
     db.execute(
         "UPDATE characters SET race=0,gender=0,appearance_header=?,appearance_header_valid=1",

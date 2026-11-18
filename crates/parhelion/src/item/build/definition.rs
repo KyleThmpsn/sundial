@@ -153,14 +153,14 @@ pub(super) fn apply_presentation(
     write_localized_reference(
         strings,
         ITEM_NAME_REFERENCE_OFFSET,
-        crate::package_profile::localization_table() as u32,
+        crate::package::profile::localization_table() as u32,
         identity.name_hash,
     )?;
     if donor.weapon.text.type_name.is_some() {
         write_localized_reference(
             strings,
             ITEM_TYPE_REFERENCE_OFFSET,
-            crate::package_profile::localization_table() as u32,
+            crate::package::profile::localization_table() as u32,
             identity.type_hash,
         )?;
     } else if let Some(presentation) = donor
@@ -181,7 +181,7 @@ pub(super) fn apply_presentation(
     write_localized_reference(
         strings,
         ITEM_DESCRIPTION_REFERENCE_OFFSET,
-        crate::package_profile::localization_table() as u32,
+        crate::package::profile::localization_table() as u32,
         identity.flavor_hash,
     )?;
     // The item-string displaySource is the inventory tooltip's independent acquisition
@@ -190,7 +190,7 @@ pub(super) fn apply_presentation(
         write_localized_reference(
             strings,
             ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET,
-            crate::package_profile::localization_table() as u32,
+            crate::package::profile::localization_table() as u32,
             identity.inventory_hint_hash,
         )?;
     } else {

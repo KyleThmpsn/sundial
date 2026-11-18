@@ -21,6 +21,62 @@ pub(super) struct Region {
 /// crashed the client at `+0x1A7CFA7` on entering the map.
 pub(super) const MAX_TREE_NODES: usize = 2048;
 
+/// The binary division that produced a tome's lighting cells: a cell by its index among them, or
+/// a plane on an axis with the divisions below and above it.
+pub(super) enum Division {
+    Cell(u32),
+    Split(usize, f32, Box<Division>, Box<Division>),
+}
+
+impl Division {
+    /// The highest cell index the division names.
+    fn last(&self) -> u32 {
+        match self {
+            Self::Cell(cell) => *cell,
+            Self::Split(_, _, low, high) => low.last().max(high.last()),
+        }
+    }
+}
+
+/// A tome's lighting cells, which tile `bounds` by `division`. Cell `n` is cluster `base + n`.
+///
+/// The partition follows the division's own planes, so a cell costs one leaf where no region
+/// reaches it. Given the cells as boxes instead, each cut at one box's face also divided every
+/// other box in its node: a converted four-area mission's trees spent 7 to 47 leaves on a cell
+/// and reached the node budget at 8 to 65 cells.
+#[derive(Clone, Copy)]
+pub(super) struct Lighting<'a> {
+    pub division: &'a Division,
+    pub bounds: Bounds,
+    pub base: u32,
+}
+
+impl Lighting<'_> {
+    /// The part of the division that reaches `bounds`, descended past every plane that lies
+    /// outside them. `None` when the cells do not reach `bounds`.
+    fn within(mut self, bounds: Bounds) -> Option<Self> {
+        if !intersects(bounds, self.bounds) {
+            return None;
+        }
+        loop {
+            let division = self.division;
+            let Division::Split(axis, value, low, high) = division else {
+                break;
+            };
+            if *value <= bounds.minimum[*axis] {
+                self.division = high.as_ref();
+                self.bounds.minimum[*axis] = *value;
+            } else if *value >= bounds.maximum[*axis] {
+                self.division = low.as_ref();
+                self.bounds.maximum[*axis] = *value;
+            } else {
+                break;
+            }
+        }
+        Some(self)
+    }
+}
+
 enum Node {
     Leaf(u32),
     Split(usize, f32, Box<Node>, Box<Node>),
@@ -34,9 +90,33 @@ fn contains(outer: Bounds, inner: Bounds) -> bool {
     (0..3).all(|k| outer.minimum[k] <= inner.minimum[k] && inner.maximum[k] <= outer.maximum[k])
 }
 
+/// The face of `of` strictly inside `bounds` that divides them most evenly.
+fn face(of: Bounds, bounds: Bounds) -> Option<(usize, f32)> {
+    (0..3)
+        .flat_map(|axis| {
+            [of.minimum[axis], of.maximum[axis]]
+                .into_iter()
+                .filter(move |&value| bounds.minimum[axis] < value && value < bounds.maximum[axis])
+                .map(move |value| (axis, value))
+        })
+        .min_by(|&(a, av), &(b, bv)| {
+            let imbalance = |axis: usize, value: f32| {
+                ((value - bounds.minimum[axis]) / (bounds.maximum[axis] - bounds.minimum[axis])
+                    - 0.5)
+                    .abs()
+            };
+            imbalance(a, av).total_cmp(&imbalance(b, bv))
+        })
+}
+
+/// The tree over `bounds`. A region that holds a node takes it, the first of `regions` winning.
+/// Otherwise the node is cut down to the lighting cells' bounds, then along their division, and
+/// a region that reaches a cell is carved out of it at the region's faces. Space no region or
+/// cell holds is cluster 0.
 fn partition(
     bounds: Bounds,
     regions: &[&Region],
+    lighting: Option<Lighting<'_>>,
     depth: usize,
     count: &mut usize,
     limit: usize,
@@ -50,28 +130,34 @@ fn partition(
         .copied()
         .filter(|r| intersects(bounds, r.bounds))
         .collect::<Vec<_>>();
-    let Some(first) = active.first() else {
-        return Ok(Node::Leaf(0));
-    };
-    if contains(first.bounds, bounds) {
-        return Ok(Node::Leaf(first.cluster));
+    let region = active.first().copied();
+    if let Some(region) = region
+        && contains(region.bounds, bounds)
+    {
+        return Ok(Node::Leaf(region.cluster));
     }
-    let split = (0..3)
-        .flat_map(|axis| {
-            [first.bounds.minimum[axis], first.bounds.maximum[axis]]
-                .into_iter()
-                .filter(move |&value| bounds.minimum[axis] < value && value < bounds.maximum[axis])
-                .map(move |value| (axis, value))
-        })
-        .min_by(|&(a, av), &(b, bv)| {
-            let imbalance = |axis: usize, value: f32| {
-                ((value - bounds.minimum[axis]) / (bounds.maximum[axis] - bounds.minimum[axis])
-                    - 0.5)
-                    .abs()
-            };
-            imbalance(a, av).total_cmp(&imbalance(b, bv))
-        })
-        .ok_or_else(|| invalid("Spatial transition box cannot be partitioned"))?;
+    let lighting = lighting.and_then(|lighting| lighting.within(bounds));
+    let split = match (lighting, region) {
+        (Some(lighting), _) if !contains(lighting.bounds, bounds) => face(lighting.bounds, bounds),
+        (
+            Some(Lighting {
+                division: Division::Split(axis, value, ..),
+                ..
+            }),
+            _,
+        ) => Some((*axis, *value)),
+        (
+            Some(Lighting {
+                division: Division::Cell(cell),
+                base,
+                ..
+            }),
+            None,
+        ) => return Ok(Node::Leaf(base + cell)),
+        (None, None) => return Ok(Node::Leaf(0)),
+        (_, Some(region)) => face(region.bounds, bounds),
+    }
+    .ok_or_else(|| invalid("Spatial transition box cannot be partitioned"))?;
     let (axis, value) = split;
     let mut low = bounds;
     low.maximum[axis] = value;
@@ -80,8 +166,8 @@ fn partition(
     Ok(Node::Split(
         axis,
         value,
-        Box::new(partition(low, &active, depth + 1, count, limit)?),
-        Box::new(partition(high, &active, depth + 1, count, limit)?),
+        Box::new(partition(low, &active, lighting, depth + 1, count, limit)?),
+        Box::new(partition(high, &active, lighting, depth + 1, count, limit)?),
     ))
 }
 
@@ -407,14 +493,18 @@ fn object_lists(clusters: usize, objects: &[Bounds]) -> AuthoringResult<ObjectLi
     })
 }
 
-/// Region order is priority order. Cluster zero covers the remainder of the supplied bounds.
-/// `objects` are the Umbra objects' world boxes, whose indices the visibility record names.
-/// Whether the partition tree of `regions` in `bounds` stays within `limit` nodes and the
-/// native depth.
-pub(super) fn fits(bounds: Bounds, regions: &[Region], limit: usize) -> bool {
+/// Whether the partition tree of `regions` and `lighting` in `bounds` stays within `limit` nodes
+/// and the native depth.
+pub(super) fn fits(
+    bounds: Bounds,
+    regions: &[Region],
+    lighting: Option<Lighting<'_>>,
+    limit: usize,
+) -> bool {
     partition(
         bounds,
         &regions.iter().collect::<Vec<_>>(),
+        lighting,
         0,
         &mut 0,
         limit,
@@ -422,15 +512,22 @@ pub(super) fn fits(bounds: Bounds, regions: &[Region], limit: usize) -> bool {
     .is_ok()
 }
 
+/// Region order is priority order, and every region wins over a lighting cell. Cluster zero
+/// covers the remainder of the supplied bounds. `objects` are the Umbra objects' world boxes,
+/// whose indices the visibility record names.
 pub(super) fn encode(
     bounds: Bounds,
     regions: &[Region],
+    lighting: Option<Lighting<'_>>,
     clusters: usize,
     objects: &[Bounds],
 ) -> AuthoringResult<Vec<u8>> {
     if clusters == 0
         || clusters > u16::MAX as usize
         || regions.iter().any(|r| r.cluster as usize >= clusters)
+        || lighting.is_some_and(|lighting| {
+            (lighting.base as usize).saturating_add(lighting.division.last() as usize) >= clusters
+        })
         || (0..3).any(|k| {
             !bounds.minimum[k].is_finite()
                 || !bounds.maximum[k].is_finite()
@@ -451,6 +548,7 @@ pub(super) fn encode(
     let root = partition(
         bounds,
         &regions.iter().collect::<Vec<_>>(),
+        lighting,
         0,
         &mut 0,
         MAX_TREE_NODES,

@@ -3,7 +3,7 @@ use crate::app::runtime_donors::ComponentRow;
 
 impl PackageAuthoringApp {
     /// The runtime graph scanned for the recipe on screen, if it is current.
-    fn current_runtime_graph(&self) -> Option<Arc<WeaponRuntimeGraph>> {
+    fn current_runtime_graph(&self) -> Option<Arc<RuntimeGraph>> {
         self.runtime_graph.as_ref().and_then(|(key, graph)| {
             (Some(key) == self.runtime_graph_target.as_ref()).then(|| Arc::clone(graph))
         })
@@ -69,10 +69,7 @@ impl PackageAuthoringApp {
             });
     }
 
-    fn runtime_component_bindings(
-        &self,
-        graph: Option<&WeaponRuntimeGraph>,
-    ) -> BTreeMap<u32, String> {
+    fn runtime_component_bindings(&self, graph: Option<&RuntimeGraph>) -> BTreeMap<u32, String> {
         let mut active = BTreeMap::<u32, String>::new();
         if let Some(graph) = graph {
             for binding in &graph.bindings {

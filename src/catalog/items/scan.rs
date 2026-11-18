@@ -629,6 +629,14 @@ pub(in crate::catalog) fn scan_items(
                 .filter(|slot| (3..=7).contains(*slot))
                 .and_then(|_| crate::investment::schema::armor_equipment_class(&item).ok())
                 .map(|class| class.map_or(3, u64::from))
+                // A functional artifact's class is its equip condition. Display variants in
+                // the same bucket have another equipment slot and fall through.
+                .or_else(|| {
+                    crate::investment::schema::artifact_equipment_class(&item)
+                        .ok()
+                        .flatten()
+                        .map(u64::from)
+                })
                 .or_else(|| class_items::class_type(hash))
                 .or_else(|| class_items::class_from_item_strings(&string_thing))
                 .unwrap_or(3),
@@ -906,7 +914,13 @@ fn item_equipment_slot(item: &[u8]) -> Option<u8> {
     let slot_offset = block.checked_add(EQUIPMENT_SLOT_OFFSET)?;
     // Shadowkeep stores the equipment slot in the low u16 and an adjacent 0xFFFF sentinel in the
     // high u16. Interpreting the pair as i32 turns every valid slot into a negative number.
-    let slot = u16_at(item, slot_offset).ok()?;
+    let raw = u16_at(item, slot_offset).ok()?;
+    // Functional artifacts set the upper byte. Display-only artifact variants
+    // use the Ghost slot and keep that value, so they cannot serve as artifact equipment bases.
+    let slot = match (item.get(0xB8).copied()?, raw) {
+        (49, 0x0112) => 18,
+        _ => raw,
+    };
     let sentinel = u16_at(item, slot_offset.checked_add(2)?).ok()?;
     if slot >= EQUIPMENT_SLOT_COUNT || sentinel != EQUIPMENT_SLOT_SENTINEL {
         return None;

@@ -1,13 +1,13 @@
 use super::*;
 use sundial::package_authoring::runtime::{BindingHash, SchemaHandle};
 use sundial::package_authoring::runtime::{
-    WeaponRuntimeFieldLocator, WeaponRuntimePathElement, WeaponRuntimeRootKind, WeaponRuntimeValue,
+    RuntimeFieldLocator, RuntimePathElement, RuntimeRootKind, RuntimeValue,
 };
 
 #[test]
 fn referenced_graph_edits_round_trip_and_require_a_tag() {
     let mut recipe = WeaponRecipe::new_weapon("parhelion.graph-test").unwrap();
-    let mut patch = WeaponRuntimeResourcePatchRecipe {
+    let mut patch = RuntimeResourcePatchRecipe {
         bytes: "B9 B1 BB 80".into(),
         graph_values: vec![private_perk_runtime_value()],
         ..Default::default()
@@ -28,7 +28,7 @@ fn referenced_graph_edits_round_trip_and_require_a_tag() {
             .to_string()
             .contains("four graph-tag bytes")
     );
-    let old: WeaponRuntimeResourcePatchRecipe = serde_json::from_str(
+    let old: RuntimeResourcePatchRecipe = serde_json::from_str(
         r#"{"binding_hash":"0x2D8A944C","offset":21544,"bytes":"B9 B1 BB 80"}"#,
     )
     .unwrap();
@@ -40,15 +40,15 @@ fn referenced_graph_edits_round_trip_and_require_a_tag() {
     );
 }
 
-fn private_perk_runtime_value() -> WeaponRuntimeValueOverride {
-    WeaponRuntimeValueOverride {
-        locator: WeaponRuntimeFieldLocator {
+fn private_perk_runtime_value() -> RuntimeValueOverride {
+    RuntimeValueOverride {
+        locator: RuntimeFieldLocator {
             graph_tag: None,
             binding_hash: BindingHash::new(0x39AF_D7D3),
             resource_index: 0,
-            root: WeaponRuntimeRootKind::ComponentInstance,
+            root: RuntimeRootKind::ComponentInstance,
             root_schema: SchemaHandle::new(0x80BF_DFEA),
-            path: vec![WeaponRuntimePathElement {
+            path: vec![RuntimePathElement {
                 name_hash: 0x1234_5678,
                 type_handle: 0x8080_000F.into(),
                 byte_offset: 0xBD4,
@@ -57,7 +57,7 @@ fn private_perk_runtime_value() -> WeaponRuntimeValueOverride {
             value_offset: 0xBD4,
             byte_size: 4,
         },
-        value: WeaponRuntimeValue::Float32Bits(500.0_f32.to_bits()),
+        value: RuntimeValue::Float32Bits(500.0_f32.to_bits()),
     }
 }
 

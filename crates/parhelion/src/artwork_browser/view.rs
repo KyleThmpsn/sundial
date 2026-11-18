@@ -386,7 +386,7 @@ impl Picker {
                         let words = query.trim().to_lowercase();
                         let choices: Vec<_> = catalog
                             .perk_template_choices_from(
-                                crate::package_profile::is_stock_item_definition,
+                                crate::package::profile::is_stock_item_definition,
                             )
                             .into_iter()
                             .filter(|choice| pickers::matches(&words, &choice.representative_name))

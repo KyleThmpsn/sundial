@@ -192,6 +192,29 @@ pub fn encode_source_passes(
     native_mesh: usize,
     stages: &std::collections::BTreeMap<u32, u8>,
 ) -> Result<Encoded> {
+    source_passes(mesh, native, native_mesh, stages, None)
+}
+
+/// As [`encode_source_passes`], for a weapon. A stock weapon's decal records carry its surface
+/// view bits beside the decal bit, `0x25` where its surfaces carry `0x5`. Flag `0x27` occurs
+/// only on stock models whose surfaces carry `0x7`. A weapon decal with `0x27` beside `0x5`
+/// surfaces also draws in a view its surfaces stay out of, away from the first-person weapon.
+pub fn encode_weapon_passes(
+    mesh: &Mesh,
+    native: &Payload,
+    native_mesh: usize,
+    stages: &std::collections::BTreeMap<u32, u8>,
+) -> Result<Encoded> {
+    source_passes(mesh, native, native_mesh, stages, Some(0x25))
+}
+
+fn source_passes(
+    mesh: &Mesh,
+    native: &Payload,
+    native_mesh: usize,
+    stages: &std::collections::BTreeMap<u32, u8>,
+    decal: Option<u16>,
+) -> Result<Encoded> {
     ensure!(
         mesh.groups.iter().all(|(key, _)| stages.contains_key(key)),
         "Source draw has no native stage"
@@ -202,7 +225,16 @@ pub fn encode_source_passes(
             .all(|stage| matches!(stage, 0 | 1 | 3 | 7 | 9 | 12 | 14 | 16)),
         "Unsupported source presentation pass"
     );
-    encode_passes(mesh, native, native_mesh, stages, PassOptions::default())
+    encode_passes(
+        mesh,
+        native,
+        native_mesh,
+        stages,
+        PassOptions {
+            decal,
+            ..Default::default()
+        },
+    )
 }
 
 #[derive(Default)]
@@ -211,6 +243,8 @@ struct PassOptions<'a> {
     groups: Option<&'a [u16]>,
     grid: Option<(f32, &'a std::collections::BTreeSet<u32>)>,
     prepass: Option<u16>,
+    /// The flag word of decal records, `0x27` when unset.
+    decal: Option<u16>,
 }
 
 #[expect(
@@ -227,6 +261,7 @@ fn encode_passes(
         groups,
         grid,
         prepass,
+        decal,
     }: PassOptions<'_>,
 ) -> Result<Encoded> {
     ensure!(
@@ -375,7 +410,7 @@ fn encode_passes(
                     24,
                     &(match stage {
                         12 if prepassed => prepass.unwrap_or(5),
-                        1 => 39u16,
+                        1 => decal.unwrap_or(39),
                         14 => 0x2004,
                         7 | 9 | 16 => 21,
                         _ => 5,

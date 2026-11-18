@@ -12,12 +12,17 @@ use crate::d2_mot::{payload::Payload, reader::Reader};
 
 pub mod attached;
 pub mod controller;
+pub mod entity;
 pub mod equipped;
 pub mod kinetic;
 pub mod lifecycle;
 pub mod lower;
+pub mod machine;
+pub mod modifier;
 pub mod presentation;
+pub mod status;
 pub mod sword;
+pub mod table;
 pub mod translate;
 
 const CONTROLLER: u32 = 0x8080B835;
@@ -37,7 +42,18 @@ pub struct Assignment {
 }
 
 /// Resolve every controller through the source investment tables, without an item allowlist.
+/// Every perk of the plug must have a controller of its own.
 pub fn assigned(r: &mut Reader, plug_hash: u32) -> Result<Vec<Assignment>> {
+    assignments(r, plug_hash, true)
+}
+
+/// Every controller of a source plug. A perk with no controller of its own, such as one that
+/// only carries text, is passed over, so a plug translates by the perks that run something.
+pub fn controllers(r: &mut Reader, plug_hash: u32) -> Result<Vec<Assignment>> {
+    assignments(r, plug_hash, false)
+}
+
+fn assignments(r: &mut Reader, plug_hash: u32, strict: bool) -> Result<Vec<Assignment>> {
     let (item_tag, item) = item(r, plug_hash)?;
     let block = resource(&item, 0x68, 0x80807381)?;
     let identities = table(r, 0x808076AA)?;
@@ -61,8 +77,10 @@ pub fn assigned(r: &mut Reader, plug_hash: u32) -> Result<Vec<Assignment>> {
             "source perk identity is missing or ambiguous"
         );
         let runtime_key = finished.u32(matching[0] + 4)?;
-        let action_tag =
-            action(r, runtime_key)?.context("source perk has no standalone controller")?;
+        let Some(action_tag) = action(r, runtime_key)? else {
+            ensure!(!strict, "source perk has no standalone controller");
+            continue;
+        };
         ensure!(seen.insert(action_tag), "source plug repeats a controller");
         result.push(Assignment {
             item_tag,

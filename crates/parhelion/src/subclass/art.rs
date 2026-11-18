@@ -150,12 +150,12 @@ fn pictures(
     manager: &PackageManager,
     container: TagHash,
 ) -> AuthoringResult<(TagHash, Vec<TagHash>)> {
-    let payload = crate::icon_edit::read_icon_container(manager, container)?;
+    let payload = crate::icon::edit::read_icon_container(manager, container)?;
     let layer = TagHash(read_u32(&payload, ICON_PRIMARY_LAYER_OFFSET)?);
     let layer_payload = manager
         .read_tag(layer)
         .map_err(|error| invalid(format!("Could not read screen art layer {layer}: {error}")))?;
-    let headers = crate::icon_edit::texture_reference_offsets(&layer_payload, layer)?
+    let headers = crate::icon::edit::texture_reference_offsets(&layer_payload, layer)?
         .into_iter()
         .map(|(_, header)| header)
         .collect::<Vec<_>>();
@@ -215,7 +215,7 @@ pub(crate) fn author(
     nodes: &mut Vec<NewTagSpec>,
     references: &mut Vec<NewTagReferenceOverride>,
 ) -> AuthoringResult<TagHash> {
-    let allocator = crate::appended_tags::AppendedTagAllocator::new(package, first);
+    let allocator = crate::package::appended_tags::AppendedTagAllocator::new(package, first);
     let painters = art
         .sources
         .iter()
@@ -228,21 +228,21 @@ pub(crate) fn author(
             _ => None,
         })
         .collect::<Vec<_>>();
-    let (plan, stock) = crate::icon_edit::build_layer_texture_plan(
+    let (plan, stock) = crate::icon::edit::build_layer_texture_plan(
         manager,
         package,
         first,
         nodes.len(),
         (art.layer, art.template),
         &|index| match (art.sources.get(index), painters.get(index)) {
-            (Some(Source::Texture(header)), _) => crate::icon_edit::TextureChange::Use(*header),
+            (Some(Source::Texture(header)), _) => crate::icon::edit::TextureChange::Use(*header),
             (Some(Source::Image(_)), Some(Some(painter))) => {
-                crate::icon_edit::TextureChange::Paint {
+                crate::icon::edit::TextureChange::Paint {
                     group: index,
                     paint: painter,
                 }
             }
-            _ => crate::icon_edit::TextureChange::Keep,
+            _ => crate::icon::edit::TextureChange::Keep,
         },
     )?;
     // The painted pixels and the textures taken, so any change refreshes the container.
@@ -257,9 +257,9 @@ pub(crate) fn author(
     dependencies.extend(stock);
     nodes.extend(plan.new_tags);
     references.extend(plan.reference_overrides);
-    let mut container = crate::icon_edit::read_icon_container(manager, art.template)?;
+    let mut container = crate::icon::edit::read_icon_container(manager, art.template)?;
     write_u32(&mut container, ICON_PRIMARY_LAYER_OFFSET, plan.layer_tag.0)?;
-    let fingerprint = crate::watermark::private_icon_fingerprint(&container, &revision);
+    let fingerprint = crate::icon::watermark::private_icon_fingerprint(&container, &revision);
     write_u32(&mut container, FINGERPRINT_OFFSET, fingerprint)?;
     let private_container =
         allocator.assigned_tag(nodes.len(), "Screen art definition", "subclass screen art")?;
@@ -293,7 +293,7 @@ pub(crate) fn picture_pixels(
     part: ArtPart,
 ) -> AuthoringResult<image::RgbaImage> {
     let (_, headers) = pictures(manager, container)?;
-    crate::icon_edit::decode_texture(manager, headers[part.index()]).map_err(invalid)
+    crate::icon::edit::decode_texture(manager, headers[part.index()]).map_err(invalid)
 }
 
 /// Paints `image` into one texture's RGBA8 pixels, scaled to cover the texture.

@@ -9,7 +9,9 @@ pub(super) use transaction::completed_backup_owner;
 pub(super) use transaction::recover;
 pub(super) use validation::verify_file;
 use validation::*;
-pub(crate) use validation::{other_mods_change, package_window, uses_mod_loader};
+pub(crate) use validation::{
+    other_mods_change, other_mods_entries, package_window, uses_mod_loader,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -380,6 +382,7 @@ pub(super) fn install_with_observer(
         &staged(&validated.merge_data)?,
         &staged(&diagnostics)?,
         &staged(&validated.mission_scripts)?,
+        &staged(&validated.activity_packs)?,
     ]
     .concat();
     if !legacy.is_empty() {

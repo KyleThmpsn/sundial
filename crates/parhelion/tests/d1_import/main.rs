@@ -22,12 +22,14 @@ use std::{
 };
 use sundial::investment::InvestmentCatalog;
 mod armor;
+mod artifact;
 mod firing;
 mod first_person;
 mod ornament;
 mod perk;
 mod projectile;
 mod readback;
+mod sword;
 
 fn configured(key: &str) -> Result<PathBuf> {
     env::var_os(key)
@@ -138,6 +140,7 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
     };
     let weapons = source.weapons()?;
     let armor = source.armor()?;
+    let artifacts = source.artifacts()?;
     let mut stock = Reader::new(&native, &output.join("stock"), false)?;
     let mut recipes = Vec::new();
     let mut receipts = Vec::new();
@@ -145,12 +148,18 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
     let mut unchanged = BTreeMap::new();
     for case in &plan {
         let is_armor = case["kind"] == "armor";
+        let is_artifact = case["kind"] == "artifact";
         // A case names its item, or gives only its hash, as a census of every source weapon does.
         let name = match case["name"].as_str() {
             Some(name) => name.to_owned(),
             None => {
                 let hash = number(&case["hash"]).context("Case name or hash")?;
-                if is_armor {
+                if is_artifact {
+                    artifacts
+                        .iter()
+                        .find(|a| a.hash == hash)
+                        .map(|a| a.name.trim().to_owned())
+                } else if is_armor {
                     armor
                         .iter()
                         .find(|a| a.hash == hash)
@@ -165,7 +174,13 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
             }
         };
         let name = name.as_str();
-        let candidates = if is_armor {
+        let candidates = if is_artifact {
+            artifacts
+                .iter()
+                .filter(|a| a.name.trim() == name)
+                .map(|a| a.hash)
+                .collect::<Vec<_>>()
+        } else if is_armor {
             armor
                 .iter()
                 .filter(|a| a.name.trim() == name)
@@ -194,7 +209,11 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
         let folder = output.join(format!("item-{selected:08X}"));
         // Every stock weapon of the source's type, which judges where its ornaments land.
         let mut type_kin = Vec::new();
-        let prepared = if is_armor {
+        let prepared = if is_artifact {
+            source.prepare_artifact(selected, &native, &folder, &options, &mut |s| {
+                println!("{s}")
+            })
+        } else if is_armor {
             source.prepare_armor(selected, &native, &donors, &folder, &options, &mut |s| {
                 println!("{s}")
             })
@@ -276,7 +295,9 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
             unchanged.insert(tag, bytes.0);
         }
         {
-            let report: Value = serde_json::from_slice(&fs::read(folder.join(if is_armor {
+            let report: Value = serde_json::from_slice(&fs::read(folder.join(if is_artifact {
+                "source/artifact.json"
+            } else if is_armor {
                 "source/armor.json"
             } else {
                 "source/weapon.json"
@@ -347,7 +368,7 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
                 );
             }
         }
-        if !is_armor {
+        if !is_armor && !is_artifact {
             let selection: Value =
                 serde_json::from_slice(&fs::read(folder.join("native-base-selection.json"))?)?;
             if selection["requires_kinetic"] == true {
@@ -379,7 +400,10 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
         maps: Vec::new(),
         recipes: recipes.clone(),
     })
-    .map_err(anyhow::Error::msg)?;
+    .map_err(anyhow::Error::msg)?
+    // This readback mounts one native package directory. Family builds keep overlapping
+    // stock patches in separate mod folders and require the loader's merge contract.
+    .in_one_mod(true);
     let built = build_and_stage_snapshot_with_progress(&snapshot, |p| println!("{:?}", p.phase))
         .map_err(anyhow::Error::msg)?;
     let packages = view(
@@ -402,11 +426,16 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
         let Some(hash) = receipt.get("item").map(number).transpose()? else {
             continue;
         };
-        let checked = (|| -> Result<()> {
+        // Preserve every case's artifact even when a field-level assertion fails. A panic
+        // remains a failed corpus result and is never converted into acceptance.
+        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             receipt["projectile_readback"] =
                 projectile::check(&source, &mut stock, &mut staged, receipt)?;
             receipt["firing_readback"] = firing::check(&source, &mut stock, &mut staged, receipt)?;
+            receipt["sword_readback"] = sword::check(&source, &mut stock, &mut staged, receipt)
+                .with_context(|| format!("Sword attacks for {}", receipt["name"]))?;
             let (tag, _) = item(&mut staged, hash)?;
+            if receipt["graph"]["kind"] != "artifact" {
             receipt["readback"] = readback::check(
                 &source,
                 &mut staged,
@@ -415,6 +444,7 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
                 receipt["case"]["tessellation"] == true,
             )
             .with_context(|| format!("Readback for {}", receipt["name"]))?;
+            }
             {
                 let recipe = recipes
                     .iter()
@@ -445,7 +475,9 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
                         "Required status audio graph {required:08X} has no persisted and staged readback"
                     );
                 }
-                if receipt["graph"]["kind"] == "armor" {
+                if receipt["graph"]["kind"] == "artifact" {
+                    receipt["artifact_readback"] = artifact::check(&source, &mut staged, tag, recipe, receipt)?;
+                } else if receipt["graph"]["kind"] == "armor" {
                     receipt["armor_talents"] =
                         armor::check(&source, &mut staged, tag, recipe, receipt)?;
                 } else {
@@ -466,7 +498,15 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
                 .with_context(|| format!("First-person actions for {}", receipt["name"]))?;
             }
             Ok(())
-        })();
+        }))
+        .unwrap_or_else(|panic| {
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("Non-text readback assertion");
+            Err(anyhow::anyhow!("Readback assertion: {message}"))
+        });
         if let Err(error) = checked {
             let reason = format!("Readback {}: {error:#}", receipt["name"]);
             receipt["readback_error"] = reason.clone().into();
@@ -487,7 +527,7 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
                 "source_stamp":source_stamp,"source_stamp_after":source_after,
                 "native_stamp":native_stamp,"native_stamp_after":native_after,
                 "plan_sha256":hex::encode(Sha256::digest(&plan_bytes)),
-                "converter_revision":parhelion_import::CONVERTER_REVISION,"cases":receipts,
+                "converter_revision":parhelion_import::CONVERTER_REVISION,"build_mode":"one_mod","cases":receipts,
                 "failures":failures,"staged":built.run_directory,"artifacts":built.artifacts,
                 "timing_seconds":{"conversion":conversion_seconds,"staging":staging_seconds,
                     "readback":readback_began.elapsed().as_secs_f64(),"total":began.elapsed().as_secs_f64()},

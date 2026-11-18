@@ -19,6 +19,7 @@ use super::{
     spawn::Spawn,
     variant::{Placement, Shape, Variant},
 };
+use crate::math::cross;
 use crate::tiger::physics::{self, Hull};
 use anyhow::{Context, Result, bail, ensure};
 
@@ -76,14 +77,6 @@ pub struct Volume {
     pub corners: Vec<[f32; 2]>,
     /// The bottom and the top.
     pub z: [f32; 2],
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Twice the signed area of `corners`, positive counterclockwise.

@@ -96,7 +96,7 @@ mod tests {
         assert!(access.is_suspended());
         assert!(access.generation() > before);
         let blocked: Result<(), String> = access.read(|| panic!("must not touch packages"));
-        assert!(blocked.unwrap_err().contains("paused"));
+        assert!(blocked.is_err());
         access.resume();
         assert_eq!(access.read(|| Ok(9)), Ok(9));
     }

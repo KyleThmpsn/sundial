@@ -4,7 +4,7 @@ use super::*;
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES, uses an isolated package view"]
 fn native_identical_frames_share_one_plug_and_changed_speed_stays_private() {
     let packages = crate::test_support::stock_packages();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
@@ -139,7 +139,7 @@ fn verify_private_speed(
         .iter()
         .find(|graph| graph.tag.pkg_id() == PRIVATE_PERK_RUNTIME_PACKAGE_ID)
         .unwrap();
-    let graph = sundial::package_authoring::runtime::load_weapon_runtime_graph_for_entity(
+    let graph = sundial::package_authoring::runtime::load_runtime_graph_for_entity(
         manager,
         0,
         0,
@@ -158,8 +158,7 @@ fn verify_private_speed(
             (0x8080_3B73, 0xA0, 256) => 0xA4,
             _ => continue,
         };
-        if let sundial::package_authoring::runtime::WeaponRuntimeValue::Bytes(bytes) = &field.value
-        {
+        if let sundial::package_authoring::runtime::RuntimeValue::Bytes(bytes) = &field.value {
             assert_eq!(read_u32(bytes, offset).unwrap(), expected_speed.to_bits());
             checked.insert(field.locator.root_schema.get());
         }
@@ -236,8 +235,7 @@ fn verify_installed_frames(
 
 fn change_speed(weapon: &mut WeaponCloneSpec) {
     for value in &mut weapon.overrides.socket_plug_variants[0].sandbox_perks[0].runtime_values {
-        let sundial::package_authoring::runtime::WeaponRuntimeValue::Bytes(bytes) =
-            &mut value.value
+        let sundial::package_authoring::runtime::RuntimeValue::Bytes(bytes) = &mut value.value
         else {
             panic!("bounded speed bytes");
         };

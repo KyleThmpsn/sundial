@@ -13,7 +13,7 @@ pub(crate) fn author(
     references: &mut Vec<NewTagReferenceOverride>,
 ) -> AuthoringResult<TagHash> {
     let tag = if let Some(artwork) = &icon.artwork {
-        crate::icon_edit::package_icons::author(
+        crate::icon::edit::package_icons::author(
             manager,
             artwork,
             icon.source_container,
@@ -23,9 +23,9 @@ pub(crate) fn author(
         )?
     } else {
         let allocator =
-            crate::appended_tags::AppendedTagAllocator::new(destination.0, destination.1);
+            crate::package::appended_tags::AppendedTagAllocator::new(destination.0, destination.1);
         let tag = allocator.assigned_tag(nodes.len(), "Node icon", "ability color")?;
-        let container = crate::icon_edit::read_icon_container(manager, icon.source_container)?;
+        let container = crate::icon::edit::read_icon_container(manager, icon.source_container)?;
         let donor = crate::shared_tag_memory::read_and_validate_icon_companion(
             manager,
             icon.source_container,
@@ -54,8 +54,9 @@ pub(crate) fn author(
         tag
     };
     if let Some(rgb) = icon.color {
-        let index = crate::appended_tags::AppendedTagAllocator::new(destination.0, destination.1)
-            .ordinal(tag)?;
+        let index =
+            crate::package::appended_tags::AppendedTagAllocator::new(destination.0, destination.1)
+                .ordinal(tag)?;
         let container = &mut nodes[index].payload;
         for (channel, value) in rgb
             .map(|v| (f32::from(v) / 255.0).powf(2.2))
@@ -72,7 +73,7 @@ pub(crate) fn author(
         }
         // The native adapter exposes field 7 as the color-presence mask, independent of alpha.
         container[0x70] |= 1;
-        let fingerprint = crate::watermark::private_icon_fingerprint(container, &rgb);
+        let fingerprint = crate::icon::watermark::private_icon_fingerprint(container, &rgb);
         crate::tag_payload::write_u32(container, 0x10, fingerprint)?;
     }
     Ok(tag)

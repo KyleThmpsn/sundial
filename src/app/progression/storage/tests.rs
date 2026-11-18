@@ -12,7 +12,7 @@ fn saved_values_round_trip_through_json_and_sqlite_without_losing_rank_lanes() {
             json!({"version":if native {18} else {8},"state":{"characters":[]},"future":true});
         std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
         if native {
-            crate::persistence::sqlite_account::tests::create_fixture(
+            crate::persistence::sunrise_account::tests::create_fixture(
                 &directory.0.join("data/investment.sqlite3"),
                 3,
             );
@@ -42,7 +42,7 @@ fn saved_values_round_trip_through_json_and_sqlite_without_losing_rank_lanes() {
         workspace.apply_progression_view(0, view).unwrap();
         if native {
             assert_eq!(workspace.json(), &json);
-            crate::persistence::sqlite_account::tests::save_fixture_document(
+            crate::persistence::sunrise_account::tests::save_fixture_document(
                 workspace.native_account_mut().unwrap(),
                 &directory.0.join("backup.sqlite3"),
             );

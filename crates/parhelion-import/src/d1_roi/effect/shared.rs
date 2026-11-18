@@ -7,7 +7,7 @@ use super::*;
 use crate::d1_roi::{
     audio,
     dependency::resource::{self as resources, Node},
-    sequence::{ActionKey, Bindings, hud::Keys, owner::Owner},
+    sequence::{ActionKey, Bindings, hud::Keys, owner::Owner, query, screen},
 };
 
 /// Source event classes and kinds whose bodies this path does not yet translate.
@@ -31,7 +31,8 @@ pub const OMITTED: [(u32, u32); 8] = [
 /// smallest stock flow whose instance of it passes the writer's envelope checks, from a survey of
 /// every stock effect flow, in which each holding flow passes them. A base flow's own instance
 /// still comes first.
-const WITNESSES: [(u32, u32); 16] = [
+const WITNESSES: [(u32, u32); 17] = [
+    (0x808093C2, 0x80FE022A),
     (0x8080658E, 0x80F45DDD),
     (0x80803D8D, 0x80B3A75F),
     (0x80803FE9, 0x80B596A5),
@@ -73,15 +74,56 @@ fn owners(
         .collect()
 }
 
+/// One baked hull per distinct cone the sequences search, built on the stock hull of the same
+/// form, by the cone's three values.
+fn cone_hulls(
+    native: &mut Reader,
+    owners: &BTreeMap<u32, Owner>,
+    symbol: &str,
+    nodes: &mut Vec<Node>,
+) -> Result<BTreeMap<[u32; 3], String>> {
+    let mut cones = BTreeMap::new();
+    for key in owners
+        .values()
+        .flat_map(|owner| owner.plan().cones())
+        .collect::<BTreeSet<_>>()
+    {
+        let template = native.tag(query::cone::TEMPLATE, None)?;
+        let name = query::Cone::symbol(key, symbol);
+        nodes.push(Node {
+            symbol: name.clone(),
+            template: query::cone::TEMPLATE,
+            payload: crate::tiger::physics::convex_shape(
+                &template.0,
+                &query::Cone::from_key(key)?.hull(),
+            )?,
+            reference: None,
+            patches: Vec::new(),
+        });
+        cones.insert(key, name);
+    }
+    Ok(cones)
+}
+
 pub struct Shared {
+    /// Qualified companion actions that share the victim's delayed cancellation marker.
+    pub(crate) assignment: Option<Assignment>,
     owners: BTreeMap<u32, Owner>,
     particles: BTreeMap<u32, String>,
     pub nodes: Vec<Node>,
     /// Private particle system roots, all of class `80806E28`.
     pub systems: BTreeSet<String>,
+    /// Private lookup textures of screen color records, by source texture. Their nodes are in
+    /// `nodes`.
+    pub lookups: BTreeMap<u32, String>,
+    /// Private baked hulls of query cones, by the cone's three values. Their nodes are in
+    /// `nodes`.
+    pub cones: BTreeMap<[u32; 3], String>,
     /// The complete converted cue closure and its `80809802` cue roots.
     pub(in crate::d1_roi) audio: Option<(audio::Prepared, BTreeSet<String>)>,
     hud_keys: Option<Keys>,
+    /// The stock screen color record that translated lens records start from.
+    screen_twin: Option<screen::Twin>,
     /// Stock sequence envelopes for event classes the prepared sequences need. Callers append
     /// them to their own envelopes.
     pub witnesses: Vec<Payload>,
@@ -286,8 +328,30 @@ impl Shared {
             }
         }
         let systems = particles.values().cloned().collect::<BTreeSet<_>>();
-        if !systems.is_empty() {
-            let roots = systems.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut lookups = BTreeMap::new();
+        for texture in owners
+            .values()
+            .flat_map(|owner| owner.plan().lookups())
+            .collect::<BTreeSet<_>>()
+        {
+            let name = format!("{symbol}-lookup-{texture:08X}");
+            crate::d1_roi::particle::material::assets::texture(
+                source,
+                native,
+                texture,
+                name.clone(),
+                &mut nodes,
+            )?;
+            lookups.insert(texture, name);
+        }
+        let cones = cone_hulls(native, &owners, symbol, &mut nodes)?;
+        if !nodes.is_empty() {
+            let roots = systems
+                .iter()
+                .chain(lookups.values())
+                .chain(cones.values())
+                .map(String::as_str)
+                .collect::<Vec<_>>();
             resources::validate(&nodes, &roots)?;
         }
         let hud_keys = if owners
@@ -297,6 +361,14 @@ impl Shared {
             None
         } else {
             Some(Keys::read(native)?)
+        };
+        let screen_twin = if owners
+            .values()
+            .all(|owner| owner.plan().screens().is_empty())
+        {
+            None
+        } else {
+            Some(screen::Twin::read(native)?)
         };
         let classes = owners
             .values()
@@ -308,12 +380,16 @@ impl Shared {
             .map(|(_, tag)| Ok((*native.tag(tag, Some(0x80809C36))?).clone()))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
+            assignment: None,
             owners,
             particles,
             nodes,
             systems,
+            lookups,
+            cones,
             audio,
             hud_keys,
+            screen_twin,
             witnesses,
             symbol: symbol.to_owned(),
             resources: Resources::default(),
@@ -433,6 +509,27 @@ impl Shared {
             hud_keys: (!owner.plan().overrides().is_empty())
                 .then(|| self.hud_keys.clone())
                 .flatten(),
+            screens: owner
+                .plan()
+                .screens()
+                .into_iter()
+                .map(|resource| (resource, format!("{symbol}-screen-{resource:08X}")))
+                .collect(),
+            screen_twin: (!owner.plan().screens().is_empty())
+                .then(|| self.screen_twin.clone())
+                .flatten(),
+            lookups: owner
+                .plan()
+                .lookups()
+                .into_iter()
+                .map(|texture| (texture, self.lookups[&texture].clone()))
+                .collect(),
+            cones: owner
+                .plan()
+                .cones()
+                .into_iter()
+                .map(|key| (key, self.cones[&key].clone()))
+                .collect(),
             locators: (0..owner.locator_count())
                 .map(|index| Ok((u8::try_from(index)?, u8::try_from(index)?)))
                 .collect::<Result<_>>()?,

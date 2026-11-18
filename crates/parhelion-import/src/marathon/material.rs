@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod channel;
 mod expression;
 mod lighting;
+mod rangefinder;
 mod resources;
 mod reticle;
 mod scope;
@@ -99,6 +100,7 @@ fn pixel(
     viewports: &BTreeSet<u32>,
     depth: Option<(u32, u32)>,
     material_slots: &BTreeSet<u32>,
+    readouts: &[rangefinder::Readout],
 ) -> Result<String> {
     let Some(listing) = listing else {
         ensure!(
@@ -211,6 +213,23 @@ fn pixel(
     }
     if surface.stage == 17 {
         reticle::pixel(listing, &parsed, &mut options)?;
+    }
+    if !readouts.is_empty() {
+        // The readout samples the scope's depth, so the program needs the scope's coefficient
+        // buffer and the native viewport row even when the source program reads neither. A
+        // source program that binds its own buffer at either register already declares it.
+        let bindings = parsed.resources()?;
+        if !bindings.contains_key(&(2, 2)) {
+            options.buffers.insert(2, 1);
+        }
+        if !bindings.contains_key(&(2, 12)) {
+            options.buffers.insert(12, 13);
+        }
+        for readout in readouts {
+            options
+                .constants
+                .insert((0, u32::try_from(readout.row)?), rangefinder::row(readout));
+        }
     }
     for (row, value) in values.iter().enumerate() {
         if !written.contains(&row) {
@@ -390,9 +409,28 @@ pub(super) fn build(
             reticle: surface.stage == 17,
             scene_depth: surface.stage == 8,
             live_display: true,
+            distance: None,
         };
         let all_outputs = written.iter().map(|&row| row as u32).collect();
         let planned = context.clone().lower(&code, &values, &all_outputs, false)?;
+        // A transparent display that turns the sight's distance into digits reads the scene
+        // depth under the view centre instead. An expression of another form, or a renderer
+        // without the scope's depth binding, keeps the cached distance and is reported.
+        let (readouts, readout_limit) = if surface.stage == 8
+            && expression::objects(&code)?.contains(&rangefinder::RETICLE_DISTANCE)
+        {
+            let listing = shader_tags[1].map(|tag| listings[&tag].as_str());
+            let found = resources::scene_depth(source, native)
+                .and_then(|()| rangefinder::free(listing, &material))
+                .and_then(|()| rangefinder::readouts(&context, &code, &values, &all_outputs));
+            match found {
+                Ok(found) => (found, None),
+                Err(error) if crate::cancellation::is_cancelled(&error) => return Err(error),
+                Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+            }
+        } else {
+            (Vec::new(), None)
+        };
         let mut specialized = values.clone();
         for (&row, &value) in &planned.constants {
             specialized[row] = value;
@@ -416,6 +454,29 @@ pub(super) fn build(
             .map(|row| material.u32(row))
             .collect::<Result<BTreeSet<_>>>()?;
         material_slots.extend(&planned.resources);
+        // A trial translation shows whether the source program leaves the depth register free.
+        // One that does not keeps its cached distance.
+        let (readouts, readout_limit) = if readouts.is_empty() {
+            (readouts, readout_limit)
+        } else {
+            let trial = pixel(
+                shader_tags[1].map(|tag| listings[&tag].as_str()),
+                surface,
+                &model,
+                &specialized,
+                &written,
+                &planned.viewports,
+                material_depth,
+                &material_slots,
+                &readouts,
+            )
+            .and_then(rangefinder::sample);
+            match trial {
+                Ok(_) => (readouts, None),
+                Err(error) if crate::cancellation::is_cancelled(&error) => return Err(error),
+                Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+            }
+        };
         let pixel_text = pixel(
             shader_tags[1].map(|tag| listings[&tag].as_str()),
             surface,
@@ -425,6 +486,7 @@ pub(super) fn build(
             &planned.viewports,
             material_depth,
             &material_slots,
+            &readouts,
         )
         .with_context(|| {
             format!(
@@ -437,6 +499,11 @@ pub(super) fn build(
                     .unwrap_or_else(|| "absent".into())
             )
         })?;
+        let pixel_text = if readouts.is_empty() {
+            pixel_text
+        } else {
+            rangefinder::sample(pixel_text)?
+        };
         let pixel_text = if let Some(lens) = &surface.cutout {
             scope::cutout(pixel_text, lens)?
         } else {
@@ -743,7 +810,9 @@ pub(super) fn build(
             graph.nodes.last_mut().context("Authored material node")?["material_inputs"] =
                 json!(authored);
         }
-        reports.push(json!({"material":format!("{:08X}",surface.material),"model":format!("{:08X}",surface.model),"source_stage":surface.stage,"native_stage":surface.native_stage(),"pixel":shader_tags[1].map(|t|format!("{t:08X}")),"textures":bindings.textures,"vertex_colors":uses_colors,"inputs":lowered.evidence,"specialized_inputs":planned.evidence.iter().filter(|row| row["output"].as_u64().is_some_and(|i| planned.constants.contains_key(&(i as usize)))).collect::<Vec<_>>(),"pixel_bindings":inspection,"aperture_cutout":surface.cutout.as_ref().map(|lens|json!({"center":lens.center,"axes":lens.axes,"edges":lens.outline})),"hidden_at_full_aim":aim_row.is_some() && surface.stage != 17 && surface.framed.is_none(),"aimed_glass":surface.framed.is_some(),"reticle_unmasked":hidden && surface.stage == 17,"aimed_framing":framed.filter(|_| surface.stage == 17 && aim_row.is_some()).map(|framing|json!({"view_tangent":framing.tangent,"eye":framing.eye,"window":framing.window})),"reticle_window":window,"reticle_plane":reticle_plane,"surface_flags":if surface.stage==0{json!("Source standard surface flags adapted to native 0/0.33 encoding")}else{Value::Null},"ambient_visibility":if surface.stage==0{json!("Source target-two W vertex term replaced by native per-object visibility from TEXCOORD0.w")}else{Value::Null},"atmosphere":if surface.stage==8{json!("Source unfogged surface with native exposure")}else{Value::Null}}));
+        reports.push(json!({"material":format!("{:08X}",surface.material),"model":format!("{:08X}",surface.model),"source_stage":surface.stage,"native_stage":surface.native_stage(),"pixel":shader_tags[1].map(|t|format!("{t:08X}")),"textures":bindings.textures,"vertex_colors":uses_colors,"inputs":lowered.evidence,"specialized_inputs":planned.evidence.iter().filter(|row| row["output"].as_u64().is_some_and(|i| planned.constants.contains_key(&(i as usize)))).collect::<Vec<_>>(),"pixel_bindings":inspection,"aperture_cutout":surface.cutout.as_ref().map(|lens|json!({"center":lens.center,"axes":lens.axes,"edges":lens.outline})),"hidden_at_full_aim":aim_row.is_some() && surface.stage != 17 && surface.framed.is_none(),"aimed_glass":surface.framed.is_some(),"reticle_unmasked":hidden && surface.stage == 17,"aimed_framing":framed.filter(|_| surface.stage == 17 && aim_row.is_some()).map(|framing|json!({"view_tangent":framing.tangent,"eye":framing.eye,"window":framing.window})),"reticle_window":window,"reticle_plane":reticle_plane,"surface_flags":if surface.stage==0{json!("Source standard surface flags adapted to native 0/0.33 encoding")}else{Value::Null},"ambient_visibility":if surface.stage==0{json!("Source target-two W vertex term replaced by native per-object visibility from TEXCOORD0.w")}else{Value::Null},"atmosphere":if surface.stage==8{json!("Source unfogged surface with native exposure")}else{Value::Null},
+            "aperture_rim":surface.frame,
+            "distance_readout":if readouts.is_empty(){readout_limit.map_or(Value::Null,|reason|json!({"status":"cached","reason":reason}))}else{json!({"status":"scene_depth","channel":format!("{:08X}",rangefinder::RETICLE_DISTANCE),"rows":readouts.iter().map(|r|json!({"row":r.row,"zero":r.base})).collect::<Vec<_>>(),"depth_register":10,"coefficients":"CB2[0]","gameplay_verified":false})}}));
     }
     write_json(&graph.root.join("material-report.json"), &json!(reports))?;
     Ok(reports)

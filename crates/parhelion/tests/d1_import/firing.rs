@@ -1,6 +1,7 @@
 //! Compare selected original firing curves with independently followed staged runtime inputs.
 use super::*;
 use sundial::package_authoring::{entity::weapon_component_bindings, runtime};
+mod calibration;
 
 fn firing(component: u32, input: u32) -> bool {
     matches!((component, input), (2, 0..=5 | 22..=25) | (4, 0..=1))
@@ -224,7 +225,7 @@ pub(super) fn check(
         Some(staged.manager.platform),
     )
     .map_err(anyhow::Error::msg)?;
-    let runtime = runtime::load_weapon_runtime_entity_for_item_with_manager(
+    let runtime = runtime::load_runtime_entity_for_item_with_manager(
         &staged_manager,
         number(&receipt["item"])?,
     )
@@ -233,7 +234,7 @@ pub(super) fn check(
         weapon_component_bindings(&runtime.payload, 0x2F981564).map_err(anyhow::Error::msg)?;
     ensure!(bindings.len() == 1, "Staged translator binding differs");
     let owner = staged.tag(bindings[0].owner_tag, Some(0x80809C36))?;
-    let donor = runtime::load_weapon_runtime_entity_for_item_with_manager(
+    let donor = runtime::load_runtime_entity_for_item_with_manager(
         &native_manager,
         number(&receipt["donor"])?,
     )
@@ -251,6 +252,7 @@ pub(super) fn check(
         &owner,
         donor.weapon_translation_group_hash,
         report["timing"]["status"] == "translated",
+        report["timing"]["appended_curves"].is_array(),
     )?;
     // The recipe's stat values by Weapon Stats input, for literal operands.
     let stats = receipt["investment_stats"]
@@ -265,7 +267,10 @@ pub(super) fn check(
         .collect::<BTreeMap<_, _>>();
     if report["timing"]["status"] != "translated" {
         ensure!(
-            receipt["case"]["required_firing_timing"] != true,
+            receipt["case"]["required_firing_timing"] != true
+                && receipt["case"]["required_stat_scopes"]
+                    .as_array()
+                    .is_none_or(Vec::is_empty),
             "Required source firing timing did not translate"
         );
         return Ok(
@@ -273,11 +278,15 @@ pub(super) fn check(
         );
     }
     // The base's own timing reads, for a scope that stays native.
-    let native = values(
-        &original,
-        selected(&original, donor.weapon_translation_group_hash, false)?,
-        false,
-    )?;
+    let native = if report["timing"]["appended_curves"].is_array() {
+        BTreeMap::new()
+    } else {
+        values(
+            &original,
+            selected(&original, donor.weapon_translation_group_hash, false)?,
+            false,
+        )?
+    };
     let source_item = number(&receipt["source"])?;
     let weapon = source
         .weapons()?
@@ -310,6 +319,36 @@ pub(super) fn check(
         "Source timing owner is missing or ambiguous"
     );
     let (source_tag, source_owner) = &owners[0];
+    if report["timing"]["appended_curves"].is_array() {
+        let base = stock.tag(donor_binding[0].owner_tag, Some(0x80809C36))?;
+        let mut evidence = calibration::check(
+            (source_owner, key),
+            (&base, donor.weapon_translation_group_hash),
+            (&owner, runtime.weapon_translation_group_hash),
+            &receipt["case"],
+        )?;
+        let output = configured("D1_IMPORT_OUTPUT")?.join("stat-readback");
+        fs::create_dir_all(&output)?;
+        let mut files = Vec::new();
+        for (role, tag, payload) in [
+            ("source", *source_tag, source_owner),
+            ("native", donor_binding[0].owner_tag, &base),
+            ("staged", bindings[0].owner_tag, &owner),
+        ] {
+            let name = format!("{role}-{tag:08X}.bin");
+            fs::write(output.join(&name), &payload.0)?;
+            files.push(json!({"role":role,"tag":tag,"file":name,"sha256":hex::encode(Sha256::digest(&payload.0))}));
+        }
+        evidence["payloads"] = json!(files);
+        evidence["source_key"] = json!(key);
+        evidence["native_key"] = json!(donor.weapon_translation_group_hash);
+        evidence["staged_key"] = json!(runtime.weapon_translation_group_hash);
+        fs::write(
+            output.join(format!("{:08X}.json", number(&receipt["item"])?)),
+            serde_json::to_vec_pretty(&evidence)?,
+        )?;
+        return Ok(evidence);
+    }
     let expected = values(source_owner, selected(source_owner, key, true)?, true)?;
     let actual = values(
         &owner,
@@ -353,7 +392,13 @@ pub(super) fn check(
 // calibration, while translated timing must preserve non-timing inputs and other modes. An
 // output a timing input and another input both read may change with the timing input, as the
 // source drives both from it. Returns those shared outputs.
-fn preserve(stock: &Payload, emitted: &Payload, key: u32, translated: bool) -> Result<Vec<u32>> {
+fn preserve(
+    stock: &Payload,
+    emitted: &Payload,
+    key: u32,
+    translated: bool,
+    independent: bool,
+) -> Result<Vec<u32>> {
     let from = stock.array(stock.pointer(24)? + 0x48, 48, Some(0x80803975))?;
     let to = emitted.array(emitted.pointer(24)? + 0x48, 48, Some(0x80803975))?;
     ensure!(
@@ -404,6 +449,7 @@ fn preserve(stock: &Payload, emitted: &Payload, key: u32, translated: bool) -> R
             (emitted, n),
             translated && s == active,
             &protected,
+            independent && s == active,
         )?;
     }
     Ok(exempt.into_iter().collect())
@@ -414,10 +460,14 @@ fn check_mode_inputs(
     (emitted, n): (&Payload, usize),
     changed_timing: bool,
     protected: &BTreeSet<u32>,
+    independent: bool,
 ) -> Result<()> {
     let sc = stock.array(s, 56, Some(0x80803979))?;
     let nc = emitted.array(n, 56, Some(0x80803979))?;
-    ensure!(sc.len() == nc.len(), "Native stat inputs changed");
+    ensure!(
+        sc.len() == nc.len() || (independent && nc.len() > sc.len()),
+        "Native stat inputs changed"
+    );
     for (index, (sr, nr)) in sc.into_iter().zip(nc).enumerate() {
         ensure!(
             stock.bytes::<24>(sr + 32)? == emitted.bytes::<24>(nr + 32)?,
@@ -429,10 +479,13 @@ fn check_mode_inputs(
         for (ss, ns) in ss.into_iter().zip(ns) {
             let sv = stock.array(ss, 4, Some(0x8080000F))?;
             let nv = emitted.array(ns, 4, Some(0x8080000F))?;
-            ensure!(sv.len() == nv.len(), "Native output count changed");
+            ensure!(
+                sv.len() == nv.len() || (independent && nv.len() > sv.len()),
+                "Native output count changed"
+            );
             for (column, (sv, nv)) in sv.into_iter().zip(nv).enumerate() {
                 let channel = 0x1E00 + u32::try_from(index * 32 + column)?;
-                if !changed_timing || protected.contains(&channel) {
+                if independent || !changed_timing || protected.contains(&channel) {
                     ensure!(
                         stock.u32(sv)? == emitted.u32(nv)?,
                         "Non-firing input or unselected mode changed"

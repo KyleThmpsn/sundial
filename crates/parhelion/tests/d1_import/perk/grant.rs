@@ -5,6 +5,7 @@ mod attack;
 mod effect;
 mod evade;
 mod group;
+mod imported;
 mod jump;
 mod protection;
 mod rate;
@@ -32,7 +33,6 @@ pub(super) fn check(
     assert!(action.array(0x48, 8, Some(0x808040BA))?.is_empty());
     let mut checked = Vec::new();
     for (grant, effect) in applied.into_iter().zip(effects) {
-        let bank = number(&grant["native_bank"])?;
         let key = number(&grant["property_key"])?;
         let slot = number(&grant["slot"])? as u8;
         let at = action.pointer(effect)?;
@@ -41,6 +41,11 @@ pub(super) fn check(
         assert_eq!(action.u8(at + 2)?, slot);
         assert_eq!(action.u32(at + 4)?, key);
         assert_eq!(action.u8(at + 8)?, 0);
+        if grant["route"] == "imported_ability_key" {
+            checked.push(imported::check(source, stock, grant)?);
+            continue;
+        }
+        let bank = number(&grant["native_bank"])?;
         if grant["route"] == "source_jump_group" {
             checked.push(jump::check(source, stock, native, grant)?);
             continue;

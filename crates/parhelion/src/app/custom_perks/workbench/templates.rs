@@ -201,7 +201,7 @@ impl Workbench {
 
     pub(super) fn draw_templates(&mut self, ui: &mut egui::Ui, catalog: &InvestmentCatalog) {
         let stock = self.templates.get_or_insert_with(|| {
-            catalog.perk_template_choices_from(crate::package_profile::is_stock_item_definition)
+            catalog.perk_template_choices_from(crate::package::profile::is_stock_item_definition)
         });
         // The stock rows read a description and an effect list per perk, so they are built
         // once per catalog, and the authored rows once per change to the saved perks. A library

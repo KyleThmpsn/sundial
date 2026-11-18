@@ -15,7 +15,7 @@
 use super::*;
 use crate::package_authoring::{
     PackageManager, open_shadowkeep_package_manager,
-    runtime::load_weapon_runtime_entity_at_pattern_index_with_manager,
+    runtime::load_runtime_entity_at_pattern_index_with_manager,
 };
 use std::{collections::HashMap, fmt::Write as _};
 
@@ -241,8 +241,7 @@ fn stock_entities(install: &std::path::Path, manager: &PackageManager) -> BTreeM
         let Some(index) = donor.weapon_pattern_index else {
             continue;
         };
-        let Ok(source) = load_weapon_runtime_entity_at_pattern_index_with_manager(manager, index)
-        else {
+        let Ok(source) = load_runtime_entity_at_pattern_index_with_manager(manager, index) else {
             continue;
         };
         entities

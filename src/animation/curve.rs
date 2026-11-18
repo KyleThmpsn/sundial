@@ -211,6 +211,45 @@ pub struct Decoder<'a> {
     frames: usize,
 }
 
+/// Native scalar codec 1 (`80808F7E`) uses the same signed curve tracks as scale channels,
+/// without interval tables. The row map at `+0x50` ends with the compressed-data length.
+pub fn scalar_samples(
+    bytes: &[u8],
+    base: usize,
+    tracks: usize,
+    frames: usize,
+) -> Result<Vec<Vec<f32>>, String> {
+    bytes_at::<0x60>(bytes, base)?;
+    let class = base.checked_sub(4).ok_or("Invalid scalar curve pointer.")?;
+    if !(1..=3600).contains(&frames)
+        || tracks > 256
+        || u32_at(bytes, class)? != 0x8080_8F7E
+        || u16_at(bytes, base)? != 1
+        || usize::from(u16_at(bytes, base + 2)?) != tracks
+    {
+        return Err("Scalar curve class, codec or dimensions differ.".into());
+    }
+    let limit = tracks * frames;
+    let data = Data {
+        raw: Values::read(bytes, base + 0x10, limit)?,
+        compressed: Values::read(bytes, base + 0x20, limit + tracks * 3)?,
+        times: byte_table(bytes, base + 0x30, limit)?,
+        tangents: byte_table(bytes, base + 0x40, limit)?,
+    };
+    let mappings = Values::read(bytes, base + 0x50, tracks + 1)?;
+    if mappings.count != tracks + 1
+        || usize::from(mappings.get(tracks)? as u16) != data.compressed.count
+    {
+        return Err("Scalar curve track count or compressed endpoint differs.".into());
+    }
+    (0..tracks)
+        .map(|track| {
+            data.samples(mappings.get(track)?, Channel::Scale, frames)
+                .map(|samples| samples.into_iter().map(|point| point[0]).collect())
+        })
+        .collect()
+}
+
 impl<'a> Decoder<'a> {
     pub fn read(
         bytes: &'a [u8],

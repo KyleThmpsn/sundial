@@ -44,6 +44,7 @@ use std::{
     fs,
     path::Path,
 };
+use sundial::package_authoring::fnv1;
 use tiger_pkg::TagHash;
 
 /// The modern glaive guard's stat, which Shadowkeep shows as Guard Endurance.
@@ -131,10 +132,10 @@ fn source_projectile(sr: &mut Reader, rig: &Value) -> Result<Option<u32>> {
 /// The bolt sequence's branch for the source's damage type and the value its particle programs
 /// read for it: 1 Solar (`thermal`), 2 Arc, 3 Void, 5 Stasis and 6 Strand, as the branches are
 /// named and gated, and 0 for Kinetic, which has no branch and is inferred. It follows the
-/// source's own element, so Stasis and Strand look their own even though the weapon keeps its
+/// source's own damage type, so Stasis and Strand look their own even though the weapon keeps its
 /// base's damage type for them.
-fn element(source: &Value) -> Option<(Option<&'static str>, f32)> {
-    Some(match super::gameplay::exported_element(source)? {
+fn damage_type(source: &Value) -> Option<(Option<&'static str>, f32)> {
+    Some(match super::gameplay::exported_damage_type(source)? {
         "kinetic" => (None, 0.0),
         "solar" => (Some("thermal"), 1.0),
         "arc" => (Some("arc"), 2.0),
@@ -142,13 +143,6 @@ fn element(source: &Value) -> Option<(Option<&'static str>, f32)> {
         "stasis" => (Some("stasis"), 5.0),
         "strand" => (Some("strand"), 6.0),
         _ => return None,
-    })
-}
-
-/// FNV-1 of `text`, the hash sequence controls are named with.
-fn fnv1(text: &str) -> u32 {
-    text.bytes().fold(0x811C_9DC5u32, |hash, byte| {
-        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
     })
 }
 
@@ -274,14 +268,17 @@ pub(crate) fn apply(
     let mut native = Reader::discovery(inputs.native, &inputs.work.join("native"), false)?;
     let (lane, plug) = intrinsic(&mut native, base, recipe)?;
     let perks = perk_rows(&mut native, &kit["source_perks"])?;
-    let element = element(source);
-    let (branch, element_value) = element.context("The glaive damage type is unsupported")?;
+    let damage_type = damage_type(source);
+    let (branch, damage_value) = damage_type.context("The glaive damage type is unsupported")?;
     let mut systems = SHIELD_SYSTEMS.to_vec();
     systems.extend(bolt_systems(&mut sr, projectile, branch)?);
     progress("Converting the glaive shield and bolt particles…".into());
     let decompiler = super::native::automatic::decompiler(progress)?;
     let mut inputs_fixed: BTreeMap<u32, f32> = NEUTRAL_INPUTS.into_iter().collect();
-    inputs_fixed.insert(DAMAGE_TYPE_INPUT, element.map_or(0.0, |(_, value)| value));
+    inputs_fixed.insert(
+        DAMAGE_TYPE_INPUT,
+        damage_type.map_or(0.0, |(_, value)| value),
+    );
     let mut section = particles::convert(&particles::Request {
         source_packages: inputs.modern,
         native_packages: inputs.native,
@@ -321,7 +318,7 @@ pub(crate) fn apply(
         inputs.graph,
         &super::native::projectile::Profile {
             namespace: recipe["namespace"].as_str().context("recipe namespace")?,
-            element: element_value,
+            damage_type: damage_value,
             // The glaive kit uses an instant-fire native carrier. Retain its established
             // launch compensation while translating the source controller graph.
             speed_boost: 120.0,
@@ -375,7 +372,7 @@ pub(crate) fn apply(
     // the source's English type name serves every locale.
     recipe["type_name"] = source["item_type"].clone();
     let report = json!({"intrinsic_socket":lane,"intrinsic_plug":format!("0x{plug:08X}"),"perks":perks,
-        "particle_systems":systems,"bolt":fired,"damage_input":element.map(|(_, value)| value),"impact_key":graph["audio"]["impact_key"],
+        "particle_systems":systems,"bolt":fired,"damage_input":damage_type.map(|(_, value)| value),"impact_key":graph["audio"]["impact_key"],
         "magazine":magazine,"collection":collection,"first_person":first_person,"melee_audio":melee_audio,
         "runtime_animation":{"clips":runtime_animation["clips"],"source_only":runtime_animation["source_only"]},
         "gameplay_verified":false});

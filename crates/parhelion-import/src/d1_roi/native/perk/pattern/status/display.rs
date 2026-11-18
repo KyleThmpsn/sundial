@@ -36,7 +36,7 @@ pub(super) fn read(p: &Payload, hud: usize) -> Result<bool> {
     Ok(enabled == 1)
 }
 
-pub(super) fn patch(
+pub(crate) fn patch(
     p: &Payload,
     hud: usize,
     replace: &mut impl FnMut(usize, Vec<u8>) -> Result<()>,

@@ -9,25 +9,22 @@ pub(super) fn managed_width(code: u8) -> Option<usize> {
     }
 }
 
-pub(super) fn suffix_fields(
-    code: u8,
-    at: usize,
-) -> Vec<(usize, WeaponRuntimeValueKind, &'static str)> {
+pub(super) fn suffix_fields(code: u8, at: usize) -> Vec<(usize, RuntimeValueKind, &'static str)> {
     if code != 37 {
         return Vec::new();
     }
     vec![
-        (at + 8, WeaponRuntimeValueKind::Float32, "Float32"),
+        (at + 8, RuntimeValueKind::Float32, "Float32"),
         (
             at + 12,
-            WeaponRuntimeValueKind::SignedInteger { bits: 8 },
+            RuntimeValueKind::SignedInteger { bits: 8 },
             "Signed 8-Bit Integer",
         ),
     ]
 }
 
-pub(super) fn storage(code: u8, schema: u32) -> Option<(WeaponRuntimeValueKind, u8)> {
-    use WeaponRuntimeValueKind::*;
+pub(super) fn storage(code: u8, schema: u32) -> Option<(RuntimeValueKind, u8)> {
+    use RuntimeValueKind::*;
     if let Some(kind) = scalar(code, schema) {
         return Some((kind, 0));
     }
@@ -133,20 +130,20 @@ fn require_width(at: usize, end: usize, width: usize, label: &str) -> Result<(),
 fn read_scalar(
     data: &[u8],
     at: usize,
-    kind: &WeaponRuntimeValueKind,
+    kind: &RuntimeValueKind,
 ) -> Result<(String, String), String> {
     let value = decode_runtime_value(data, at, kind)?;
     let representation = match kind {
-        WeaponRuntimeValueKind::Boolean => "Boolean".into(),
-        WeaponRuntimeValueKind::Float32 => "Float32".into(),
-        WeaponRuntimeValueKind::Vector4Float32 => "Four Float32 Values".into(),
-        WeaponRuntimeValueKind::SignedInteger { bits } => format!("Signed {bits}-Bit Integer"),
-        WeaponRuntimeValueKind::UnsignedInteger { bits } => format!("Unsigned {bits}-Bit Integer"),
-        WeaponRuntimeValueKind::HexIdentifier { bits } => format!("{bits}-Bit Identifier"),
+        RuntimeValueKind::Boolean => "Boolean".into(),
+        RuntimeValueKind::Float32 => "Float32".into(),
+        RuntimeValueKind::Vector4Float32 => "Four Float32 Values".into(),
+        RuntimeValueKind::SignedInteger { bits } => format!("Signed {bits}-Bit Integer"),
+        RuntimeValueKind::UnsignedInteger { bits } => format!("Unsigned {bits}-Bit Integer"),
+        RuntimeValueKind::HexIdentifier { bits } => format!("{bits}-Bit Identifier"),
         _ => return Err("Unsupported native scalar representation".into()),
     };
     let text = match (kind, &value) {
-        (WeaponRuntimeValueKind::HexIdentifier { bits }, WeaponRuntimeValue::Unsigned(value)) => {
+        (RuntimeValueKind::HexIdentifier { bits }, RuntimeValue::Unsigned(value)) => {
             format!("0x{value:0width$X}", width = usize::from(*bits / 4))
         }
         _ => scalar_text(&value),

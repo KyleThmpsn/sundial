@@ -3,7 +3,7 @@ use super::*;
 #[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES in a Dawn installation"]
 fn dawn_detection_and_native_artwork_plans_match_previews() {
-    use crate::{AuthoredWeaponRarity, WeaponIconEdit, watermark::WeaponIconRequest};
+    use crate::{AuthoredWeaponRarity, WeaponIconEdit, icon::watermark::WeaponIconRequest};
     use tiger_pkg::TagHash;
     let packages = crate::test_support::stock_packages();
     assert_eq!(Branding::for_packages(&packages), Branding::Dawn);
@@ -28,12 +28,12 @@ fn dawn_detection_and_native_artwork_plans_match_previews() {
 
     let manager = sundial::package_authoring::open_shadowkeep_package_manager(&packages).unwrap();
     let dawn = Branding::Dawn.badge().unwrap();
-    let sunrise = crate::badge_icon::build_icon_plan(&manager, 0x0aa0, 0, 0, None).unwrap();
-    let plan = crate::badge_icon::build_icon_plan(&manager, 0x0aa0, 0, 0, dawn.as_ref()).unwrap();
-    let mask = crate::badge_icon::preview_mask(&manager).unwrap();
+    let sunrise = crate::icon::badge::build_icon_plan(&manager, 0x0aa0, 0, 0, None).unwrap();
+    let plan = crate::icon::badge::build_icon_plan(&manager, 0x0aa0, 0, 0, dawn.as_ref()).unwrap();
+    let mask = crate::icon::badge::preview_mask(&manager).unwrap();
     assert_eq!(
         plan.new_tags[2].payload,
-        crate::badge_icon::preview(dawn.as_ref(), Some(&mask))
+        crate::icon::badge::preview(dawn.as_ref(), Some(&mask))
             .unwrap()
             .into_raw()
     );
@@ -47,13 +47,13 @@ fn dawn_detection_and_native_artwork_plans_match_previews() {
         rarity: AuthoredWeaponRarity::Legendary,
         plain: false,
     }];
-    let plan = crate::watermark::build_presented_watermark_plan(
+    let plan = crate::icon::watermark::build_presented_watermark_plan(
         &manager,
         0x0aa0,
         0,
         0,
         &requests,
-        crate::watermark::Presentation {
+        crate::icon::watermark::Presentation {
             branding: Branding::Dawn,
             artwork: &[None],
         },

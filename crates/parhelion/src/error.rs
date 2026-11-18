@@ -1,3 +1,4 @@
+//! The error and result types package authoring returns.
 use std::{fmt, io, path::PathBuf};
 
 pub type AuthoringResult<T> = Result<T, AuthoringError>;

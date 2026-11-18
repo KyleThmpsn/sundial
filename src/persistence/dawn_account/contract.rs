@@ -1,15 +1,48 @@
-//! Dawn player-state contract at prod-client-need-to-merge 06ce2d4.
+//! Dawn player-state contract for schemas 5 and 7.
 //!
 //! Every constant here mirrors a value Dawn compiles in. The runtime refuses to boot when a
 //! durable row breaks one of them, so the reader checks the same limits rather than trusting
 //! whatever the file happens to hold.
 
-/// `PRAGMA user_version` Dawn writes when it creates the database.
+/// `PRAGMA user_version` of the schema Dawn 1.7 releases write.
 pub(crate) const SCHEMA_VERSION: i64 = 5;
 
-/// Dawn's own schema. The writer checks a database's layout against it before rewriting, and
+/// The schema that moves ability picks onto each subclass item and adds per-item values, a
+/// selected title and the native customization block. Dawn passes through version 6 inside one
+/// migration and never leaves a database there, so 6 is not a layout to open.
+pub(crate) const PER_ITEM_SCHEMA_VERSION: i64 = 7;
+
+/// Dawn's own schema 5. The writer checks a database's layout against it before rewriting, and
 /// tests build databases from it that read the way Dawn's would.
 pub(super) const SCHEMA: &str = include_str!("fixtures/player_state_schema.sql");
+
+/// Dawn's own statements from schema 5 to 7, in the order its migration runs them. Column order
+/// and default text follow from that order, and the layout check compares both.
+pub(super) const SCHEMA_V7_DELTA: &str = include_str!("fixtures/player_state_schema_v7_delta.sql");
+
+#[must_use]
+pub(super) const fn supported(version: i64) -> bool {
+    version == SCHEMA_VERSION || version == PER_ITEM_SCHEMA_VERSION
+}
+
+/// Whether the schema stores ability picks, values, a title and customization per row.
+#[must_use]
+pub(super) const fn per_item(version: i64) -> bool {
+    version >= PER_ITEM_SCHEMA_VERSION
+}
+
+/// An empty database holding exactly the layout Dawn creates for one supported version.
+pub(super) fn reference(version: i64) -> rusqlite::Result<rusqlite::Connection> {
+    let reference = rusqlite::Connection::open_in_memory()?;
+    reference.execute_batch(SCHEMA)?;
+    if per_item(version) {
+        reference.execute_batch(SCHEMA_V7_DELTA)?;
+    }
+    Ok(reference)
+}
+
+/// Inclusive maximum of an ability entry stored on an item. The character row allows 255.
+pub(super) const ITEM_ABILITY_MAXIMUM: u8 = 63;
 
 /// The three metadata rows Dawn reads in `ORDER BY key` sequence. A fourth row fails the load.
 pub(super) const METADATA_KEYS: [&str; 3] =

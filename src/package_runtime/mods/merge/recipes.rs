@@ -7,8 +7,8 @@
 //! icons, subclass pools, nodes and attunements, private match pictures, and the objectives and
 //! records its Collections pages and badges name. Their rules sit beside Studio's, so an earlier
 //! mod that adds rows to the same tables moves every one of them. It also describes tables Studio
-//! doesn't write: the item hash index, node displays, the HUD's status and glyph rows, and the
-//! records, objectives and their strings.
+//! doesn't write: the item hash index, node displays, the HUD's status and glyph rows, the
+//! records, objectives and their strings, and the private match groups and their displays.
 use super::sidecar::{FieldKind, OpKind};
 mod runtime;
 
@@ -80,6 +80,16 @@ pub const TALENT_DISPLAYS: u32 = 0x8161_3D09;
 pub const ACTIVITY_DISPLAYS: u32 = 0x8132_7D35;
 /// The 48 destination displays.
 pub const DESTINATION_DISPLAYS: u32 = 0x8132_7D6B;
+/// Activities, row for row with [`ACTIVITY_DISPLAYS`]. Each row points at a record outside every
+/// array.
+pub const ACTIVITY_DEFINITIONS: u32 = 0x8132_7CF0;
+/// Private match groups, whose map lists name activity rows. Each group's maps sit row for row
+/// with the map displays of the same group in [`PRIVATE_MATCH_DISPLAYS`].
+pub const PRIVATE_MATCH: u32 = 0x8131_933E;
+/// Sunrise reads at most this many activity rows.
+pub const ACTIVITY_ROW_LIMIT: u32 = 4095;
+/// An activity display record, which a display row points at.
+const ACTIVITY_TEXT_CLASS: u32 = 0x8080_5E18;
 
 pub const ITEM_CLASS: u32 = 0x8080_7BEA;
 pub const ITEM_DISPLAY_CLASS: u32 = 0x8080_5CE1;
@@ -443,7 +453,8 @@ const RECORD_TEXT_ROW: Shape = Shape {
 };
 /// An objective's condition programs at `+8`, `+24` and `+56`, and its u16 perk flags at `+72`.
 /// Parhelion counts every badge of its family in the Badges root objective, appending a term per
-/// badge to the stock program at `+8`, which only its main mod changes.
+/// badge to the stock program at `+8`, which only its main mod changes. The word at `+48` is the
+/// completion value, a number such as 70000 that reads as a pointer in some layouts.
 const OBJECTIVE_ROW: Shape = Shape {
     stride: 160,
     fields: &[
@@ -456,7 +467,7 @@ const OBJECTIVE_ROW: Shape = Shape {
         owned(72, 2, None),
     ],
     local: &[],
-    values: &[],
+    values: &[48],
 };
 /// An objective's text, with a condition program at `+48`.
 const OBJECTIVE_TEXT_ROW: Shape = Shape {
@@ -464,6 +475,137 @@ const OBJECTIVE_TEXT_ROW: Shape = Shape {
     fields: &[owned(48, 8, None)],
     local: &[],
     values: &[],
+};
+
+/// A pointer at an object the merge moves with a mod's added bytes without reading it.
+const fn object(offset: usize) -> Field {
+    Field {
+        offset,
+        kind: FieldKind::ObjectPointer,
+        element: None,
+        element_stride: 0,
+        target_array: 0,
+        nestable: false,
+    }
+}
+
+/// A pointer at an object outside every array, whose own pointers `target` lists. The merge
+/// rewrites them when it moves a mod's added object.
+const fn shaped(offset: usize, target: &'static Shape) -> Field {
+    Field {
+        offset,
+        kind: FieldKind::ObjectPointer,
+        element: Some(target),
+        element_stride: target.stride,
+        target_array: 0,
+        nestable: false,
+    }
+}
+
+/// An activity record, as Sunrise Studio 3a0e6f7 lists its pointers. An added record copies its
+/// donor's and keeps pointing at the donor's nested data.
+const ACTIVITY_RECORD: Shape = Shape {
+    stride: 232,
+    fields: &[
+        owned(8, 0, None),
+        object(24),
+        object(32),
+        object(40),
+        object(48),
+        object(56),
+        object(64),
+        object(72),
+        object(80),
+        object(88),
+        object(104),
+        object(112),
+        owned(120, 0, None),
+        owned(136, 0, None),
+        owned(160, 0, None),
+        object(192),
+        owned(200, 0, None),
+    ],
+    local: &[],
+    values: &[],
+};
+/// An activity index row: its hash at `+0` and its record at `+8`. The hash word is a number, so
+/// the pointer check skips it.
+const ACTIVITY_ROW: Shape = Shape {
+    stride: 16,
+    fields: &[shaped(8, &ACTIVITY_RECORD)],
+    local: &[],
+    values: &[0],
+};
+/// A display record's skull row points at an object.
+const ACTIVITY_SKULL: Shape = Shape {
+    stride: 16,
+    fields: &[object(0)],
+    local: &[],
+    values: &[],
+};
+/// An activity display record, as Sunrise Studio 3a0e6f7 lists its pointers. Its `+0` points at
+/// its text block.
+const ACTIVITY_TEXT_RECORD: Shape = Shape {
+    stride: 136,
+    fields: &[
+        object(0),
+        object(16),
+        owned(24, 0, None),
+        owned(40, 16, Some(&ACTIVITY_SKULL)),
+        object(72),
+        object(80),
+        object(96),
+        owned(104, 0, None),
+        object(120),
+    ],
+    local: &[],
+    values: &[],
+};
+/// An activity display index row: its hash at `+0` and its record at `+8`. The hash word is a
+/// number, so the pointer check skips it.
+const ACTIVITY_TEXT_ROW: Shape = Shape {
+    stride: 16,
+    fields: &[shaped(8, &ACTIVITY_TEXT_RECORD)],
+    local: &[],
+    values: &[0],
+};
+/// A private match map entry: its hash at `+0`, its activity row at `+4` and its trait hashes at
+/// `+8`. An added entry keeps its donor's traits.
+const PRIVATE_MATCH_MAP: Shape = Shape {
+    stride: 24,
+    fields: &[owned(8, 4, None)],
+    local: &[],
+    values: &[],
+};
+/// A private match group: its modes at `+8`, its maps at `+24`, its factions at `+40` and its
+/// options at `+56`. Parhelion adds maps to a stock group after its own.
+const PRIVATE_MATCH_GROUP: Shape = Shape {
+    stride: 72,
+    fields: &[
+        owned(8, 0, None),
+        Field {
+            nestable: true,
+            ..owned(24, 24, Some(&PRIVATE_MATCH_MAP))
+        },
+        owned(40, 0, None),
+        owned(56, 0, None),
+    ],
+    local: &[],
+    values: &[0],
+};
+/// A private match display group: text references in its first 48 bytes, its mode displays at
+/// `+48` and its map displays at `+64`, 20-byte rows without pointers.
+const PRIVATE_MATCH_DISPLAY_GROUP: Shape = Shape {
+    stride: 80,
+    fields: &[
+        owned(48, 0, None),
+        Field {
+            nestable: true,
+            ..owned(64, 20, None)
+        },
+    ],
+    local: &[],
+    values: &[0, 8, 16, 24, 32, 40],
 };
 
 /// Every table whose rows the loader merges.
@@ -731,10 +873,9 @@ pub const TABLES: &[Recipe] = &[
         name: "runtime name map",
         arrays: &[
             sorted("rows", &PLAIN_8),
-            // The game sets one bit of these zeroed words per row as it loads the row, so a build
-            // that adds rows past their capacity adds words. Studio's recipe stops at the rows, as
-            // Studio adds no words, and a mod that keeps the stock count merges with one that
-            // grows it.
+            // The game sets one bit per loaded row. A mod reserves its complete row addition
+            // in new words, without sharing the spare bits of the last stock word with other
+            // mods. The loader appends these word deltas independently of the sorted rows.
             append("loaded bits", 24, &PLAIN_4, None, EDITOR_ROW_LIMIT),
         ],
     },
@@ -893,6 +1034,54 @@ pub const TABLES: &[Recipe] = &[
             SIGNED_ROW_LIMIT,
         ))],
     },
+    // Activity row `n` has display row `n`, with the same hash at `+0`. Both recipes are Sunrise
+    // Studio's, so a map's rows merge with the activities a Studio mod adds.
+    Recipe {
+        tag: ACTIVITY_DEFINITIONS,
+        name: "activity definitions",
+        arrays: &[unique_keys(append(
+            "rows",
+            ROWS,
+            &ACTIVITY_ROW,
+            Some("activity"),
+            ACTIVITY_ROW_LIMIT,
+        ))],
+    },
+    Recipe {
+        tag: ACTIVITY_DISPLAYS,
+        name: "activity texts",
+        arrays: &[unique_keys(append(
+            "rows",
+            ROWS,
+            &ACTIVITY_TEXT_ROW,
+            Some("activity"),
+            ACTIVITY_ROW_LIMIT,
+        ))],
+    },
+    // The groups keep their count. A map joins a stock group's map list and, at the same place,
+    // the map displays of the same group.
+    Recipe {
+        tag: PRIVATE_MATCH,
+        name: "private match",
+        arrays: &[append(
+            "groups",
+            ROWS,
+            &PRIVATE_MATCH_GROUP,
+            None,
+            EDITOR_ROW_LIMIT,
+        )],
+    },
+    Recipe {
+        tag: PRIVATE_MATCH_DISPLAYS,
+        name: "private match displays",
+        arrays: &[append(
+            "groups",
+            ROWS,
+            &PRIVATE_MATCH_DISPLAY_GROUP,
+            None,
+            EDITOR_ROW_LIMIT,
+        )],
+    },
 ];
 
 /// The recipe of an installed table, if the loader merges its rows.
@@ -1010,6 +1199,18 @@ const ITEM_RULES: &[Rule] = &[
     rule("socket type", SOCKET_ROWS, 0, 2, SOCKET_TYPES),
     rule("initial plug", SOCKET_ROWS, 2, 2, ITEM_INDEX),
     rule("socket plug", SOCKET_PLUGS, 0, 4, ITEM_INDEX),
+    // The item a plug belongs to, which an ornament's tooltip and Collections entry show, `0xFFFF`
+    // for none.
+    rule(
+        "plug owner",
+        &[Step::Pointer {
+            offset: 64,
+            marker: 0x8080_77E3,
+        }],
+        6,
+        2,
+        ITEM_INDEX,
+    ),
     rule(
         "sandbox perk",
         &[
@@ -1361,6 +1562,20 @@ const PRIVATE_MATCH_MAPS: &[Step] = &[
         stride: 20,
     },
 ];
+/// Each private match group's map entries, which name their map's activity row at `+4`.
+const PRIVATE_MATCH_MAP_RULES: &[Rule] = &[rule(
+    "map activity",
+    &[
+        each_row(72),
+        Step::Each {
+            offset: 24,
+            stride: 24,
+        },
+    ],
+    4,
+    2,
+    ACTIVITY_DEFINITIONS,
+)];
 /// An objective's text: its name, description and progress text.
 const OBJECTIVE_TEXT_RULES: &[Rule] = &[
     rule("name bank", &[each_row(64)], 8, 4, STRING_BANK_INDEX),
@@ -1373,16 +1588,24 @@ const OBJECTIVE_TEXT_RULES: &[Rule] = &[
     ),
     rule("progress bank", &[each_row(64)], 24, 4, STRING_BANK_INDEX),
 ];
-/// The display text blocks, the 36-byte array at `+24` each display record points at: a title
-/// at `+4` and a description at `+12`.
+/// A display record's text block, which its `+0` points at: a title at `+4`, a description at
+/// `+12` and an expansion name at `+20`. An added record carries its own block behind it.
 const ACTIVITY_DISPLAY_RULES: &[Rule] = &[
-    rule("title bank", ACTIVITY_TEXT, 4, 4, STRING_BANK_INDEX),
-    rule("description bank", ACTIVITY_TEXT, 12, 4, STRING_BANK_INDEX),
+    rule("title bank", ACTIVITY_TEXT, 4, 2, STRING_BANK_INDEX),
+    rule("description bank", ACTIVITY_TEXT, 12, 2, STRING_BANK_INDEX),
+    rule("expansion bank", ACTIVITY_TEXT, 20, 2, STRING_BANK_INDEX),
 ];
-const ACTIVITY_TEXT: &[Step] = &[Step::Each {
-    offset: 24,
-    stride: 36,
-}];
+const ACTIVITY_TEXT: &[Step] = &[
+    each_row(16),
+    Step::Pointer {
+        offset: 8,
+        marker: ACTIVITY_TEXT_CLASS,
+    },
+    Step::Pointer {
+        offset: 0,
+        marker: 0,
+    },
+];
 /// Each 56-byte destination display's name. Parhelion writes it into an unused stock row.
 const DESTINATION_DISPLAY_RULES: &[Rule] =
     &[rule("name bank", &[each_row(56)], 4, 4, STRING_BANK_INDEX)];
@@ -1619,6 +1842,7 @@ pub fn table_rules(tag: u32) -> &'static [Rule] {
         PLUG_SETS => PLUG_SET_RULES,
         ITEM_ART => ITEM_ART_RULES,
         ITEM_HASH_INDEX => HASH_INDEX_RULES,
+        PRIVATE_MATCH => PRIVATE_MATCH_MAP_RULES,
         PRIVATE_MATCH_DISPLAYS => PRIVATE_MATCH_RULES,
         OBJECTIVE_STRINGS => OBJECTIVE_TEXT_RULES,
         ACTIVITY_DISPLAYS => ACTIVITY_DISPLAY_RULES,

@@ -24,12 +24,20 @@
 //!   source change from rest. Source bones between a native parent and child, such as
 //!   source-only metacarpals, are composed into the child.
 //! - A native control without a source bone keeps its default.
+//! - Body and shoulder translations are anchored to the carrier's idle, retaining source motion
+//!   from idle in each native control frame. The source torso and clavicles belong to another
+//!   anatomy and camera frame. Moving only the independently controlled upper arms leaves the
+//!   torso skin near the native camera.
+//! - A shoulder moves along its wrist line, by the least that brings the wrist within the arm's
+//!   allowed reach, when the native segments would otherwise span more than that share of their
+//!   length. The hand target, guide rotation and native bone lengths are retained.
 //!
 //! Additive clips carry deltas. Rotations change frame by the bind alignment of the two bones,
 //! and translations by the rest rotation between the two control parent frames.
 use super::source::Rig as SourceRig;
 use super::*;
 use crate::tiger::animation::{control::Rig, pose::Pose};
+mod arm;
 
 enum Rule {
     Default,
@@ -63,19 +71,29 @@ pub(super) struct Retarget<'a> {
     /// The view reference's native slot and the source utility and grip bones.
     view: (usize, usize, usize),
     framing: Option<Framing>,
+    arms: [arm::Arm; 2],
+    anchors: BTreeMap<usize, [f32; 3]>,
     pub report: Value,
 }
 
 /// Native framing of the held weapon. The source rig holds its grip closer to the eye than the
 /// native first-person view frames it, so the view reference takes a constant offset that puts
 /// the source idle grip where the carrier's idle holds its own. The offset's lateral and vertical
-/// parts scale with the grip's distance from the view axis, between the aimed and the idle
-/// distance, so sights the source centres on the axis stay centred.
+/// parts fade along the source grip's idle-to-aim displacement. Projection onto that segment
+/// preserves both endpoints even when aiming increases the radial distance from the view axis.
+///
+/// The forward part does not follow that share. Reloads, draws and sprints carry the grip
+/// partway along the segment, which would pull the weapon toward the eye in the middle of
+/// those actions. It is dropped for whole clips of the aimed actions instead, because every
+/// stock aimed clip keeps the view reference at the eye, where the client takes the aimed
+/// camera from the sight's rear point. A view reference displaced forward at full aim left
+/// that camera ahead of the rear point, inside the sight. The client's blend between the hip
+/// and aimed states carries the change.
 #[derive(Clone, Copy)]
 pub(super) struct Framing {
     pub offset: [f32; 3],
-    pub idle: f32,
-    pub aimed: f32,
+    pub idle: [f32; 3],
+    pub aimed: Option<[f32; 3]>,
 }
 
 fn rotation(p: Pose) -> Pose {
@@ -98,7 +116,7 @@ fn align(source: &SourceRig, native: &Rig, source_bone: usize, native_bone: usiz
 }
 
 impl<'a> Retarget<'a> {
-    pub fn new(source: &'a SourceRig, native: &'a Rig) -> Result<Self> {
+    pub fn new(source: &'a SourceRig, native: &'a Rig, controls: &Payload) -> Result<Self> {
         let index = |names: &[u32], name: u32| names.iter().position(|n| *n == name);
         let grip = source.role("right_grip")?;
         let utility = source.role("utility")?;
@@ -265,6 +283,11 @@ impl<'a> Retarget<'a> {
             additive,
             view: (view, utility, grip),
             framing: None,
+            arms: [
+                arm::Arm::read(native, controls, "l")?,
+                arm::Arm::read(native, controls, "r")?,
+            ],
+            anchors: BTreeMap::new(),
             report,
         })
     }
@@ -280,25 +303,88 @@ impl<'a> Retarget<'a> {
         self.framing = Some(framing);
     }
 
-    /// The view reference offset for one frame of source objects.
-    fn view_offset(&self, source: &[Pose]) -> Option<Pose> {
-        let framing = self.framing?;
-        let held = source[self.view.1].inverse().then(source[self.view.2]);
-        let axis = held.0[5].hypot(held.0[6]);
-        let span = framing.idle - framing.aimed;
-        let share = if span > 0.01 {
-            ((axis - framing.aimed) / span).clamp(0., 1.)
-        } else {
-            1.
-        };
-        let [x, y, z] = framing.offset;
-        Some(Pose([0., 0., 0., 1., x, y * share, z * share, 1.]))
+    /// Keep the torso and its clavicles in the native view before anchoring the independently
+    /// controlled upper arms. Rotations, wrist targets and movement away from idle stay authored
+    /// by the source. Reach correction remains a separate pass over final targets.
+    pub fn shoulders(
+        &mut self,
+        source_idle: &[Pose],
+        carrier: &BTreeMap<u32, Pose>,
+    ) -> Result<Value> {
+        ensure!(self.anchors.is_empty(), "Body already anchored");
+        let mut body = Vec::new();
+        for role in ["b_pelvis", "b_l_clav", "b_r_clav"] {
+            let name = source::fnv(role);
+            let bone = self
+                .native
+                .names
+                .iter()
+                .position(|n| *n == name)
+                .context("Native view body anchor is absent")?;
+            body.push(self.anchor(bone, source_idle, carrier)?);
+        }
+        self.report["body_anchors"] = json!(body);
+        let mut report = Vec::new();
+        for bone in self.arms.each_ref().map(|arm| arm.pair().0) {
+            report.push(self.anchor(bone, source_idle, carrier)?);
+        }
+        Ok(json!(report))
     }
 
-    /// Native local control poses for one frame of absolute source control values.
-    pub fn absolute(&self, values: &[Pose]) -> Result<Vec<[f32; 8]>> {
+    fn anchor(
+        &mut self,
+        bone: usize,
+        idle: &[Pose],
+        carrier: &BTreeMap<u32, Pose>,
+    ) -> Result<Value> {
+        let name = self.native.names[bone];
+        let slot = self.native.slot(bone)?;
+        ensure!(!self.anchors.contains_key(&slot), "Repeated body anchor");
+        // Re-evaluate after each ancestor is placed. A clavicle's correction is local to the
+        // already anchored torso, rather than adding the torso's displacement a second time.
+        let values = self.absolute(idle, false)?;
+        let objects = self.native.objects(&values)?;
+        let target = carrier
+            .get(&name)
+            .context("Carrier idle lacks a body anchor")?;
+        let mut placed = objects[bone];
+        placed.0[4..7].copy_from_slice(&target.0[4..7]);
+        let local = self.native.local(slot, &objects, placed)?;
+        let offset = std::array::from_fn(|i| local.0[4 + i] - values[slot][4 + i]);
+        ensure!(offset.iter().all(|v| v.is_finite()), "Invalid body anchor");
+        self.anchors.insert(slot, offset);
+        Ok(json!({"bone":format!("{name:08X}"),"slot":slot,
+            "carrier_position":&target.0[4..7],"source_position":&objects[bone].0[4..7],
+            "control_offset":offset}))
+    }
+
+    /// The view reference offset for one frame of source objects. A clip of an aimed action
+    /// takes no forward part, see [`Framing`].
+    fn view_offset(&self, source: &[Pose], aimed: bool) -> Option<Pose> {
+        let framing = self.framing?;
+        let held = source[self.view.1].inverse().then(source[self.view.2]);
+        let share = framing.aimed.map_or(1., |aimed| {
+            let direction: [f32; 3] = std::array::from_fn(|i| framing.idle[i] - aimed[i]);
+            let length = direction.iter().map(|v| v * v).sum::<f32>();
+            if length <= 1e-8 {
+                return 1.;
+            }
+            ((0..3)
+                .map(|i| (held.0[4 + i] - aimed[i]) * direction[i])
+                .sum::<f32>()
+                / length)
+                .clamp(0., 1.)
+        });
+        let [x, y, z] = framing.offset;
+        let forward = if aimed { 0. } else { x };
+        Some(Pose([0., 0., 0., 1., forward, y * share, z * share, 1.]))
+    }
+
+    /// Native local control poses for one frame of absolute source control values. `aimed` marks
+    /// a clip of an aimed action.
+    pub fn absolute(&self, values: &[Pose], aimed: bool) -> Result<Vec<[f32; 8]>> {
         let source = self.source.objects(values)?;
-        let view_offset = self.view_offset(&source);
+        let view_offset = self.view_offset(&source, aimed);
         let mut objects = self.native.bind.clone();
         let mut result = Vec::with_capacity(self.rules.len());
         for (slot, rule) in self.rules.iter().enumerate() {
@@ -358,12 +444,44 @@ impl<'a> Retarget<'a> {
                         .local(slot, &objects, objects[native_anchor].then(target))?
                 }
             };
-            let local = Pose::checked(local.0)?;
+            let mut local = Pose::checked(local.0)?;
+            if let Some(offset) = self.anchors.get(&slot) {
+                for (value, shift) in local.0[4..7].iter_mut().zip(offset) {
+                    *value += shift;
+                }
+                local = Pose::checked(local.0)?;
+            }
             let bone = self.native.controls[slot].bone;
             objects[bone] = self.native.compose(slot, &objects, local);
             result.push(local.0);
         }
         Ok(result)
+    }
+
+    /// Reach is checked after weapon-local motion and named constraints have placed their
+    /// targets. The FK wrists remain independent of the shoulders this pass moves.
+    pub fn reach(
+        &self,
+        values: &mut [[f32; 8]],
+        targets: &BTreeMap<(usize, usize), Pose>,
+    ) -> Result<f32> {
+        ensure!(
+            targets
+                .keys()
+                .all(|pair| self.arms.iter().any(|arm| arm.pair() == *pair)),
+            "Constraint does not address a checked native arm pair"
+        );
+        let objects = self.native.objects(values)?;
+        let mut reach = 0f32;
+        for arm in &self.arms {
+            reach = reach.max(arm.place(
+                self.native,
+                &objects,
+                values,
+                targets.get(&arm.pair()).copied(),
+            )?);
+        }
+        Ok(reach)
     }
 
     /// Native delta poses for one frame of additive source deltas.

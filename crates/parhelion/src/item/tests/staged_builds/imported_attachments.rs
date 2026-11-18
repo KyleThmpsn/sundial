@@ -4,18 +4,11 @@ use crate::recipe::{
     HexHash, WeaponRecipe, WeaponSocketColumnRecipe, WeaponSocketPlugVariantRecipe,
 };
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use sundial::package_authoring::sandbox_perk::{
     action,
     program::{Action, Asset, ImportedAsset, Position, Program, Trigger},
 };
-
-fn sha(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
+use sundial::storage::sha256_hex;
 
 #[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
@@ -185,13 +178,13 @@ fn persisted_attachment_groups_bind_private_actions_and_owners() {
     fs::write(output.join("attachment.bin"), &graph).unwrap();
     fs::write(output.join("owner.bin"), &owner).unwrap();
     fs::write(output.join("readback.json"), serde_json::to_vec_pretty(&json!({
-        "recipe":saved,"recipe_sha256":sha(&fs::read(&saved).unwrap()),
+        "recipe":saved,"recipe_sha256":sha256_hex(&fs::read(&saved).unwrap()),
         "source_packages":packages,"source_root":format!("{source_root:08X}"),
-        "source_graph_sha256":sha(&source_graph),"source_owner_sha256":sha(&source_owner),
+        "source_graph_sha256":sha256_hex(&source_graph),"source_owner_sha256":sha256_hex(&source_owner),
         "item_hash":bundle.plan.weapons[0].item_hash,"runtime_key":private.runtime_key,
         "action_tag":assignment.runtime_tag,"root_tag":root_tag,"owner_tag":owner_tag,
-        "action_sha256":sha(&action_bytes),"graph_sha256":sha(&graph),"owner_sha256":sha(&owner),
+        "action_sha256":sha256_hex(&action_bytes),"graph_sha256":sha256_hex(&graph),"owner_sha256":sha256_hex(&owner),
         "stock_unchanged":true,"installed":false,"gameplay_verified":false,
-        "executable_sha256":sha(&fs::read(std::env::current_exe().unwrap()).unwrap())
+        "executable_sha256":sha256_hex(&fs::read(std::env::current_exe().unwrap()).unwrap())
     })).unwrap()).unwrap();
 }

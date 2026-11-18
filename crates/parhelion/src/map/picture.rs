@@ -13,7 +13,7 @@ use tiger_pkg::TagHash;
 use crate::{
     AuthoringResult,
     error::invalid,
-    icon_chain::{Donor, Texture},
+    icon::chain::{Donor, Texture},
     shared_tag_memory::read_and_validate_icon_companion,
     tag_payload::{array_at, read_tag, read_u16, read_u32},
 };
@@ -69,12 +69,12 @@ pub(super) fn preview(
         ICON_PRIMARY_LAYER_OFFSET,
     )?);
     let payload = read_tag(manager, layer, "activity image layer")?;
-    let references = crate::icon_edit::texture_reference_offsets(&payload, layer)?;
+    let references = crate::icon::edit::texture_reference_offsets(&payload, layer)?;
     let (_, header) = references
         .get(1)
         .or_else(|| references.first())
         .ok_or_else(|| invalid("Activity image has no textures"))?;
-    let pixels = crate::icon_edit::decode_texture(manager, *header).map_err(invalid)?;
+    let pixels = crate::icon::edit::decode_texture(manager, *header).map_err(invalid)?;
     Ok(image::imageops::resize(
         &pixels,
         200,

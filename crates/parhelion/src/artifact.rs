@@ -1,3 +1,4 @@
+//! File digests and the metadata recorded with a build's artifacts.
 use std::{
     ffi::OsStr,
     fs::File,

@@ -92,7 +92,7 @@ fn shader_package_oracle() -> Result<()> {
         reports.push(
             json!({"source":name,"stage":stage(entry)?,"binding":binding,
             "unresolved":unresolved,"source_header_binding":header.u32(12)?,
-            "header_sha256":digest(&header.0),"bytecode_sha256":digest(&code)}),
+            "header_sha256":sha256_hex(&header.0),"bytecode_sha256":sha256_hex(&code)}),
         );
     }
     ensure!(

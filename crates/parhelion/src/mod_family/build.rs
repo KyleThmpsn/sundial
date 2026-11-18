@@ -4,7 +4,7 @@
 //! `begin` returns the [`Family`] value that the workflow passes through each pass and ends with
 //! [`Family::commit`]. Member builds record from deep inside compilation, so a pass's state lives
 //! in this module's slot while it runs, and staging reads the committed pass from there.
-//! `package_profile::Profile` serializes builds and clears the slot when its turn ends, including
+//! `package::profile::Profile` serializes builds and clears the slot when its turn ends, including
 //! failed builds.
 #![cfg_attr(not(feature = "d2-model-importer"), allow(dead_code, unused_mut))]
 use super::*;
@@ -16,9 +16,11 @@ use std::{
 use sundial::package_authoring::mod_content::{ImportContent, Importer};
 use tiger_pkg::{Package, PackageD2PreBL, TagHash};
 mod seed;
+#[cfg(test)]
+mod tests;
 
 /// Bump when the linked entry representation or package writer's byte contract changes.
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 12;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -198,6 +200,9 @@ struct Taken {
 #[derive(Clone, Default)]
 struct Plan {
     imports: BTreeMap<Importer, Planned>,
+    /// Complete authoring request, stock identity and package layout. Resource fingerprints alone
+    /// omit perk edits and removed native recipes that can change hosted rows or allocations.
+    seed_inputs: String,
     /// The importer whose mod holds each recipe, in the project's order, and each map, in the
     /// request's order. `None` is the main mod.
     recipe_owners: Vec<Option<Importer>>,
@@ -216,17 +221,18 @@ struct Plan {
 /// pass that ended.
 #[derive(Clone, Default)]
 struct Decisions {
-    /// Importers whose recipes compile with the main mod's, because an entry their own build
-    /// changes wouldn't merge with another member's and no table can host it, each with
-    /// sentences saying why. The main mod then holds their resources too.
+    /// Allocated rows came from a saved build and can be discarded once if the first host fails.
+    seeded: bool,
+    /// Importers whose recipes compile with the main mod's, each with sentences saying why: an
+    /// entry their own build changes wouldn't merge with another member's and no table can host
+    /// it, or their perks and another member's subclasses share an imported ability. Planning
+    /// reads the abilities from the recipes, so those importers are coupled before the first
+    /// pass. The main mod then holds their resources too.
     coupled: BTreeMap<Importer, Vec<String>>,
     /// Whether the main mod builds in every pass to host the importers' shared rows, even with no
     /// recipe or map of its own. A family whose recipes are all imported has no main mod build
     /// otherwise, and no member could hold another's rows.
     host: bool,
-    /// The shared tables whose rows for an importer's items the main mod's build writes, because
-    /// another member changes them too. The importer keeps its items and requires the main mod.
-    hosting: BTreeMap<Importer, BTreeSet<Shared>>,
     /// How many entries the importers put before the stock entries of each stock collectible
     /// array, by node and array offset, as the pass before recorded them. The main mod's build
     /// keeps that many stock rows in place after its own entries for the importers to write over,
@@ -278,6 +284,9 @@ struct Pass {
     fronts: BTreeMap<(usize, usize), Front>,
     /// Controllers are generated after activity tags have their final addresses.
     mission_scripts: BTreeMap<String, String>,
+    /// What each map's activity SDK rows name, by activity. Like the controllers, they follow
+    /// the activity entries' final addresses.
+    map_rows: BTreeMap<String, crate::map::pack::Destination>,
     /// The imported abilities each member's subclasses carry and the ones its perks check, by
     /// source and identity. `None` is the main mod.
     abilities: BTreeMap<Option<Importer>, Abilities>,
@@ -299,8 +308,8 @@ struct Front {
 /// Where a member's next entries go before the stock entries of a stock collectible array.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Slot {
-    /// The row the first of them takes, after the earlier members' entries and its own earlier
-    /// ones.
+    /// The row in this member's local table, after earlier members' reserved stock positions and
+    /// this member's own earlier entries. Other members' appended rows have no local position.
     pub(crate) row: usize,
     /// How many entries the array's stock holds.
     pub(crate) stock: usize,
@@ -342,10 +351,11 @@ impl Session {
     }
 }
 
-/// A shared table Sunrise can't merge. When several members' builds add rows to one, the main
-/// mod's build writes it with every member's rows, and each importer keeps the assets its rows
-/// name. A row whose importer is removed names assets no loaded package holds, and nothing applies
-/// it, since only that importer's items name its keys.
+/// A shared table Sunrise can't merge. The main mod's build writes it with every member's rows
+/// whenever it builds, and each importer keeps the assets its rows name. An importer's build then
+/// holds the same bytes whichever other members build beside it, and no pass is spent finding
+/// which members change the same table. A row whose importer is removed names assets no loaded
+/// package holds, and nothing applies it, since only that importer's items name its keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub(crate) enum Shared {
     /// The crosshair table `80B479A9`, whose rows name converted crosshair and inspect scenes.
@@ -359,8 +369,9 @@ pub(crate) enum Shared {
     /// The character animation tables and dictionaries.
     Character,
     /// The activity and private match tables. Their rows show maps, so an importer's rows can't
-    /// stay behind when it is removed. The importer builds its tables on the main mod's instead,
-    /// and Sunrise serves them from it while it loads.
+    /// stay behind when it is removed. Each member adds its own rows to the installed tables,
+    /// which Sunrise merges, and an importer follows the main mod's activities to keep clear of
+    /// their hashes, names and destinations.
     Activities,
     /// The stock Collections objectives' targets and acquired counts, which count each member's
     /// built items. Every member with items on a page changes the same words, so the main mod
@@ -496,53 +507,110 @@ pub(crate) struct Family {
     plan: Plan,
     decisions: Decisions,
     start: Pass,
+    /// Fresh predictions survive seed recovery. Unverified saved counts and fronts do not.
+    census: Option<BTreeMap<Importer, Census>>,
 }
 
 /// What a pass's member builds recorded that decides whether the family builds again.
 #[derive(Default)]
 pub(crate) struct Outcome {
     main_builds: bool,
-    produced: BTreeMap<Option<Importer>, BTreeMap<u32, Shared>>,
     recorded: BTreeMap<Importer, Contributions>,
     /// How many entries the importers put before the stock entries of each stock collectible
     /// array in the pass.
     fronts: BTreeMap<(usize, usize), usize>,
+    /// The same entries by the importer that put them there.
+    member_fronts: BTreeMap<(usize, usize), BTreeMap<Importer, usize>>,
     abilities: BTreeMap<Option<Importer>, Abilities>,
 }
 
-impl Outcome {
-    /// The importers that must build with the main mod because one member's perks check an
-    /// imported ability another member's subclass carries, each with a sentence saying why. A
-    /// perk accepts an imported ability by its allocated root, which only the build that
-    /// allocates it knows, so the perk and the subclass compile together.
-    pub(crate) fn split_abilities(&self) -> BTreeMap<Importer, Vec<String>> {
-        let name = |member: Option<Importer>| member.map_or("Parhelion", Importer::name);
-        let mut coupled = BTreeMap::<Importer, Vec<String>>::new();
-        for (checker, checks) in &self.abilities {
-            for (carrier, carries) in &self.abilities {
-                if checker == carrier || checks.checked.is_disjoint(&carries.carried) {
-                    continue;
-                }
-                if let Some(importer) = *checker {
-                    coupled.entry(importer).or_default().push(format!(
-                        "Its perks check abilities that {}'s subclasses import.",
-                        name(*carrier)
-                    ));
-                }
-                if let Some(importer) = *carrier {
-                    coupled.entry(importer).or_default().push(format!(
-                        "{}'s perks check abilities that its subclasses import.",
-                        name(*checker)
-                    ));
-                }
+/// The importers that must build with the main mod because one member's perks check an imported
+/// ability another member's subclass carries, each with a sentence saying why. A perk accepts an
+/// imported ability by its allocated root, which only the build that allocates it knows, so the
+/// perk and the subclass compile together.
+fn split_abilities(
+    abilities: &BTreeMap<Option<Importer>, Abilities>,
+) -> BTreeMap<Importer, Vec<String>> {
+    let name = |member: Option<Importer>| member.map_or("Parhelion", Importer::name);
+    let mut coupled = BTreeMap::<Importer, Vec<String>>::new();
+    for (checker, checks) in abilities {
+        for (carrier, carries) in abilities {
+            if checker == carrier || checks.checked.is_disjoint(&carries.carried) {
+                continue;
+            }
+            if let Some(importer) = *checker {
+                coupled.entry(importer).or_default().push(format!(
+                    "Its perks check abilities that {}'s subclasses import.",
+                    name(*carrier)
+                ));
+            }
+            if let Some(importer) = *carrier {
+                coupled.entry(importer).or_default().push(format!(
+                    "{}'s perks check abilities that its subclasses import.",
+                    name(*checker)
+                ));
             }
         }
-        coupled
     }
+    coupled
+}
 
-    /// The shared tables `owner`'s build changed in the pass, by stock entry.
-    pub(crate) fn produced_by(&self, owner: Option<Importer>) -> BTreeMap<u32, Shared> {
-        self.produced.get(&owner).cloned().unwrap_or_default()
+/// The imported abilities each member's recipes carry and check, read from the recipes before any
+/// pass. A subclass entry names the source ability it imports, and a perk program names the source
+/// abilities its conditions stand for, so neither needs a compile. `owners` gives each recipe's
+/// member, `None` for the main mod. A build records the same abilities as it compiles
+/// ([`carries_abilities`], [`checks_abilities`]), less an imported ability whose graph has no
+/// root, and a pass's review still couples what the recipes didn't show.
+fn planned_abilities(
+    weapons: &[crate::WeaponCloneSpec],
+    owners: &[Option<Importer>],
+) -> BTreeMap<Option<Importer>, Abilities> {
+    let mut abilities = BTreeMap::<Option<Importer>, Abilities>::new();
+    for (spec, owner) in weapons.iter().zip(owners) {
+        let entries = spec
+            .overrides
+            .subclass_abilities
+            .iter()
+            .flat_map(crate::subclass::SubclassAbilities::all_edits)
+            .collect::<Vec<_>>();
+        let plug_programs = spec
+            .overrides
+            .socket_plug_variants
+            .iter()
+            .flat_map(|variant| &variant.sandbox_perks)
+            .filter_map(|perk| perk.program.as_ref());
+        let entry_programs = entries
+            .iter()
+            .copied()
+            .flat_map(|edits| &edits.custom_perks)
+            .flat_map(|perk| &perk.effects)
+            .filter_map(|effect| effect.program.as_ref());
+        let checked = plug_programs
+            .chain(entry_programs)
+            .flat_map(sundial::package_authoring::sandbox_perk::program::Program::owned_programs)
+            .flat_map(|program| &program.ability_counterparts)
+            .map(|counterpart| (counterpart.source.clone(), counterpart.identity))
+            .collect::<Vec<_>>();
+        let carried = entries
+            .iter()
+            .filter_map(|edits| edits.imported_ability.as_ref()?.source.as_ref())
+            .map(|source| (source.source.clone(), source.identity))
+            .collect::<Vec<_>>();
+        if checked.is_empty() && carried.is_empty() {
+            continue;
+        }
+        let member = abilities.entry(*owner).or_default();
+        member.checked.extend(checked);
+        member.carried.extend(carried);
+    }
+    abilities
+}
+
+impl Outcome {
+    /// The importers a perk and a subclass of different members couple in the pass
+    /// ([`split_abilities`]).
+    pub(crate) fn split_abilities(&self) -> BTreeMap<Importer, Vec<String>> {
+        split_abilities(&self.abilities)
     }
 }
 
@@ -551,18 +619,12 @@ impl Outcome {
 pub(crate) struct Retry {
     /// Importers that compile with the main mod's content from the next pass on, and why.
     pub(crate) coupled: BTreeMap<Importer, Vec<String>>,
-    /// Whether the main mod builds from the next pass on to host shared rows, though no recipe
-    /// or map is its own.
-    pub(crate) host: bool,
-    /// Shared tables whose rows for an importer's items the main mod's build writes from the next
-    /// pass on.
-    pub(crate) hosted: BTreeMap<Importer, BTreeSet<Shared>>,
 }
 
 impl Retry {
     /// Whether the review changes nothing.
     pub(crate) fn is_empty(&self) -> bool {
-        self.coupled.is_empty() && self.hosted.is_empty() && !self.host
+        self.coupled.is_empty()
     }
 }
 
@@ -573,6 +635,7 @@ impl Family {
             plan: current.plan.clone(),
             decisions: current.decisions.clone(),
             start: current.pass.clone(),
+            census: None,
         }
     }
 
@@ -619,15 +682,6 @@ impl Family {
         self.decisions.host || own(&self.plan.recipe_owners) || own(&self.plan.map_owners)
     }
 
-    /// The shared tables whose rows for `importer`'s items the main mod's build writes.
-    pub(crate) fn hosting(&self, importer: Importer) -> BTreeSet<Shared> {
-        self.decisions
-            .hosting
-            .get(&importer)
-            .cloned()
-            .unwrap_or_default()
-    }
-
     /// Takes what every importer that builds on its own adds to the stock Collections lists,
     /// counted from its recipes before the first pass, in place of what the install's last build
     /// recorded: how many entries lead each list, which the main mod's build keeps rows for, and
@@ -636,6 +690,7 @@ impl Family {
     /// second pass for them. A count that differs from what an importer's build records still
     /// leaves the pass unsettled, and the next pass takes the recorded one.
     pub(crate) fn expect_collections(&mut self, censuses: &BTreeMap<Importer, Census>) {
+        self.census = Some(censuses.clone());
         let mut fronts = BTreeMap::new();
         for census in censuses.values() {
             for (&node, &rows) in &census.fronts {
@@ -648,10 +703,8 @@ impl Family {
             }
         }
         self.decisions.fronts = fronts;
-        let main_builds = self.main_builds();
+        let hosted = hosted_tables(self.main_builds()).contains(&Shared::Collections);
         for (importer, census) in censuses {
-            let hosted = hosted_tables(&self.decisions, main_builds, *importer)
-                .contains(&Shared::Collections);
             self.decisions
                 .contributions
                 .entry(*importer)
@@ -665,6 +718,21 @@ impl Family {
         self.decisions
             .contributions
             .retain(|_, contributions| !contributions.is_empty());
+    }
+
+    /// A seed is advisory even when its input identity matches. Restart a failed first host
+    /// without allocated rows, retaining the current census. The flag
+    /// prevents a genuine compilation failure from being retried indefinitely.
+    pub(crate) fn discard_seed(&mut self) -> bool {
+        if !std::mem::take(&mut self.decisions.seeded) {
+            return false;
+        }
+        self.decisions.contributions.clear();
+        self.decisions.fronts.clear();
+        if let Some(censuses) = self.census.take() {
+            self.expect_collections(&censuses);
+        }
+        true
     }
 
     /// Starts a pass from the planned one. The slot then holds the plan, the decisions so far and
@@ -700,9 +768,21 @@ impl Family {
         };
         Outcome {
             main_builds: current.pass.main_builds,
-            produced: current.pass.produced.clone(),
             recorded: current.pass.recorded.clone(),
             fronts: importer_fronts(&current.pass),
+            member_fronts: current
+                .pass
+                .fronts
+                .iter()
+                .map(|(list, front)| {
+                    let members = front
+                        .members
+                        .iter()
+                        .filter_map(|(member, rows)| Some(((*member)?, *rows)))
+                        .collect();
+                    (*list, members)
+                })
+                .collect(),
             abilities: current.pass.abilities.clone(),
         }
     }
@@ -730,7 +810,7 @@ impl Family {
                 .keys()
                 .chain(self.decisions.contributions.keys())
                 .all(|importer| {
-                    let tables = hosted_tables(&self.decisions, outcome.main_builds, *importer);
+                    let tables = hosted_tables(outcome.main_builds);
                     let recorded = outcome
                         .recorded
                         .get(importer)
@@ -745,18 +825,18 @@ impl Family {
                 })
     }
 
-    /// Applies the review of the pass that ended. The importers it couples and the tables it
-    /// hosts stay so for every later pass. The main mod keeps as many rows before the stock
-    /// Collections entries as the importers put there in the pass. Then what the importers
-    /// recorded in the pass, for the tables the main mod hosts for each in the next pass, is what
-    /// the main mod's build writes there. The tables follow the next pass, not the one that
-    /// ended: after a pass without a main mod build, the next one that hosts the bank rows and
-    /// Collections counts writes them at once. Filtered by the pass that ended, they were left
-    /// out, the importers recorded them again and the family took a third pass (2026-11-10). A
-    /// coupled importer's items compile in the main mod's build, which writes their rows itself,
-    /// so what that importer recorded on its own is left out. Its rows name assets its own build
-    /// allocated, which the next pass no longer has, and keeping them would leave the next pass
-    /// unsettled and cost another.
+    /// Applies the review of the pass that ended. The importers it couples stay so for every
+    /// later pass. The main mod keeps as many rows before the stock Collections entries as the
+    /// importers that still build on their own put there in the pass. Then what those importers
+    /// recorded in the pass, for the tables the main mod hosts in the next pass, is what the main
+    /// mod's build writes there. The tables follow the next pass, not the one that ended: after
+    /// a pass without a main mod build, the next one writes them at once. Filtered by the pass
+    /// that ended, they were left out, the importers recorded them again and the family took a
+    /// third pass (2026-11-10). A coupled importer's items compile in the main mod's build, which
+    /// writes their rows and Collections entries itself, so what that importer recorded on its
+    /// own is left out. Its rows name assets its own build allocated, which the next pass no
+    /// longer has, and its entries are then the main mod's own. Keeping either would leave the
+    /// next pass unsettled and cost another, as the kept Collections rows did until 2026-11-14.
     pub(crate) fn retry(&mut self, outcome: Outcome, retry: Retry) {
         for (importer, reasons) in retry.coupled {
             self.decisions
@@ -765,24 +845,25 @@ impl Family {
                 .or_default()
                 .extend(reasons);
         }
-        self.decisions.host |= retry.host;
-        for (importer, tables) in retry.hosted {
-            self.decisions
-                .hosting
-                .entry(importer)
-                .or_default()
-                .extend(tables);
-        }
-        self.decisions.fronts = outcome.fronts;
-        let main_builds = self.main_builds();
+        self.decisions.fronts = outcome
+            .member_fronts
+            .iter()
+            .map(|(list, members)| {
+                let rows = members
+                    .iter()
+                    .filter(|&(importer, _)| !self.decisions.coupled.contains_key(importer))
+                    .map(|(_, rows)| *rows)
+                    .sum::<usize>();
+                (*list, rows)
+            })
+            .filter(|(_, rows)| *rows > 0)
+            .collect();
+        let tables = hosted_tables(self.main_builds());
         self.decisions.contributions = outcome
             .recorded
             .iter()
             .filter(|(importer, _)| !self.decisions.coupled.contains_key(importer))
-            .map(|(importer, contributions)| {
-                let tables = hosted_tables(&self.decisions, main_builds, *importer);
-                (*importer, contributions.within(&tables))
-            })
+            .map(|(importer, contributions)| (*importer, contributions.within(&tables)))
             .filter(|(_, contributions)| !contributions.is_empty())
             .collect();
     }
@@ -818,18 +899,14 @@ impl Snapshot {
     }
 }
 
-/// A digest of everything `owner`'s build reads from the family before it compiles, with the pass
-/// as `at` holds it: the decisions that apply to it, the ids the pass has taken, the Collections
-/// arrays earlier members lead and the main mod's finished payloads of the shared entries in
-/// `reads`, which the build recorded it follows. A build that gets the same digest in two passes
-/// of one turn builds the same bytes and changes the pass the same way, since nothing else it
-/// reads changes between passes. Its packages follow no other shared entry's payload, so a pass
-/// whose main mod writes other bank rows keeps it.
-pub(crate) fn member_inputs(
-    owner: Importer,
-    at: &Snapshot,
-    reads: &BTreeSet<u32>,
-) -> Option<[u8; 32]> {
+/// A digest of everything an importer's build reads from the family before it compiles, with the
+/// pass as `at` holds it: the importers that build with the main mod, the ids the pass has taken,
+/// the Collections arrays earlier members lead and the main mod's finished payloads of the shared
+/// entries in `reads`, which the build recorded it follows. A build that gets the same digest in
+/// two passes of one turn builds the same bytes and changes the pass the same way, since nothing
+/// else it reads changes between passes. Its packages follow no other shared entry's payload, so
+/// a pass whose main mod writes other bank rows keeps it.
+pub(crate) fn member_inputs(at: &Snapshot, reads: &BTreeSet<u32>) -> Option<[u8; 32]> {
     use sha2::{Digest, Sha256};
     let guard = session();
     let current = guard.as_ref()?;
@@ -839,7 +916,6 @@ pub(crate) fn member_inputs(
         digest.update((text.len() as u64).to_le_bytes());
         digest.update(text.as_bytes());
     };
-    field(format!("{:?}", decisions.hosting.get(&owner)));
     field(format!(
         "{:?}",
         decisions.coupled.keys().collect::<Vec<_>>()
@@ -857,11 +933,24 @@ pub(crate) fn member_inputs(
     field(format!("{:?}", pass.badges));
     field(format!("{:?}", pass.mission_scripts));
     // An entry the main mod doesn't write reads as stock, which a pass that writes it changes.
+    // A bank's only shared-payload consumer retargets references from the same stock bytes in
+    // every pass. Its validated instance boundary determines that relocation, so changed row
+    // values with the same boundary do not invalidate a member. Movement controllers move
+    // several regions, and activities read whole tables, so both retain their complete digest.
     for tag in reads {
-        let payload = pass.hosted_payloads.get(tag).map_or_else(
-            || "stock".to_owned(),
-            |payload| hex::encode(Sha256::digest(payload)),
-        );
+        let payload = match pass.hosted_payloads.get(tag) {
+            Some(payload)
+                if pass.produced.get(&None).and_then(|tables| tables.get(tag))
+                    == Some(&Shared::Banks)
+                    && sundial::package_authoring::ability_modifier::is_bank(*tag) =>
+            {
+                let instance =
+                    sundial::package_authoring::ability_bank::instance_offset(payload).ok()?;
+                format!("bank-instance/{instance}")
+            }
+            Some(payload) => hex::encode(Sha256::digest(payload)),
+            None => "stock".to_owned(),
+        };
         field(format!("{tag:08X}/{payload}"));
     }
     Some(digest.finalize().into())
@@ -933,12 +1022,17 @@ pub(crate) fn replay(owner: Importer, before: &Snapshot, after: &Snapshot) {
             pass.mission_scripts.insert(name.clone(), script.clone());
         }
     }
+    for (name, rows) in &after.map_rows {
+        if !before.map_rows.contains_key(name) {
+            pass.map_rows.insert(name.clone(), rows.clone());
+        }
+    }
 }
 
 /// Whether the build now compiling is a main mod that hosts the importers' shared rows, which
 /// builds even with no recipe or map of its own.
 pub(crate) fn main_hosts() -> bool {
-    crate::package_profile::member().is_none()
+    crate::package::profile::member().is_none()
         && session()
             .as_ref()
             .is_some_and(|current| current.decisions.host)
@@ -952,15 +1046,13 @@ pub(crate) fn coupled() -> BTreeMap<Importer, Vec<String>> {
         .unwrap_or_default()
 }
 
-/// Whether the importer now compiling leaves its rows of `table` to the main mod's build. Its
-/// bank rows always go there.
+/// Whether the importer now compiling leaves its rows of `table` to the main mod's build, which
+/// it does whenever the main mod builds in the pass.
 pub(crate) fn hosts(table: Shared) -> bool {
-    let Some(owner) = crate::package_profile::member() else {
-        return false;
-    };
-    session().as_ref().is_some_and(|current| {
-        hosted_tables(&current.decisions, current.pass.main_builds, owner).contains(&table)
-    })
+    crate::package::profile::member().is_some()
+        && session()
+            .as_ref()
+            .is_some_and(|current| hosted_tables(current.pass.main_builds).contains(&table))
 }
 
 /// How many badges the family's members add in this pass, or `None` outside a family build.
@@ -998,7 +1090,7 @@ pub(crate) fn has_badge(importer: Importer) -> bool {
 /// Records that the member now compiling puts entries before the stock entries of the array at
 /// `array` of stock node `node`, and whether items set to First put them there.
 pub(crate) fn lead(node: usize, array: usize, first: bool) {
-    let owner = crate::package_profile::member();
+    let owner = crate::package::profile::member();
     if let Some(current) = session().as_mut() {
         let first_here = current
             .pass
@@ -1014,7 +1106,7 @@ pub(crate) fn lead(node: usize, array: usize, first: bool) {
 /// Whether a member that compiled before the one now compiling, in this pass, leads the array at
 /// `array` of stock node `node`. Members compile in a fixed order, the main mod first.
 pub(crate) fn led_before(node: usize, array: usize) -> bool {
-    let owner = crate::package_profile::member();
+    let owner = crate::package::profile::member();
     session().as_ref().is_some_and(|current| {
         current
             .pass
@@ -1026,7 +1118,7 @@ pub(crate) fn led_before(node: usize, array: usize) -> bool {
 
 /// Records the imported abilities whose roots the member now compiling allocated.
 pub(crate) fn carries_abilities(abilities: impl IntoIterator<Item = (String, u32)>) {
-    let owner = crate::package_profile::member();
+    let owner = crate::package::profile::member();
     if let Some(current) = session().as_mut() {
         let entry = current.pass.abilities.entry(owner).or_default();
         entry.carried.extend(abilities);
@@ -1035,7 +1127,7 @@ pub(crate) fn carries_abilities(abilities: impl IntoIterator<Item = (String, u32
 
 /// Records the imported abilities a perk of the member now compiling checks.
 pub(crate) fn checks_abilities(abilities: impl IntoIterator<Item = (String, u32)>) {
-    let owner = crate::package_profile::member();
+    let owner = crate::package::profile::member();
     if let Some(current) = session().as_mut() {
         let entry = current.pass.abilities.entry(owner).or_default();
         entry.checked.extend(abilities);
@@ -1044,14 +1136,16 @@ pub(crate) fn checks_abilities(abilities: impl IntoIterator<Item = (String, u32)
 
 /// Records that the member now compiling puts `count` more entries before the stock entries of
 /// the collectible array at `array` of stock node `node`, which holds `rows` entries now, and
-/// returns where they go. Their row follows every earlier member's entries and the member's own
-/// earlier ones. Members compile in a fixed order, the main mod first, so every other member
+/// returns where they go in this member's local table. Earlier members reserve only the positions
+/// inside the stock prefix. Their overflow appends in their own packages, so it takes no local
+/// position here. This member's earlier entries still precede its new ones. Members compile in
+/// a fixed order, the main mod first, so every other member
 /// recorded here compiled before this one. The main mod's entries push the stock entries down, so
 /// its row is 0, and its build later keeps the rows the importers take ([`kept_fronts`]). The
 /// stock count is the array's length when the first member puts entries there, which every
 /// member reads before it adds any after the stock entries. Outside a family build the row is 0.
 pub(crate) fn front(node: usize, array: usize, count: usize, rows: usize) -> Slot {
-    let owner = crate::package_profile::member();
+    let owner = crate::package::profile::member();
     let mut guard = session();
     let Some(current) = guard.as_mut() else {
         return Slot {
@@ -1070,7 +1164,9 @@ pub(crate) fn front(node: usize, array: usize, count: usize, rows: usize) -> Slo
     let row = if owner.is_none() {
         0
     } else {
-        front.members.values().sum()
+        let own = front.members.get(&owner).copied().unwrap_or_default();
+        let earlier = front.members.values().sum::<usize>() - own;
+        earlier.min(front.stock) + own
     };
     *front.members.entry(owner).or_default() += count;
     Slot {
@@ -1085,7 +1181,7 @@ pub(crate) fn front(node: usize, array: usize, count: usize, rows: usize) -> Slo
 /// keeps that many stock rows after its own entries for the importers to write over. Empty for
 /// any other member's build.
 pub(crate) fn kept_fronts() -> BTreeMap<(usize, usize), (usize, usize)> {
-    if crate::package_profile::member().is_some() {
+    if crate::package::profile::member().is_some() {
         return BTreeMap::new();
     }
     let guard = session();
@@ -1130,7 +1226,7 @@ fn importer_fronts(pass: &Pass) -> BTreeMap<(usize, usize), usize> {
 
 /// Records that the member now compiling changed `tags` of `table`.
 pub(crate) fn produced(table: Shared, tags: impl IntoIterator<Item = u32>) {
-    let owner = crate::package_profile::member();
+    let owner = crate::package::profile::member();
     if let Some(current) = session().as_mut() {
         let produced = current.pass.produced.entry(owner).or_default();
         for tag in tags {
@@ -1150,7 +1246,7 @@ pub(crate) fn produced_by(owner: Option<Importer>) -> BTreeMap<u32, Shared> {
 /// Records what the importer now compiling adds to the shared tables, whether or not the main
 /// mod writes it yet, so the next pass can.
 pub(crate) fn contribute(record: impl FnOnce(&mut Contributions)) {
-    let Some(owner) = crate::package_profile::member() else {
+    let Some(owner) = crate::package::profile::member() else {
         return;
     };
     if let Some(current) = session().as_mut() {
@@ -1169,7 +1265,7 @@ pub(crate) fn contributions() -> Vec<Contributions> {
 
 /// [`contributions`] with the importer each came from.
 pub(crate) fn contributors() -> Vec<(Importer, Contributions)> {
-    if crate::package_profile::member().is_some() {
+    if crate::package::profile::member().is_some() {
         return Vec::new();
     }
     session()
@@ -1185,25 +1281,30 @@ pub(crate) fn contributors() -> Vec<(Importer, Contributions)> {
         .unwrap_or_default()
 }
 
-/// The tables whose rows for `importer`'s items the main mod's build writes: the ones `decisions`
-/// host for it, and the ability banks and Collections counts whenever the main mod builds.
-fn hosted_tables(decisions: &Decisions, main_builds: bool, importer: Importer) -> BTreeSet<Shared> {
-    let mut tables = decisions
-        .hosting
-        .get(&importer)
-        .cloned()
-        .unwrap_or_default();
+/// The tables whose rows for an importer's items the main mod's build writes: every shared table
+/// whenever the main mod builds, which it does while an importer has content. Until 2026-11-14
+/// the crosshair, HUD name, character and activity tables were hosted only once a pass's review
+/// found two members changing one, which cost every family that shares one a second build of each
+/// member, and made an importer's bytes follow which other members were built beside it.
+fn hosted_tables(main_builds: bool) -> BTreeSet<Shared> {
     if main_builds {
-        tables.insert(Shared::Banks);
-        tables.insert(Shared::Collections);
+        BTreeSet::from([
+            Shared::Crosshair,
+            Shared::HudNames,
+            Shared::Banks,
+            Shared::Character,
+            Shared::Activities,
+            Shared::Collections,
+        ])
+    } else {
+        BTreeSet::new()
     }
-    tables
 }
 
 /// Keeps the main mod's finished payload of a shared entry for the importers that build on it
 /// or name its blocks by offset in this pass.
 pub(crate) fn finish_shared(tag: u32, payload: &[u8]) {
-    if crate::package_profile::member().is_some() {
+    if crate::package::profile::member().is_some() {
         return;
     }
     if let Some(current) = session().as_mut() {
@@ -1214,7 +1315,7 @@ pub(crate) fn finish_shared(tag: u32, payload: &[u8]) {
 /// The main mod's finished payload of `tag` in this pass, for an importer's build that hosts
 /// `table` with it. The importer then needs the main mod to load.
 pub(crate) fn shared_payload(table: Shared, tag: u32) -> Option<Vec<u8>> {
-    let owner = crate::package_profile::member()?;
+    let owner = crate::package::profile::member()?;
     if !hosts(table) {
         return None;
     }
@@ -1234,7 +1335,7 @@ pub(crate) fn shared_payload(table: Shared, tag: u32) -> Option<Vec<u8>> {
 /// Records that the importer now compiling follows the main mod's payloads of `tags`, whether or
 /// not the main mod writes them in this pass.
 pub(crate) fn reads_shared(tags: impl IntoIterator<Item = u32>) {
-    let Some(owner) = crate::package_profile::member() else {
+    let Some(owner) = crate::package::profile::member() else {
         return;
     };
     if let Some(current) = session().as_mut() {
@@ -1245,7 +1346,7 @@ pub(crate) fn reads_shared(tags: impl IntoIterator<Item = u32>) {
 /// The main mod's finished payloads of every shared entry it wrote in this pass, for an
 /// importer's build, which records the ones it follows ([`reads_shared`]).
 pub(crate) fn shared_payloads() -> BTreeMap<u32, Vec<u8>> {
-    if crate::package_profile::member().is_none() {
+    if crate::package::profile::member().is_none() {
         return BTreeMap::new();
     }
     session()
@@ -1257,7 +1358,7 @@ pub(crate) fn shared_payloads() -> BTreeMap<u32, Vec<u8>> {
 /// Records that the importer now compiling names the main mod's finished payloads of `table`, so
 /// it needs the main mod to load.
 pub(crate) fn needs_main(table: Shared) {
-    let Some(owner) = crate::package_profile::member() else {
+    let Some(owner) = crate::package::profile::member() else {
         return;
     };
     if let Some(current) = session().as_mut() {
@@ -1310,8 +1411,8 @@ fn needed_from_main(current: &Session, importer: Importer) -> BTreeSet<Shared> {
 
 /// The window's highest id that no package of the build or an importer holds, now reserved.
 fn fresh(pass: &mut Pass) -> Result<u16, String> {
-    let window = crate::package_profile::window();
-    let host = crate::package_profile::host().id;
+    let window = crate::package::profile::window();
+    let host = crate::package::profile::host().id;
     let id = (window.base..=window.top)
         .rev()
         .find(|id| *id != host && !pass.reserved.contains(id) && !pass.native.contains(id))
@@ -1456,6 +1557,23 @@ pub(crate) fn mission_scripts() -> BTreeMap<String, String> {
         .map(|s| s.pass.mission_scripts.clone())
         .unwrap_or_default()
 }
+
+/// Records what a map's activity SDK rows name, once its entries have their final addresses. A
+/// build outside a family pass ships no pack and records nothing.
+pub(crate) fn record_map_rows(rows: crate::map::pack::Destination) {
+    let mut guard = session();
+    if let Some(session) = guard.as_mut() {
+        session.pass.map_rows.insert(rows.name.clone(), rows);
+    }
+}
+
+pub(crate) fn map_rows() -> BTreeMap<String, crate::map::pack::Destination> {
+    session()
+        .as_ref()
+        .map(|s| s.pass.map_rows.clone())
+        .unwrap_or_default()
+}
+
 pub(crate) fn reserved(id: u16) -> bool {
     session()
         .as_ref()
@@ -1506,12 +1624,19 @@ pub(crate) fn graph_origin(
     let owner = match graph["source"].as_str() {
         Some(source) => Importer::from_source(source)?,
         // The D2 shader translator predates an explicit source marker. This recorded adapter
-        // belongs to that converter. Graphs without either provenance stay in the main mod.
+        // belongs to that converter.
         None if graph["source_shader_adapter"]["source_shader_equations_retained"] == true
             && graph["source_models"].is_array() =>
         {
             Importer::D2Mot
         }
+        // The D2 gear converter writes no source marker either. Its art rows keep that game's
+        // selector format, which no other converter writes, and its graphs saved before the
+        // format field name the source item instead, as gear emission reads them
+        // (`item::emission::imported::gear::apply`). Read as native, D2 armor built in the main
+        // mod and joined its badge beside the D2 weapons in their own mod and badge.
+        None if modern_gear(graph) => Importer::D2Mot,
+        // Graphs without any provenance stay in the main mod.
         None => return None,
     };
     if graph["nodes"].as_array()?.iter().any(|node| {
@@ -1532,6 +1657,50 @@ pub(crate) fn graph_origin(
     Some(owner)
 }
 
+/// Whether a graph without a source marker holds gear art in the D2 selector format: the format
+/// field says so, or a graph saved before that field names a source item.
+#[cfg(feature = "d2-model-importer")]
+fn modern_gear(graph: &serde_json::Value) -> bool {
+    let Some(art) = graph.get("gear_art") else {
+        return false;
+    };
+    match art.get("selector_format") {
+        Some(format) => format == "modern",
+        None => graph["source_item"].as_u64().is_some(),
+    }
+}
+
+/// The abilities a subclass recipe's authored entries import, each a prepared group.
+#[cfg(feature = "d2-model-importer")]
+fn imported_abilities(
+    spec: &crate::WeaponCloneSpec,
+) -> impl Iterator<Item = &crate::subclass::ImportedAbility> {
+    spec.overrides
+        .subclass_abilities
+        .iter()
+        .flat_map(crate::subclass::SubclassAbilities::all_edits)
+        .filter_map(|edits| edits.imported_ability.as_ref())
+}
+
+/// The importer whose mod holds a subclass recipe: the one every ability it imports names as its
+/// source game. A subclass that imports no ability, one whose ability records no source and one
+/// that imports from two games are the main mod's. A perk accepts an imported ability by the
+/// root the subclass's build allocates, so the subclass builds with the importer whose perks
+/// check its abilities, and neither needs the other's mod folded into the main mod. Until
+/// 2026-11-14 every subclass built in the main mod, and a subclass with one imported ability
+/// took its whole importer there with it ([`split_abilities`]).
+#[cfg(feature = "d2-model-importer")]
+fn subclass_origin(spec: &crate::WeaponCloneSpec) -> Option<Importer> {
+    let mut owners = imported_abilities(spec).map(|imported| {
+        imported
+            .source
+            .as_ref()
+            .and_then(|source| Importer::from_source(&source.source))
+    });
+    let first = owners.next()??;
+    owners.all(|owner| owner == Some(first)).then_some(first)
+}
+
 /// The importer whose badge `spec`'s item takes in the main mod's build, by the rule that gives a
 /// recipe to an importer's mod: every imported recipe's importer in a build without mod folders,
 /// and in a family build an importer that builds with the main mod. An importer building in its
@@ -1539,7 +1708,7 @@ pub(crate) fn graph_origin(
 /// coupled importer's items joined Project Sunrise, and only the importers left in their own mods
 /// showed a badge.
 pub(crate) fn source_of(spec: &crate::WeaponCloneSpec) -> Option<Importer> {
-    let standalone = crate::package_profile::host().is_standalone();
+    let standalone = crate::package::profile::host().is_standalone();
     session().as_ref().and_then(|current| {
         let source = current
             .plan
@@ -1596,6 +1765,46 @@ pub(crate) fn group_key(folder: &Path, spec: Option<&crate::WeaponCloneSpec>) ->
     )
 }
 
+/// The importer a recipe with no graph of its own belongs to, recording its input identity. A
+/// subclass whose imported abilities all come from one importer is that importer's, and each
+/// ability's prepared group is part of the importer's input identity.
+#[cfg(feature = "d2-model-importer")]
+fn subclass_inputs(
+    spec: &crate::WeaponCloneSpec,
+    inputs: &mut BTreeMap<Importer, Vec<serde_json::Value>>,
+) -> Option<Importer> {
+    let owner = subclass_origin(spec)?;
+    for imported in imported_abilities(spec) {
+        inputs.entry(owner).or_default().push(serde_json::json!({
+            "key": group_key(&imported.directory, Some(spec)),
+            "pin": {
+                "directory": imported.directory,
+                "sha256": imported.sha256,
+            },
+            "symbol": imported.symbol,
+            "namespace": spec.namespace,
+            "identity": spec.identity.item_hash,
+        }));
+    }
+    Some(owner)
+}
+
+/// Adds the packages of the templates, source parents and inherited tags an imported graph's
+/// nodes name to `ids`.
+#[cfg(feature = "d2-model-importer")]
+fn template_packages(description: &serde_json::Value, ids: &mut BTreeSet<u16>) {
+    for node in description["nodes"].as_array().into_iter().flatten() {
+        for tag in [node.get("template"), node.get("source_parent")]
+            .into_iter()
+            .flatten()
+            .chain(node["inherited"].as_array().into_iter().flatten())
+            .filter_map(serde_json::Value::as_u64)
+        {
+            ids.insert(TagHash(tag as u32).pkg_id());
+        }
+    }
+}
+
 /// Why an importer builds in the main mod when the preference puts every item there.
 const ONE_MOD_REASON: &str = "Preferences put every item in the Parhelion mod.";
 
@@ -1617,7 +1826,7 @@ pub(crate) fn begin(
     one_mod: bool,
     source_badges: bool,
 ) -> Result<Family, String> {
-    if !crate::package_profile::host().is_standalone() {
+    if !crate::package::profile::host().is_standalone() {
         // One mod holds every item, and each importer's items take that importer's badge unless
         // the preference leaves them in Project Sunrise.
         let sources = if source_badges {
@@ -1647,7 +1856,7 @@ pub(crate) fn begin(
     {
         for spec in weapons {
             let Some(reference) = &spec.overrides.imported_graph else {
-                recipe_owners.push(None);
+                recipe_owners.push(subclass_inputs(spec, &mut inputs));
                 continue;
             };
             let mut owners = Vec::new();
@@ -1669,17 +1878,7 @@ pub(crate) fn begin(
                 let Some(origin) = origin else {
                     continue;
                 };
-                let ids = templates.entry(origin).or_default();
-                for node in description["nodes"].as_array().into_iter().flatten() {
-                    for tag in [node.get("template"), node.get("source_parent")]
-                        .into_iter()
-                        .flatten()
-                        .chain(node["inherited"].as_array().into_iter().flatten())
-                        .filter_map(serde_json::Value::as_u64)
-                    {
-                        ids.insert(TagHash(tag as u32).pkg_id());
-                    }
-                }
+                template_packages(&description, templates.entry(origin).or_default());
                 inputs.entry(origin).or_default().push(serde_json::json!({
                     "key": group_key(&graph.directory, binding),
                     "pin": {
@@ -1727,6 +1926,18 @@ pub(crate) fn begin(
         BTreeMap::new()
     };
     let mut plan = Plan {
+        seed_inputs: hash(&(
+            format!("{weapons:?}"),
+            maps,
+            stock,
+            one_mod,
+            source_badges,
+            format!(
+                "{:?}/{:?}",
+                crate::package::profile::host(),
+                crate::package::profile::window()
+            ),
+        ))?,
         recipe_owners,
         map_owners,
         sources,
@@ -1870,7 +2081,7 @@ pub(crate) fn begin(
         );
     }
     validate_reserved_ids(&pass.reserved)?;
-    let decisions = initial_decisions(&mut plan, install_root, one_mod);
+    let decisions = initial_decisions(&mut plan, &pass, install_root, weapons, one_mod);
     Ok(install(Session {
         plan,
         decisions,
@@ -1879,13 +2090,24 @@ pub(crate) fn begin(
 }
 
 /// The decisions the first pass starts from: every importer coupled when one mod holds every
-/// item, and otherwise those the install's last settled build kept. Either way the main mod
-/// builds whenever an importer has content. Only its build counts every member's badges in the
-/// Badges total and writes the importers' bank rows and Collections counts, which no importer
-/// can write beside another's. Until 2026-11-10 a family of imported recipes alone started
-/// without it, so the Badges total left out the importers' badges whenever no shared table
-/// clashed, and a clash cost a pass to discover.
-fn initial_decisions(plan: &mut Plan, install_root: &Path, one_mod: bool) -> Decisions {
+/// item, and otherwise those the install's last settled build kept, with the importers coupled
+/// whose perks and another member's subclasses share an imported ability, as `weapons` show
+/// ([`planned_abilities`]). Until 2026-11-14 only a pass's review found those, so every build of
+/// such a family compiled the importer on its own, then again with the main mod. A coupled
+/// importer's saved rows are dropped, since the main mod's build writes its rows itself.
+///
+/// Either way the main mod builds whenever an importer has content. Only its build counts every
+/// member's badges in the Badges total and writes the importers' rows of the shared tables, which
+/// no importer can write beside another's. Until 2026-11-10 a family of imported recipes alone
+/// started without it, so the Badges total left out the importers' badges whenever no shared
+/// table clashed, and a clash cost a pass to discover.
+fn initial_decisions(
+    plan: &mut Plan,
+    pass: &Pass,
+    install_root: &Path,
+    weapons: &[crate::WeaponCloneSpec],
+    one_mod: bool,
+) -> Decisions {
     let mut decisions = if one_mod {
         Decisions {
             coupled: plan
@@ -1897,10 +2119,17 @@ fn initial_decisions(plan: &mut Plan, install_root: &Path, one_mod: bool) -> Dec
         }
     } else {
         plan.seed = seed::path(install_root);
-        plan.seed
+        let mut decisions = plan
+            .seed
             .as_deref()
-            .map(|path| seed::Seed::load(path, plan))
-            .unwrap_or_default()
+            .map(|path| seed::Seed::load(path, plan, pass))
+            .unwrap_or_default();
+        let coupled = split_abilities(&planned_abilities(weapons, &plan.recipe_owners));
+        decisions
+            .contributions
+            .retain(|importer, _| !coupled.contains_key(importer));
+        decisions.coupled = coupled;
+        decisions
     };
     decisions.host |= plan.importers_have_content();
     decisions
@@ -1926,8 +2155,8 @@ fn install(current: Session) -> Family {
 }
 
 fn validate_reserved_ids(reserved: &BTreeSet<u16>) -> Result<(), String> {
-    let window = crate::package_profile::window();
-    let host = crate::package_profile::host().id;
+    let window = crate::package::profile::window();
+    let host = crate::package::profile::host().id;
     if reserved
         .iter()
         .any(|id| !(window.base..=window.top).contains(id) || *id == host)
@@ -2287,7 +2516,7 @@ pub(crate) fn allocate(owner: Importer, index: usize) -> Result<u16, String> {
     if let Some(&id) = taken.allocation.get(index) {
         return Ok(id);
     }
-    let window = crate::package_profile::window();
+    let window = crate::package::profile::window();
     let ids = (window.base..=window.top).rev();
     let id = ids
         .into_iter()
@@ -2307,10 +2536,10 @@ pub(crate) fn allocate(owner: Importer, index: usize) -> Result<u16, String> {
 /// importer's reservations, and the first asset ID stays fixed even when records spill before
 /// the badge package has been constructed.
 pub(crate) fn record_page(private: bool, index: usize) -> Result<u16, String> {
-    let first_asset = crate::package_profile::window().first();
+    let first_asset = crate::package::profile::window().first();
     let mut guard = session();
     let current = guard.get_or_insert_with(Session::default);
-    if let Some(owner) = crate::package_profile::member() {
+    if let Some(owner) = crate::package::profile::member() {
         let kind = if private {
             OwnKind::Private
         } else {
@@ -2326,8 +2555,8 @@ pub(crate) fn record_page(private: bool, index: usize) -> Result<u16, String> {
         ..
     } = &mut current.pass;
     native.insert(first_asset);
-    let window = crate::package_profile::window();
-    let host = crate::package_profile::host().id;
+    let window = crate::package::profile::window();
+    let host = crate::package::profile::host().id;
     let pages = if private { private_pages } else { records };
     while pages.len() <= index {
         let id = (window.base..=window.top)
@@ -2581,14 +2810,16 @@ fn receipt_path(file_name: &str) -> String {
     if let Some(path) = mod_content::mission_script::path(name) {
         return path;
     }
-    if name == mod_content::map_diagnostics::FILE_NAME {
+    if name == mod_content::map_diagnostics::FILE_NAME
+        || name == mod_content::activity_pack::FILE_NAME
+    {
         return name.to_owned();
     }
     let package_name = name
         .strip_suffix(".merge")
         .map(|stem| format!("{stem}.pkg"))
         .unwrap_or_else(|| name.to_owned());
-    let profile = crate::package_profile::authored_package_for_file_name(&package_name);
+    let profile = crate::package::profile::authored_package_for_file_name(&package_name);
     let folder = if profile.is_some_and(|profile| profile.stock_overlay) {
         "patches"
     } else {

@@ -116,18 +116,28 @@ pub fn inline(class: u32) -> Result<Vec<(usize, u32, Vec<u32>)>, String> {
 type Template = (bool, u8, u32, usize, String);
 static TEMPLATES: OnceLock<Vec<Template>> = OnceLock::new();
 pub(super) fn template(kind: super::NodeKind) -> Option<Vec<u8>> {
-    if kind == super::NodeKind::Condition(33) {
-        // Original typed copying accepts this blockless condition allocation and
-        // dispatch consumes its explicit kind and byte. It has no stock template.
-        return super::super::layout::blank_condition(33);
-    }
     let rows = TEMPLATES.get_or_init(|| {
         serde_json::from_str(include_str!("schema/templates.json"))
             .expect("validated native templates")
     });
-    let row = rows
+    let Some(row) = rows
         .iter()
-        .find(|row| row.0 == kind.is_condition() && row.1 == kind.byte())?;
+        .find(|row| row.0 == kind.is_condition() && row.1 == kind.byte())
+    else {
+        // A condition kind no stock action uses has no captured template. Original typed
+        // copying accepts a blockless allocation of the kind's class and dispatch consumes its
+        // explicit kind, so it starts as the literal probability header over zeroed fields,
+        // which leaves every declared list and filter empty.
+        let super::NodeKind::Condition(byte) = kind else {
+            return None;
+        };
+        let node = crate::sandbox_perk::nodes::condition(byte).filter(|node| node.has_layout())?;
+        let mut bytes = vec![0; node.struct_size as usize];
+        bytes.get_mut(..4)?.copy_from_slice(&1.0_f32.to_le_bytes());
+        *bytes.get_mut(4)? = 0xFF;
+        *bytes.get_mut(5)? = byte;
+        return super::Graph::read(&bytes, 0, node.class).ok()?.emit().ok();
+    };
     let text = &row.4;
     let bytes = (0..text.len())
         .step_by(2)
@@ -163,6 +173,18 @@ pub fn targets(class: u32, field: usize) -> &'static [(u32, bool)] {
 /// those no stock action selects, such as policy 4's `80803E08`.
 pub fn choices(class: u32, field: usize) -> Vec<(u32, bool)> {
     let mut choices = targets(class, field).to_vec();
+    // An inline source-label filter declares four typed arrays even when no stock action
+    // instantiates its owner. Empty stock lists cannot establish the available operations.
+    if choices.is_empty()
+        && inline(class).is_ok_and(|records| {
+            records.iter().any(|(offset, kind, _)| {
+                *kind == super::labels::SOURCE_CLASS
+                    && matches!(field.checked_sub(*offset), Some(8 | 24 | 40 | 56))
+            })
+        })
+    {
+        choices.push((0x808094B3, true));
+    }
     if class == crate::sandbox_perk::action::ACTION_ROOT_CLASS
         && field == crate::sandbox_perk::action::POLICY_CONFIGURATION
     {

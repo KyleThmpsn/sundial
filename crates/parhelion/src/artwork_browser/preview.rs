@@ -45,7 +45,7 @@ pub(crate) fn texture(
 
 fn image_texture(
     ctx: &egui::Context,
-    image: &crate::icon_edit::ImportedIcon,
+    image: &crate::icon::edit::ImportedIcon,
 ) -> egui::TextureHandle {
     let key = egui::Id::new(serde_json::to_vec(image).expect("Validated icon serializes"));
     let cache_id = egui::Id::new("private-perk-image-previews");
@@ -58,7 +58,7 @@ fn image_texture(
         Some(texture)
     });
     cached.unwrap_or_else(|| {
-        let pixels = crate::icon_edit::glyph::fit(&image.fit_to(96, 96));
+        let pixels = crate::icon::edit::glyph::fit(&image.fit_to(96, 96));
         let texture = ctx.load_texture(
             "private-perk-image",
             egui::ColorImage::from_rgba_unmultiplied([96, 96], pixels.as_raw()),

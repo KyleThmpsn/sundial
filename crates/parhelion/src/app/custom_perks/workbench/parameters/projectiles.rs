@@ -128,7 +128,7 @@ impl PerkEditor {
                 })
                 .collect();
             self.pending_movement = Some((selected.unwrap_or(source), carry));
-            let belongs = |locator: &WeaponRuntimeFieldLocator| {
+            let belongs = |locator: &RuntimeFieldLocator| {
                 loaded
                     .graphs
                     .iter()

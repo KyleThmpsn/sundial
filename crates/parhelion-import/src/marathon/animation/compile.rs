@@ -2,8 +2,11 @@
 use super::*;
 
 mod emission;
+mod equipment;
+mod layer;
 mod pairing;
 mod plan;
+mod target;
 mod translation;
 
 /// The graph's `animation` section and the private equipment palette its geometry skins to.
@@ -18,21 +21,6 @@ pub(in crate::marathon) struct Compiled {
 pub(super) const RELOAD: u8 = 18;
 pub(super) const RELOADS: [(&str, &str); 2] =
     [("reload_empty", "empty"), ("reload_full", "partial")];
-/// Movement actions take no weapon-local clip by length. Their clips move the arms, and a
-/// weapon clip of matching length is a coincidence: one examined shotgun's 13-frame
-/// `sprint_enter` matched its 14-frame fire clip and racked the pump on every sprint.
-const MOVEMENT: [&str; 10] = [
-    "sprint_enter",
-    "sprint_loop",
-    "sprint_exit",
-    "jump",
-    "fall",
-    "land",
-    "crouch_slide",
-    "throw_grenade",
-    "melee",
-    "iron_sight_jump",
-];
 /// Builtins the source weapon publishes: the animation profile and the optic type.
 pub(super) const PROFILE: u8 = 3;
 const OPTIC: u8 = 9;
@@ -92,6 +80,10 @@ const REQUIRED: [&str; 8] = [
     "reload_empty",
 ];
 
+/// Actions the client plays at full aim. Their clips keep the view reference at the eye along
+/// the view axis, as [`retarget::Framing`] describes.
+pub(super) const AIMED: [&str; 2] = ["iron_sight_idle", "iron_sight_fire"];
+
 /// Set one weight track of a uniform scalar weight codec `80808F7C` to the constant zero. A
 /// selector whose top two bits are 2 reads its track's bias as a constant, and ranges and biases
 /// are track-indexed, so the codec keeps its size and every other track.
@@ -131,8 +123,8 @@ fn silence(envelope: &mut Payload, field: usize, track: usize) -> Result<()> {
 /// rows disabled.
 ///
 /// Every examined stock first-person row is mode 3 and no stock clip gives one slot pair two
-/// targets. A source row with another mode names a target domain the native target cache never
-/// fills for a weapon. Such a row keeps its place but takes a constant zero weight and the mode
+/// targets. A source row with another mode has no validated producer in the carrier's target
+/// cache. Such a row keeps its place but takes a constant zero weight and the mode
 /// 3 target of another row on the same slots, so the limb follows the clip's own motion while
 /// the source would have pulled it to the unresolved target.
 fn bindings(
@@ -373,15 +365,84 @@ fn weapon_state(
     }
 }
 
-/// The weapon-local descriptor named like an arm action, when exactly one bound descriptor at
-/// rate 1 carries that name. One examined weapon names its fire descriptor `fire_1`, the name of
-/// the native and source action.
-fn weapon_named(local: &controller::Controller, timed: &[Timed], action: u32) -> Option<u32> {
+/// The weapon-local descriptor carrying one of `names`, when exactly one bound descriptor at
+/// rate 1 does.
+fn weapon_named(
+    local: &controller::Controller,
+    timed: &[Timed],
+    names: &BTreeSet<u32>,
+) -> Option<u32> {
     let mut named = timed
         .iter()
-        .filter(|t| local.descriptors[t.descriptor as usize].name == action);
+        .filter(|t| names.contains(&local.descriptors[t.descriptor as usize].name));
     let first = named.next()?;
     named.next().is_none().then_some(first.descriptor)
+}
+
+/// The source names a native arm action's weapon-local clip can carry, most specific first.
+/// The examined weapon lookups name their mechanisms `fire_1`, `fire`, `reload_partial` and
+/// `reload_empty`, and none of their names carries an aimed variant, so hip and aimed fire
+/// both reach the weapon's firing clip. The native rounds-remaining reload is the source
+/// `reload_partial`. These are stored names, not a traced source request.
+const SOURCE_NAMES: [(&str, &[&str]); 5] = [
+    ("fire", &["fire", "fire_1"]),
+    ("fire_1", &["fire_1", "fire"]),
+    ("iron_sight_fire", &["iron_sight_fire", "fire_1", "fire"]),
+    ("reload_empty", &["reload_empty"]),
+    ("reload_full", &["reload_full", "reload_partial"]),
+];
+
+/// The hashes a weapon-local descriptor named `text` can carry: the bare text, and the text
+/// after an underscore behind each name of the weapon's profile lineage. FNV-1 is a running
+/// state, so a stored profile hash advances over the suffix without its own text. A rifle
+/// profile's lookup names `<profile>_fire_1` and `<profile>_reload_partial` this way.
+fn spellings(text: &str, lineage: &BTreeSet<u32>) -> BTreeSet<u32> {
+    let advance = |state: u32, text: &str| {
+        text.bytes()
+            .fold(state, |h, b| h.wrapping_mul(0x0100_0193) ^ u32::from(b))
+    };
+    let mut names = BTreeSet::from([source::fnv(text)]);
+    for &prefix in lineage {
+        names.insert(advance(advance(prefix, "_"), text));
+    }
+    names
+}
+
+/// The weapon-local descriptor the source names for an arm action, with how it was found and
+/// the source name that found it. A state selects before a descriptor of the same name. A
+/// state reached through another name must select a clip the weapon rig can play, because one
+/// examined lookup keeps a state that addresses another weapon's clip.
+fn explicit(
+    local: &controller::Controller,
+    timed: &[Timed],
+    action: u32,
+    inputs: &BTreeMap<u8, u32>,
+    lineage: &BTreeSet<u32>,
+) -> Result<Option<(u32, &'static str, Option<&'static str>)>> {
+    let Some((_, texts)) = SOURCE_NAMES
+        .iter()
+        .find(|(name, _)| source::fnv(name) == action)
+    else {
+        if let Some(d) = weapon_state(local, action, inputs)? {
+            return Ok(Some((d, "state", None)));
+        }
+        return Ok(weapon_named(local, timed, &BTreeSet::from([action])).map(|d| (d, "name", None)));
+    };
+    for (index, text) in texts.iter().enumerate() {
+        let name = source::fnv(text);
+        let state = if index == 0 {
+            weapon_state(local, name, inputs)?
+        } else {
+            weapon_state(local, name, inputs).ok().flatten()
+        };
+        if let Some(d) = state.filter(|d| timed.iter().any(|t| t.descriptor == *d)) {
+            return Ok(Some((d, "state", Some(*text))));
+        }
+        if let Some(d) = weapon_named(local, timed, &spellings(text, lineage)) {
+            return Ok(Some((d, "name", Some(*text))));
+        }
+    }
+    Ok(None)
 }
 
 /// A bound weapon-local descriptor at rate 1, with its clip ordinal, frame count and whether its
@@ -391,6 +452,30 @@ struct Timed {
     ordinal: usize,
     frames: u16,
     closes: bool,
+}
+
+/// Whether a mechanism's last frame returns every part to the weapon's idle pose `rest`,
+/// within 1 centimetre and 5 degrees. Every examined named firing clip ends there, within 0.9
+/// degrees, though several begin at the recoil peak. Clips that leave the weapon open end at
+/// least 3.9 centimetres or 24 degrees away. A part hidden at either end shows nothing there.
+fn rests(mechanism: &Mechanism, rest: &[Pose]) -> bool {
+    let Some(last) = mechanism.frames.last() else {
+        return false;
+    };
+    last.len() == rest.len()
+        && last.iter().zip(rest).all(|(a, b)| {
+            if a.0[7] < 0.5 || b.0[7] < 0.5 {
+                return true;
+            }
+            let moved = (0..3)
+                .map(|i| (a.0[4 + i] - b.0[4 + i]).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            let length = |p: &Pose| (0..4).map(|i| p.0[i].powi(2)).sum::<f32>().sqrt();
+            let aligned = (0..4).map(|i| a.0[i] * b.0[i]).sum::<f32>().abs()
+                / (length(a) * length(b)).max(f32::MIN_POSITIVE);
+            moved < 0.01 && 2. * aligned.min(1.).acos() < 5f32.to_radians()
+        })
 }
 
 /// Whether every visible weapon part ends within 10 centimetres of its first-frame place in the
@@ -422,8 +507,20 @@ fn closes(mechanism: &Mechanism) -> bool {
 /// reloads: across eight examined weapons whose empty and rounds-remaining reloads pair by length,
 /// the empty reload's weapon clip always precedes the other in the weapon lookup, so a tie of two
 /// clips gives the empty reload the earlier one and the other reload the later one.
-fn paired(timed: &[Timed], frames: u16, reload: Option<usize>) -> Option<u32> {
-    let eligible = timed.iter().filter(|t| t.closes).collect::<Vec<_>>();
+///
+/// A firing or chambering action passes `resting`, the clips that end at the weapon's idle
+/// pose. Translation of visible parts alone admitted one examined 14-frame clip that opens a
+/// break action and leaves it 76 degrees open, which an aimed shot then played.
+fn paired(
+    timed: &[Timed],
+    frames: u16,
+    reload: Option<usize>,
+    resting: Option<&BTreeSet<u32>>,
+) -> Option<u32> {
+    let eligible = timed
+        .iter()
+        .filter(|t| t.closes && resting.is_none_or(|r| r.contains(&t.descriptor)))
+        .collect::<Vec<_>>();
     let nearest = eligible.iter().map(|t| t.frames.abs_diff(frames)).min()?;
     if nearest > 1 {
         return None;
@@ -441,22 +538,35 @@ fn paired(timed: &[Timed], frames: u16, reload: Option<usize>) -> Option<u32> {
     }
 }
 
-/// Sample a lowered source clip on the source rig and author it on the native controls.
+/// Sample a lowered source clip on the source rig and author it on the native controls. `aimed`
+/// marks a clip of an [`AIMED`] action.
 fn author(
     candidate: &Payload,
-    arms: &source::Rig,
+    sources: &plan::Sources,
     retarget: &retarget::Retarget,
-    native: &control::Rig,
-    controls: &Payload,
     targets: &BTreeSet<u32>,
     overlay: Option<&Overlay>,
+    corrections: &[&layer::Correction],
+    aimed: bool,
 ) -> Result<Authored> {
+    let (arms, native, controls) = (
+        &sources.arms,
+        &sources.native_rig,
+        &sources.extension.controls,
+    );
     let composition = candidate.u8(0x181)?;
     ensure!(
         matches!(composition, 0 | 1),
         "Source clip composition {composition} is untranslated"
     );
     let (frames, slots, common) = layout(candidate, arms)?;
+    let mut envelope = candidate.clone();
+    let (used, disabled) = bindings(&mut envelope, &retarget.slots, targets)?;
+    let constraints = if composition == 0 {
+        Some(target::Targets::read(&envelope, sources, &used)?)
+    } else {
+        None
+    };
     let identity = Pose::IDENTITY.0;
     let base = |slot: usize| {
         if composition == 0 {
@@ -471,11 +581,12 @@ fn author(
     let mut tracks = vec![Vec::with_capacity(usize::from(frames)); native.controls.len()];
     let mut grip_drift = 0f32;
     let mut part_error = 0f32;
+    let mut shoulder_reach = 0f32;
     let handle = arms.role("handle")?;
     let grip = arms.role("right_grip")?;
     for frame in 0..usize::from(frames) {
         let sampled = native_clip::sample(candidate, &defaults, frame)?;
-        let values = (0..arms.controls.len())
+        let mut values = (0..arms.controls.len())
             .map(|slot| {
                 Pose::checked(if slot < common {
                     sampled[slot]
@@ -484,8 +595,11 @@ fn author(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        if composition == 0 {
+            layer::apply(&mut values, corrections);
+        }
         let mut locals = if composition == 0 {
-            retarget.absolute(&values)?
+            retarget.absolute(&values, aimed)?
         } else {
             retarget.additive(&values)?
         };
@@ -533,12 +647,15 @@ fn author(
                 locals[slot] = local.0;
             }
         }
+        if let Some(constraints) = &constraints {
+            let objects = native.objects(&locals)?;
+            let targets = constraints.frame(&objects, frame)?;
+            shoulder_reach = shoulder_reach.max(retarget.reach(&mut locals, &targets)?);
+        }
         for (slot, local) in locals.into_iter().enumerate() {
             tracks[slot].push(local);
         }
     }
-    let mut envelope = candidate.clone();
-    let (used, disabled) = bindings(&mut envelope, &retarget.slots, targets)?;
     let payload = if composition == 0 {
         native_clip::replace_for(&envelope, &tracks, native.bind.len(), controls)?
     } else {
@@ -556,6 +673,8 @@ fn author(
             "constraint_targets":used.iter().map(|t| format!("{t:08X}")).collect::<Vec<_>>(),
             "disabled_constraints":disabled,
             "weapon_local_descriptor":weapon_local,
+            "fixed_source_layers":layer::report(corrections),
+            "maximum_shoulder_reach_adjustment_metres":shoulder_reach,
             "weapon_grip_drift_metres":grip_drift,"mechanism_error_metres":part_error}),
         targets: used,
     })
@@ -620,30 +739,35 @@ fn first_frame(candidate: &Payload, arms: &source::Rig) -> Result<Vec<Pose>> {
         .collect()
 }
 
-/// The source grip relative to the utility role on the first frame of the first absolute clip a
-/// named source action routes, or `None` when the source names no such action.
-#[allow(clippy::too_many_arguments)]
-fn source_grip(
+/// The first frame of the first absolute clip a named source action routes, or `None` when the
+/// source names no such action.
+fn source_frame(
     source: &mut Reader,
-    controller: &controller::Controller,
-    fixed: &BTreeMap<u8, u32>,
-    arms: &source::Rig,
-    carrier: &native::Carrier,
-    retarget: &retarget::Retarget,
+    sources: &plan::Sources,
     action: &str,
-) -> Result<Option<[f32; 3]>> {
+) -> Result<Option<Vec<Pose>>> {
+    let (controller, arms, carrier) = (&sources.controller, &sources.arms, &sources.carrier);
+    // Framing uses the standing combat pose. Unset runtime names can select a different
+    // correction from the pose the player first sees, shifting every translated action.
+    let mut fixed = sources.fixed.clone();
+    for (builtin, value) in [(1, "stand"), (10, "combat"), (12, "not_sprinting")] {
+        fixed.insert(builtin, source::fnv(value));
+    }
     let name = source::fnv(action);
     if !controller.names.contains_key(&name) {
         return Ok(None);
     }
-    for (descriptor, _) in controller.route(name, fixed)? {
+    for (descriptor, _) in controller.route(name, &fixed)? {
         let Some(ordinal) = controller.descriptors[descriptor as usize].clip else {
             continue;
         };
         let original = source.tag(controller.clips[ordinal], Some(0x8080AE01))?;
         let (candidate, _) = clip::lower(&original, Some(&carrier.vocabulary))?;
         if candidate.u8(0x181)? == 0 {
-            return Ok(Some(retarget.grip(&first_frame(&candidate, arms)?)?));
+            let mut values = first_frame(&candidate, arms)?;
+            let selected = sources.fixed_layers.selection(descriptor, &fixed)?;
+            layer::apply(&mut values, &sources.fixed_layers.get(selected));
+            return Ok(Some(values));
         }
     }
     Ok(None)
@@ -654,49 +778,51 @@ fn source_grip(
 /// height, and the client places the camera there regardless of the utility, so the offset moves
 /// the hands and weapon in view. The source aimed idle sets where the lateral and vertical parts
 /// fade out.
-#[allow(clippy::too_many_arguments)]
 fn frame(
     source: &mut Reader,
     native: &mut Reader,
-    controller: &controller::Controller,
-    fixed: &BTreeMap<u8, u32>,
-    arms: &source::Rig,
-    carrier: &native::Carrier,
+    sources: &plan::Sources,
     retarget: &mut retarget::Retarget,
     donors: &cue::Donors,
 ) -> Result<Value> {
+    let arms = &sources.arms;
     let names = (
         arms.names[arms.role("utility")?],
         arms.names[arms.role("right_grip")?],
     );
-    let held = source_grip(source, controller, fixed, arms, carrier, retarget, "idle")?;
-    let aimed = source_grip(
-        source,
-        controller,
-        fixed,
-        arms,
-        carrier,
-        retarget,
-        "iron_sight_idle",
-    )?;
-    let carried = donors.idle_grip(native, names.0, names.1)?;
-    let (Some(held), Some(carried)) = (held, carried) else {
+    let source_idle = source_frame(source, sources, "idle")?;
+    let aimed = source_frame(source, sources, "iron_sight_idle")?
+        .as_deref()
+        .map(|values| retarget.grip(values))
+        .transpose()?;
+    let native_idle = donors.idle(native)?;
+    let (Some(source_idle), Some(native_idle)) = (source_idle, native_idle) else {
         return Ok(
             json!({"status":"source","reason":"The source or the carrier has no absolute idle"}),
         );
     };
+    let held = retarget.grip(&source_idle)?;
+    let utility = native_idle
+        .get(&names.0)
+        .context("Carrier idle lacks the utility role")?;
+    let grip = native_idle
+        .get(&names.1)
+        .context("Carrier idle lacks the grip role")?;
+    let relative = utility.inverse().then(*grip);
+    let carried: [f32; 3] = std::array::from_fn(|i| relative.0[4 + i]);
     let offset = std::array::from_fn(|i| carried[i] - held[i]);
     let axis = |p: [f32; 3]| p[1].hypot(p[2]);
     let framing = retarget::Framing {
         offset,
-        idle: axis(held),
-        aimed: aimed.map_or(0., axis),
+        idle: held,
+        aimed,
     };
     retarget.frame(framing);
+    let shoulders = retarget.shoulders(&source_idle, &native_idle)?;
     Ok(
         json!({"status":"native","source_idle_grip":held,"carrier_idle_grip":carried,
-        "offset":offset,"source_aimed_grip":aimed,"idle_axis_distance":framing.idle,
-        "aimed_axis_distance":framing.aimed}),
+        "offset":offset,"source_aimed_grip":aimed,"aimed_actions":AIMED,"idle_axis_distance":axis(held),
+        "aimed_axis_distance":aimed.map(axis),"shoulder_anchors":shoulders}),
     )
 }
 
@@ -711,18 +837,13 @@ pub(in crate::marathon) fn compile(
     graph: &Path,
 ) -> Result<Compiled> {
     let sources = plan::Sources::read(source, native, parts, item_tag, graph)?;
-    let mut retarget = retarget::Retarget::new(&sources.arms, &sources.native_rig)?;
-    let mut donors = cue::Donors::new(&sources.carrier, sources.weapon_rig.names[0])?;
-    let framing = frame(
-        source,
-        native,
-        &sources.controller,
-        &sources.fixed,
+    let mut retarget = retarget::Retarget::new(
         &sources.arms,
-        &sources.carrier,
-        &mut retarget,
-        &donors,
+        &sources.native_rig,
+        &sources.extension.controls,
     )?;
+    let mut donors = cue::Donors::new(&sources.carrier, sources.weapon_rig.names[0])?;
+    let framing = frame(source, native, &sources, &mut retarget, &donors)?;
     let mut routes = plan::Routes::read(&sources, graph)?;
     let local = pairing::WeaponLocal::pair(source, &sources, &routes)?;
     let mut translation =
@@ -737,7 +858,7 @@ pub(in crate::marathon) fn compile(
         &mut donors,
     )?;
     let tables = emission::Tables::write(native, graph, &sources, &routes, &translation, &clips)?;
-    let section = emission::Receipt {
+    let mut section = emission::Receipt {
         sources: &sources,
         routes: &routes,
         local: &local,
@@ -748,6 +869,7 @@ pub(in crate::marathon) fn compile(
         framing,
     }
     .section();
+    section["equipment_animation"] = equipment::prepare(native, &sources, &routes, &local, graph)?;
     Ok(Compiled {
         section,
         palette: sources.extension.palette,

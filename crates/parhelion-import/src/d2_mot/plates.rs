@@ -135,31 +135,37 @@ fn layout(sides: &[usize], mips: usize) -> Result<([usize; 2], Vec<[usize; 4]>, 
     let pad = 4usize
         .checked_shl((mips - 1) as u32)
         .context("atlas padding overflow")?;
-    let mut rectangles = vec![];
-    let mut x = 0usize;
+    let mut spans = Vec::with_capacity(sides.len());
     for &side in sides {
         ensure!(
             side % pad == 0,
             "plate is not aligned at retained mip levels"
         );
-        rectangles.push([x + pad, pad, side, side]);
-        x = x
-            .checked_add(side + 2 * pad)
-            .context("atlas width overflow")?;
+        let span = side.checked_add(2 * pad).context("atlas width overflow")?;
+        ensure!(span <= MAX_SIDE, "atlas exceeds D3D11 texture size");
+        spans.push(span);
     }
-    let mut width = x
-        .checked_next_power_of_two()
+    let total = spans
+        .iter()
+        .try_fold(0usize, |sum, span| sum.checked_add(*span))
         .context("atlas width overflow")?;
-    let mut height = (sides.iter().max().context("empty atlas")? + 2 * pad).next_power_of_two();
-    if width > MAX_SIDE && height <= MAX_SIDE {
-        // Keep source order and BC-aligned margins while placing overflow on
-        // another shelf. Every interior block remains lossless at every mip.
-        rectangles.clear();
+    // Shelves keep source order and BC-aligned margins, so every interior block remains
+    // lossless at every mip. The canvas's longer side decides how many leading mips the
+    // native gear canvas drops, so among the power-of-two shelf widths the one with the
+    // shortest longer side wins, then the smaller canvas, then the widest, which is a single
+    // row wherever a single row is as good.
+    let mut best: Option<([usize; 2], Vec<[usize; 4]>)> = None;
+    let mut limit = spans
+        .iter()
+        .max()
+        .context("empty atlas")?
+        .next_power_of_two()
+        .min(MAX_SIDE);
+    loop {
         let (mut x, mut y, mut shelf, mut extent) = (0usize, 0usize, 0usize, 0usize);
-        for &side in sides {
-            let span = side + 2 * pad;
-            ensure!(span <= MAX_SIDE, "atlas exceeds D3D11 texture size");
-            if x + span > MAX_SIDE {
+        let mut rectangles = Vec::with_capacity(sides.len());
+        for (&side, &span) in sides.iter().zip(&spans) {
+            if x + span > limit {
                 y += shelf;
                 x = 0;
                 shelf = 0;
@@ -169,14 +175,22 @@ fn layout(sides: &[usize], mips: usize) -> Result<([usize; 2], Vec<[usize; 4]>, 
             extent = extent.max(x);
             shelf = shelf.max(span);
         }
-        width = extent.next_power_of_two();
-        height = (y + shelf).next_power_of_two();
+        let size = [extent.next_power_of_two(), (y + shelf).next_power_of_two()];
+        let rank = |size: [usize; 2]| (size[0].max(size[1]), size[0] * size[1]);
+        if size.iter().all(|side| *side <= MAX_SIDE)
+            && best
+                .as_ref()
+                .is_none_or(|(found, _)| rank(size) <= rank(*found))
+        {
+            best = Some((size, rectangles));
+        }
+        if limit >= total || limit >= MAX_SIDE {
+            break;
+        }
+        limit *= 2;
     }
-    ensure!(
-        width <= MAX_SIDE && height <= MAX_SIDE,
-        "atlas exceeds D3D11 texture size"
-    );
-    Ok(([width, height], rectangles, pad))
+    let (size, rectangles) = best.context("atlas exceeds D3D11 texture size")?;
+    Ok((size, rectangles, pad))
 }
 
 fn merge_tiles(tiles: Vec<(Plate, [usize; 4])>) -> Result<Plate> {

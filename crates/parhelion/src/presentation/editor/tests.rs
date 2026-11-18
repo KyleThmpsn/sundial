@@ -281,7 +281,7 @@ fn read_back_colors(kind: Kind, original: &Artwork, artwork: &Artwork) {
     let adjusted = reopened.composition().unwrap().source(reopened.pixels());
     if kind == Kind::Watermark {
         assert!(adjusted.pixels().all(|pixel| pixel[3] == 0));
-        let compiled = crate::watermark::render_custom_corner(&reopened, 2).unwrap();
+        let compiled = crate::icon::watermark::render_custom_corner(&reopened, 2).unwrap();
         assert!(
             compiled.chunks_exact(4).all(|pixel| pixel[3] == 0),
             "opacity reaches the native silhouette"

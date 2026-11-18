@@ -76,7 +76,7 @@ pub(super) fn trim(
         .iter()
         .map(|(entry, _)| *entry)
         .collect::<HashSet<_>>();
-    let modes = crate::extend::resolve_reference_modes(tags.len(), references)?;
+    let modes = crate::package::extend::resolve_reference_modes(tags.len(), references)?;
     for (index, spec) in tags.iter().enumerate() {
         let Some(template) = manager.get_entry(spec.template_tag) else {
             continue;

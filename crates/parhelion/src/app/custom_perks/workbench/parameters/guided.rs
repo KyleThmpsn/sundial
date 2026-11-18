@@ -1,12 +1,12 @@
 //! Verified parameter adapters. Recipes still use the compiler's validated native locators.
 use super::*;
-use sundial::package_authoring::runtime::WeaponRuntimeRootKind;
+use sundial::package_authoring::runtime::RuntimeRootKind;
 mod profiles;
 use profiles::{PROJECTILE_PROFILES, ProjectileProfile};
 
 pub(super) struct ProjectileSpeed {
     profile: &'static ProjectileProfile,
-    targets: Vec<(WeaponRuntimeField, usize)>,
+    targets: Vec<(RuntimeField, usize)>,
 }
 
 impl ProjectileSpeed {
@@ -43,15 +43,11 @@ impl ProjectileSpeed {
         }
         let mut targets = Vec::new();
         for (root, schema, offset) in [
-            (WeaponRuntimeRootKind::ComponentInstance, 0x8080_3B73, 0x144),
-            (
-                WeaponRuntimeRootKind::ComponentDefinition,
-                0x8080_388F,
-                0x88,
-            ),
+            (RuntimeRootKind::ComponentInstance, 0x8080_3B73, 0x144),
+            (RuntimeRootKind::ComponentDefinition, 0x8080_388F, 0x88),
         ] {
             let mut fields = graph.fields().filter(|field| {
-                field.source != WeaponRuntimeFieldSource::NativeDeclaration
+                field.source != RuntimeFieldSource::NativeDeclaration
                     && field.locator.root == root
                     && field.locator.root_schema.get() == schema
                     && field.locator.value_offset <= offset
@@ -67,7 +63,7 @@ impl ProjectileSpeed {
                     })
             });
             let field = fields.next()?.clone();
-            if fields.next().is_some() || !matches!(field.value, WeaponRuntimeValue::Bytes(_)) {
+            if fields.next().is_some() || !matches!(field.value, RuntimeValue::Bytes(_)) {
                 return None;
             }
             let relative = (offset - field.locator.value_offset) as usize;
@@ -84,7 +80,7 @@ impl ProjectileSpeed {
     pub(super) fn value(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
     ) -> Result<f32, String> {
         let mut values = Vec::new();
         for (field, offset) in &self.targets {
@@ -92,7 +88,7 @@ impl ProjectileSpeed {
                 .iter()
                 .find(|value| equivalent(loaded, &field.locator, &value.locator))
                 .map_or(&field.value, |value| &value.value);
-            let WeaponRuntimeValue::Bytes(bytes) = value else {
+            let RuntimeValue::Bytes(bytes) = value else {
                 return Err("Projectile speed has an incompatible saved value.".into());
             };
             let bytes: [u8; 4] = bytes
@@ -118,7 +114,7 @@ impl ProjectileSpeed {
     pub(super) fn set(
         &self,
         loaded: &PrivatePerkRuntimeGraph,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
+        draft: &mut Vec<RuntimeValueOverride>,
         value: f32,
     ) -> Result<(), String> {
         if !value.is_finite() || value <= 0.0 {
@@ -131,11 +127,11 @@ impl ProjectileSpeed {
                 .position(|value| equivalent(loaded, &field.locator, &value.locator));
             let mut entry = existing
                 .map(|index| next[index].clone())
-                .unwrap_or_else(|| WeaponRuntimeValueOverride {
+                .unwrap_or_else(|| RuntimeValueOverride {
                     locator: field.locator.clone(),
                     value: field.value.clone(),
                 });
-            let WeaponRuntimeValue::Bytes(bytes) = &mut entry.value else {
+            let RuntimeValue::Bytes(bytes) = &mut entry.value else {
                 return Err("Reset incompatible projectile data before editing.".into());
             };
             bytes
@@ -157,8 +153,8 @@ impl ProjectileSpeed {
 
 pub(super) fn equivalent(
     loaded: &PrivatePerkRuntimeGraph,
-    left: &WeaponRuntimeFieldLocator,
-    right: &WeaponRuntimeFieldLocator,
+    left: &RuntimeFieldLocator,
+    right: &RuntimeFieldLocator,
 ) -> bool {
     if matches!((left.graph_tag, right.graph_tag), (Some(a), Some(b)) if a != b) {
         return false;
@@ -177,7 +173,7 @@ pub(super) fn equivalent(
         return true;
     }
     loaded.graphs.iter().filter(|(tag, _)| left.graph_tag.map(|tag| tag.get()).or(right.graph_tag.map(|tag| tag.get())).is_none_or(|scope| scope == *tag)).any(|(_, graph)| {
-        let binding = |locator: &WeaponRuntimeFieldLocator| graph.bindings.iter().find(|binding| {
+        let binding = |locator: &RuntimeFieldLocator| graph.bindings.iter().find(|binding| {
             binding.binding_hash == locator.binding_hash.get() && binding.resource_index == locator.resource_index
         });
         matches!((binding(left), binding(right)), (Some(a), Some(b)) if a.owner_tag == b.owner_tag && a.resource_offset == b.resource_offset)

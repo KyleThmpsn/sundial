@@ -7,12 +7,12 @@ use model::*;
 pub use model::{
     AuthoredWeaponRarity, ModernDamageType, NewCollectionPlan, NewCustomPlugPlan,
     NewPrivatePerkPlan, NewWeaponPlan, NewWeaponProjectBundle, NewWeaponProjectPlan,
+    RuntimeComponentDonorReference, RuntimeResourceAppend, RuntimeResourcePatch,
     SwordProfileOverride, WeaponAmmoType, WeaponArtArrangementOverride, WeaponCloneIdentity,
     WeaponCloneOverrides, WeaponCloneSpec, WeaponCloneText, WeaponDyeReferenceOverride,
     WeaponIconDonorReference, WeaponInventorySlot, WeaponLocaleTextOverride,
     WeaponNumericInstruction, WeaponPresentationDonorReference, WeaponProjectSpec,
     WeaponRawPayloadPatch, WeaponRawPayloadTarget, WeaponRenderGearDonorReference,
-    WeaponRuntimeComponentDonorReference, WeaponRuntimeResourceAppend, WeaponRuntimeResourcePatch,
     WeaponSandboxPerkActionFloatOverride, WeaponSandboxPerkRuntimeOverride,
     WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride, WeaponVariableDamage,
 };
@@ -169,7 +169,7 @@ use sundial::package_authoring::{
         investment_root_table_tag, item_version_array,
     },
     is_valid_package_tag,
-    runtime::{WeaponRuntimeValueOverride, resolve_weapon_runtime_field},
+    runtime::{RuntimeValueOverride, resolve_runtime_field},
     sandbox_perk::{
         FinishedSandboxPerkName, FinishedSandboxPerkPresentation, SANDBOX_PERK_INDEX_CATALOG_CLASS,
         SANDBOX_PERK_RUNTIME_MAP_CLASS, SANDBOX_PERK_RUNTIME_MAP_TAG, SandboxPerkRuntimeAction,
@@ -197,13 +197,13 @@ use sundial::{
     },
 };
 
-use crate::appended_tags::AppendedTagAllocator;
 use crate::badge::SunriseBadgeGraphInput;
 use crate::error::{invalid, validation};
-use crate::extend::extended_overlay_append_start;
+use crate::package::appended_tags::AppendedTagAllocator;
+use crate::package::extend::extended_overlay_append_start;
 #[cfg(test)]
-use crate::package_profile::PARHELION_ASSET_PACKAGE_ID;
-use crate::package_profile::{
+use crate::package::profile::PARHELION_ASSET_PACKAGE_ID;
+use crate::package::profile::{
     ACCOUNT_UNLOCK_BANK, COLLECTION_PACKAGE_ID, HOST_EXPECTED_ENTRY_COUNT, HOST_PACKAGE_ID,
     LOCALIZATION_DONOR_TABLE_INDEX, PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT,
     PRIVATE_PERK_RUNTIME_PACKAGE_ID,
@@ -322,7 +322,7 @@ const PRIVATE_PERK_RESIDENCY_BA_SIZE: usize = 0xA14;
 const PRIVATE_PERK_RESIDENCY_ROOT_SIZE: usize = 0xC0;
 const PRIVATE_PERK_RESIDENCY_COMPANION_TEMPLATE_SIZE: usize = 0x122;
 const LOCALIZATION_STOCK_TABLE_COUNT: usize =
-    crate::package_profile::LOCALIZATION_STOCK_TABLE_COUNT;
+    crate::package::profile::LOCALIZATION_STOCK_TABLE_COUNT;
 // Bank 2927 is an already-rooted native two-string bank. Its existing hashes and strings are
 // preserved while authored weapon and private-plug text is appended in a patch overlay. An
 // importer's own build on the mod loader copies it into a bank of its own in its records package,
@@ -422,7 +422,7 @@ struct ResolvedPrivateSandboxPerk {
     runtime_action: SandboxPerkRuntimeAction,
     authored_perk_hash: u32,
     authored_runtime_key: u32,
-    runtime_values: Vec<WeaponRuntimeValueOverride>,
+    runtime_values: Vec<RuntimeValueOverride>,
     action_float_values: Vec<WeaponSandboxPerkActionFloatOverride>,
 }
 
@@ -457,6 +457,9 @@ struct ResolvedCustomPlug {
     classification: Option<crate::plug_classification::PlugClassification>,
     classification_item_index: Option<usize>,
     classification_perk_index: Option<usize>,
+    /// A socket plug with programs of its own on a layout outside the perk sockets. It shows no
+    /// perk row on the item tooltip and its artwork alone.
+    standalone: bool,
     /// When offered everywhere, the stock plug whose shared plug sets it joins: its
     /// classification plug, else its source.
     offered_like: Option<usize>,

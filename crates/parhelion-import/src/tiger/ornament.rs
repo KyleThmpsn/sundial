@@ -389,11 +389,7 @@ pub fn reads(ornaments: &Path) -> std::path::PathBuf {
 }
 
 /// FNV-1 of `text`, how the build derives an identity from its roles.
-pub fn fnv(text: &str) -> u32 {
-    text.bytes().fold(0x811C_9DC5u32, |h, b| {
-        h.wrapping_mul(0x0100_0193) ^ u32::from(b)
-    })
-}
+pub use sundial::package_authoring::fnv1 as fnv;
 
 /// The roles the build allocates the private plug identities of ornament `choice` of `lane` under.
 /// The plug's item is FNV-1 of `{roles}/private-plug`, which its graph takes as its item hash.

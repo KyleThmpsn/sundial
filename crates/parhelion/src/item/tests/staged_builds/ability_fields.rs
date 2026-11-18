@@ -43,7 +43,7 @@ fn verified_ability_fields_survive_saved_recipes_and_private_packages() {
     let packages = PathBuf::from(
         std::env::var_os("SUNDIAL_STOCK_PACKAGES").expect("configure SUNDIAL_STOCK_PACKAGES"),
     );
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
@@ -53,7 +53,7 @@ fn verified_ability_fields_survive_saved_recipes_and_private_packages() {
     let temporary = tempfile::tempdir().unwrap();
     let cache = temporary.path().join("catalog.json");
     let catalog = InvestmentCatalog::load_with_cache_path(install, &cache, true, |_| {}).unwrap();
-    let bases = catalog.subclasses(crate::package_profile::is_stock_item_definition);
+    let bases = catalog.subclasses(crate::package::profile::is_stock_item_definition);
     let manager = open_manager(view.path()).unwrap();
     let oracle: serde_json::Value =
         serde_json::from_str(include_str!("ability_fields/shadowkeep.json")).unwrap();
@@ -104,14 +104,9 @@ fn verified_ability_fields_survive_saved_recipes_and_private_packages() {
         } else {
             let graph_tag = case.graph.unwrap();
             let graph_payload = manager.read_tag(tiger_pkg::TagHash(graph_tag)).unwrap();
-            let mut graph = runtime::load_weapon_runtime_graph_for_entity(
-                &manager,
-                0,
-                0,
-                graph_tag,
-                &graph_payload,
-            )
-            .unwrap();
+            let mut graph =
+                runtime::load_runtime_graph_for_entity(&manager, 0, 0, graph_tag, &graph_payload)
+                    .unwrap();
             graph.scope_fields();
             let settings = ability_settings::discover(&manager, &graph);
             if let Some(setting) = settings.iter().find(|setting| {

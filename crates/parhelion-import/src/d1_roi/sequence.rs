@@ -22,6 +22,7 @@ mod plan;
 mod profile;
 mod program;
 pub mod query;
+pub mod screen;
 mod signal;
 pub mod sound;
 pub mod spawn;

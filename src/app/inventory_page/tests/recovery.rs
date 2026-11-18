@@ -11,7 +11,7 @@ fn inventory_app(directory: &TestDirectory, sqlite: bool, stored: usize) -> Sund
     let mut app = app(directory.0.clone());
     let source = if sqlite {
         let path = directory.0.join("data/investment.sqlite3");
-        crate::persistence::sqlite_account::tests::create_fixture(&path, 0);
+        crate::persistence::sunrise_account::tests::create_fixture(&path, 0);
         rusqlite::Connection::open(&path)
             .unwrap()
             .execute_batch(

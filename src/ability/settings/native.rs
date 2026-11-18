@@ -425,7 +425,7 @@ impl Property {
     }
 }
 
-pub(crate) fn recognizes(locator: &WeaponRuntimeFieldLocator) -> bool {
+pub(crate) fn recognizes(locator: &RuntimeFieldLocator) -> bool {
     locator.path.first().is_some_and(|step| {
         step.name_hash == ROOT && step.type_handle == locator.root_schema && step.byte_offset == 0
     })
@@ -440,8 +440,8 @@ pub(super) fn supports(schema: u32) -> bool {
 
 pub(super) fn setting(
     owner: u32,
-    root: &WeaponRuntimeRoot,
-    field: &WeaponRuntimeField,
+    root: &RuntimeRoot,
+    field: &RuntimeField,
     payload: Option<&[u8]>,
 ) -> Option<Setting> {
     if !recognizes(&field.locator) {
@@ -454,17 +454,17 @@ pub(super) fn setting(
             .and_then(|payload| u32_at(payload, field.owner_offset as usize - 8).ok())
             .is_none_or(|flags| flags & 2 == 0);
     let codec = match field.kind {
-        WeaponRuntimeValueKind::Float32 => Codec::Float,
-        WeaponRuntimeValueKind::SignedInteger { bits: 32 } => Codec::Integer,
-        WeaponRuntimeValueKind::SignedInteger { bits: 8 } => Codec::Byte,
-        WeaponRuntimeValueKind::UnsignedInteger { bits: 8 } => Codec::UnsignedByte,
+        RuntimeValueKind::Float32 => Codec::Float,
+        RuntimeValueKind::SignedInteger { bits: 32 } => Codec::Integer,
+        RuntimeValueKind::SignedInteger { bits: 8 } => Codec::Byte,
+        RuntimeValueKind::UnsignedInteger { bits: 8 } => Codec::UnsignedByte,
         _ => return None,
     };
     // Reuse a compatible opaque field so sibling controls compose with saved overrides.
     let end = field.owner_offset.checked_add(field.locator.byte_size)?;
     let mut covers = root.fields.iter().filter(|candidate| {
-        candidate.source == WeaponRuntimeFieldSource::OpaqueNativeType
-            && matches!(candidate.value, WeaponRuntimeValue::Bytes(_))
+        candidate.source == RuntimeFieldSource::OpaqueNativeType
+            && matches!(candidate.value, RuntimeValue::Bytes(_))
             && candidate.owner_offset <= field.owner_offset
             && candidate
                 .owner_offset
@@ -496,10 +496,10 @@ pub(super) fn setting(
 pub(crate) fn fields(
     manager: &PackageManager,
     data: &[u8],
-    root: &WeaponRuntimeRoot,
+    root: &RuntimeRoot,
     binding: u32,
     index: u16,
-) -> Result<Vec<WeaponRuntimeField>, String> {
+) -> Result<Vec<RuntimeField>, String> {
     if !supports(root.schema) {
         return Ok(Vec::new());
     }
@@ -546,7 +546,7 @@ pub struct Creation {
 }
 
 /// The creations of `graph`'s effect flows (`808084E9`). A flow that does not read has none.
-pub fn creations(manager: &PackageManager, graph: &WeaponRuntimeGraph) -> Vec<Creation> {
+pub fn creations(manager: &PackageManager, graph: &RuntimeGraph) -> Vec<Creation> {
     let roots = graph
         .resources
         .iter()
@@ -598,11 +598,11 @@ pub fn creations(manager: &PackageManager, graph: &WeaponRuntimeGraph) -> Vec<Cr
 struct Reader<'a> {
     manager: &'a PackageManager,
     data: &'a [u8],
-    root: &'a WeaponRuntimeRoot,
+    root: &'a RuntimeRoot,
     binding: u32,
     index: u16,
     registry: Registry,
-    fields: Vec<WeaponRuntimeField>,
+    fields: Vec<RuntimeField>,
 }
 
 impl Reader<'_> {
@@ -701,23 +701,23 @@ impl Reader<'_> {
         }
         let (kind, value) = match codec {
             Codec::Float => (
-                WeaponRuntimeValueKind::Float32,
-                WeaponRuntimeValue::Float32Bits(self.float(at)?.to_bits()),
+                RuntimeValueKind::Float32,
+                RuntimeValue::Float32Bits(self.float(at)?.to_bits()),
             ),
             Codec::Integer => (
-                WeaponRuntimeValueKind::SignedInteger { bits: 32 },
-                WeaponRuntimeValue::Signed(i64::from(i32::from_le_bytes(bytes_at(self.data, at)?))),
+                RuntimeValueKind::SignedInteger { bits: 32 },
+                RuntimeValue::Signed(i64::from(i32::from_le_bytes(bytes_at(self.data, at)?))),
             ),
             Codec::Byte => (
-                WeaponRuntimeValueKind::SignedInteger { bits: 8 },
-                WeaponRuntimeValue::Signed(i64::from(bytes_at::<1>(self.data, at)?[0] as i8)),
+                RuntimeValueKind::SignedInteger { bits: 8 },
+                RuntimeValue::Signed(i64::from(bytes_at::<1>(self.data, at)?[0] as i8)),
             ),
             Codec::UnsignedByte => (
-                WeaponRuntimeValueKind::UnsignedInteger { bits: 8 },
-                WeaponRuntimeValue::Unsigned(u64::from(bytes_at::<1>(self.data, at)?[0])),
+                RuntimeValueKind::UnsignedInteger { bits: 8 },
+                RuntimeValue::Unsigned(u64::from(bytes_at::<1>(self.data, at)?[0])),
             ),
         };
-        let step = |name_hash, type_handle, byte_offset| WeaponRuntimePathElement {
+        let step = |name_hash, type_handle, byte_offset| RuntimePathElement {
             name_hash,
             type_handle: SchemaHandle::from(type_handle),
             byte_offset,
@@ -725,8 +725,8 @@ impl Reader<'_> {
         let mut path = vec![step(ROOT, self.root.schema, 0)];
         path.extend(route.iter().map(|index| step(ROW, class, *index)));
         path.push(step(VALUE + property as u32, class, offset as u32));
-        self.fields.push(WeaponRuntimeField {
-            locator: WeaponRuntimeFieldLocator {
+        self.fields.push(RuntimeField {
+            locator: RuntimeFieldLocator {
                 graph_tag: None,
                 binding_hash: self.binding.into(),
                 resource_index: self.index,
@@ -742,7 +742,7 @@ impl Reader<'_> {
             path_label: format!("{} / {}", self.root.kind.label(), property.label()),
             kind,
             value,
-            source: WeaponRuntimeFieldSource::NativeDeclaration,
+            source: RuntimeFieldSource::NativeDeclaration,
             generated_kind: None,
             name_inferred: false,
         });

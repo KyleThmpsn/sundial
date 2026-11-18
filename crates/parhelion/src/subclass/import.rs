@@ -6,7 +6,7 @@ use parhelion_import::{
     tiger::reader::{Reader, outside, package_stamp},
 };
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use sundial::storage::sha256_hex;
 use sundial::{
     investment::{InvestmentCatalog, SubclassSummary},
     package_authoring::{
@@ -18,7 +18,17 @@ use sundial::{
 use super::{EntryEdits, StockModifier, SubclassChoice, layout};
 use crate::{ItemKind, WeaponRecipe, perk::PerkRecipe};
 mod grid;
-pub use grid::prepare as prepare_grid;
+pub use grid::{prepare as prepare_grid, prepare_native as prepare_native_grid};
+
+/// A source subclass grid placed on the recipe's base subclass, which keeps its own Super.
+pub struct GridRequest<'a> {
+    pub source_packages: &'a Path,
+    pub native_packages: &'a Path,
+    pub output: &'a Path,
+    pub recipe: &'a WeaponRecipe,
+    /// The source subclass item.
+    pub subclass: u32,
+}
 
 pub struct Request<'a> {
     pub source_packages: &'a Path,
@@ -53,12 +63,37 @@ impl Prepared {
     }
 }
 
-fn error(error: impl std::fmt::Display) -> String {
-    format!("{error:#}")
+/// An unsaved subclass recipe on the stock subclass `base`, under an import's `namespace`. The
+/// namespace gives the item its identity, so a later import of the same source updates it.
+pub fn draft(
+    namespace: &str,
+    base: u32,
+    base_name: &str,
+    name: &str,
+) -> Result<WeaponRecipe, String> {
+    let hex = |hash: u32| format!("0x{hash:08X}");
+    let seed = json!({
+        "schema": 1, "kind": "subclass", "namespace": namespace,
+        "collection_placement": "sunrise_badge",
+        "donor": {"item_hash": hex(base), "expected_name": base_name},
+        "identity": {
+            "item_hash": hex(0), "collectible_hash": hex(0),
+            "unlock_hash": hex(0), "name_hash": hex(0),
+            "flavor_hash": hex(0), "source_hash": hex(0)
+        },
+        "name": name, "flavor": "",
+        "source": "Source: Rise of Iron",
+        "overrides": {"subclass_every_class": false}
+    });
+    let mut recipe: WeaponRecipe = serde_json::from_value(seed).map_err(error)?;
+    recipe.identity = crate::WeaponCloneIdentity::from_namespace(namespace)
+        .map_err(error)?
+        .into();
+    Ok(recipe)
 }
 
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+fn error(error: impl std::fmt::Display) -> String {
+    format!("{error:#}")
 }
 
 /// Resolve by the translated row and graph. Names are presentation and never establish that
@@ -158,7 +193,7 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
         true,
         |_| {},
     )?;
-    let subclasses = catalog.subclasses(crate::package_profile::is_stock_item_definition);
+    let subclasses = catalog.subclasses(crate::package::profile::is_stock_item_definition);
     let (donor, source_entry) = donor(request, &catalog, &subclasses, &translated)?;
     let globals_tag = resolve_live_named_tag(&manager, "investment_globals", None)?;
     let globals = native.tag(globals_tag.0, None).map_err(error)?;
@@ -172,7 +207,7 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
     let mut effect = PerkRecipe::effect(source_perk);
     effect.program = Some(translated.program);
     let mut perk = PerkRecipe::new();
-    perk.id = digest(
+    perk.id = sha256_hex(
         &serde_json::to_vec(&json!({
             "source":"d1_roi", "namespace":request.recipe.namespace,
             "entry":request.entry, "choice":request.choice,
@@ -235,8 +270,8 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
     let encoded = recipe.to_json_pretty().map_err(error)?;
     let provenance = json!({
         "status":"prepared movement property candidate", "gameplay_verified":false,
-        "prepared_recipe_sha256":digest(encoded.as_bytes()),
-        "baseline_recipe_sha256":digest(request.recipe.to_json_pretty().map_err(error)?.as_bytes()),
+        "prepared_recipe_sha256":sha256_hex(encoded.as_bytes()),
+        "baseline_recipe_sha256":sha256_hex(request.recipe.to_json_pretty().map_err(error)?.as_bytes()),
         "source":source.report(), "translation":translated.evidence,
         "native":{"packages":native_path,"stamp":native_stamp,"entry":request.entry,
             "source_subclass":donor.hash,"source_entry":source_entry,

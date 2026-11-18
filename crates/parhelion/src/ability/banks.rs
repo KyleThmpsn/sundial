@@ -33,6 +33,9 @@ use sundial::package_authoring::{
 };
 use tiger_pkg::TagHash;
 
+#[cfg(test)]
+mod tests;
+
 use crate::{AuthoringResult, ReplacementSpec, error::invalid};
 mod attack;
 
@@ -99,9 +102,16 @@ impl From<Modifier> for RowValue {
 }
 
 impl Row {
-    /// What the row does, without the private profiles a member's build allocates for it. Each
-    /// member that applies one attack or contact definition holds its own copies of the
-    /// definition's profiles, so rows that differ only there are the same row.
+    fn has_private_profiles(&self) -> bool {
+        match &self.value {
+            RowValue::Single(Modifier::Attack(body)) => body.damage.is_some(),
+            RowValue::Single(Modifier::Melee { .. }) => true,
+            _ => false,
+        }
+    }
+
+    /// What the row does, without duplicate profiles allocated within the same member. Equal
+    /// definitions across separate members do not establish ownership of those private assets.
     fn definition(&self) -> Self {
         let value = match &self.value {
             RowValue::Single(Modifier::Attack(body)) => {
@@ -148,7 +158,7 @@ pub(crate) fn plan<'a>(
     impacts: &[MeleeImpact],
     rows: &[(u32, u32, Modifier)],
     hosted: &[(&str, Hosted)],
-    allocator: crate::appended_tags::AppendedTagAllocator,
+    allocator: crate::package::appended_tags::AppendedTagAllocator,
     tags: &mut Vec<crate::NewTagSpec>,
 ) -> AuthoringResult<Plan> {
     let mut applied = BTreeSet::new();
@@ -364,8 +374,11 @@ pub(crate) fn plan<'a>(
     let mut edited: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
     let mut added: BTreeMap<u32, Vec<Row>> = BTreeMap::new();
     let mut own = Hosted::default();
-    let own_name = crate::package_profile::member().map_or("Parhelion", |member| member.name());
+    let own_name = crate::package::profile::member().map_or("Parhelion", |member| member.name());
     let mut filed = Filed::default();
+    // Every member's rows in the order they are asked for: the build's own, then each hosted
+    // member's, each with its member and whether it is the build's own.
+    let mut requests: Vec<(&str, u32, Row, bool)> = Vec::new();
     for (key, banks, value) in wanted {
         for &bank in &banks {
             let row = Row {
@@ -373,25 +386,46 @@ pub(crate) fn plan<'a>(
                 value: value.clone(),
                 mode: scoped.get(&key).map(|r| r.mode),
             };
-            if !filed.first(bank, &row, own_name)? {
-                continue;
-            }
-            if let Some(next) = with_row(manager, &edited, bank, &row)? {
-                edited.insert(bank, next);
-                own.rows.push((bank, row.clone()));
-                added.entry(bank).or_default().push(row);
-            }
+            requests.push((own_name, bank, row, true));
         }
     }
     for (name, other) in hosted {
         for (bank, row) in &other.rows {
-            if !filed.first(*bank, row, name)? {
-                continue;
+            requests.push((*name, *bank, row.clone(), false));
+        }
+    }
+    // A melee row copies each attack key its bank holds under a gate of its own, so the bank then
+    // holds two rows of that key, and an attack that names the key as its template finds no one
+    // template row. One member asks for its attacks before its melee rows. Across members a
+    // later member's attack would follow an earlier member's melee row in the same bank, so it
+    // goes ahead of that bank's first melee row instead. Every other row stays where it was
+    // asked for, since a bank numbers its handlers by the order its rows' classes first appear.
+    let melee = |row: &Row| matches!(row.value, RowValue::Single(Modifier::Melee { .. }));
+    let attack = |row: &Row| matches!(row.value, RowValue::Single(Modifier::Attack(_)));
+    let mut ordered: Vec<(&str, u32, Row, bool)> = Vec::with_capacity(requests.len());
+    for request in requests {
+        let ahead = attack(&request.2)
+            .then(|| {
+                ordered
+                    .iter()
+                    .position(|(_, bank, row, _)| *bank == request.1 && melee(row))
+            })
+            .flatten();
+        match ahead {
+            Some(at) => ordered.insert(at, request),
+            None => ordered.push(request),
+        }
+    }
+    for (member, bank, row, is_own) in ordered {
+        if !filed.first(bank, &row, member)? {
+            continue;
+        }
+        if let Some(next) = with_row(manager, &edited, bank, &row)? {
+            edited.insert(bank, next);
+            if is_own {
+                own.rows.push((bank, row.clone()));
             }
-            if let Some(next) = with_row(manager, &edited, *bank, row)? {
-                edited.insert(*bank, next);
-                added.entry(*bank).or_default().push(row.clone());
-            }
+            added.entry(bank).or_default().push(row);
         }
     }
     // Every tag that references an edited bank follows the move of its instance region. An
@@ -429,16 +463,23 @@ struct Filed<'a> {
 
 impl<'a> Filed<'a> {
     /// Whether `row` is the first request for its key in `bank`. A later request with the same
-    /// definition is the same row. One with another definition is refused, since a bank row
-    /// serves every member's perks that apply the key and keeping either would give the other
-    /// perk its behavior.
+    /// pointer-free definition is the same row. Private profiles can be deduplicated only within
+    /// their owning member. Otherwise removing the first member could break another's perks.
+    /// Different definitions are refused because keeping either would change the other's behavior.
     fn first(&mut self, bank: u32, row: &Row, member: &'a str) -> AuthoringResult<bool> {
         let definition = row.definition();
         let Some((filed, first)) = self.rows.get(&(bank, row.key)) else {
-            self.rows.insert((bank, row.key), (definition, member));
+            self.rows.insert((bank, row.key), (row.clone(), member));
             return Ok(true);
         };
-        if *filed == definition {
+        if *first != member && (filed.has_private_profiles() || row.has_private_profiles()) {
+            return Err(invalid(format!(
+                "{first} and {member} share ability bank {} key {:08X} with member-owned damage or contact profiles. These members need distinct private perk keys",
+                TagHash(bank),
+                row.key
+            )));
+        }
+        if filed.definition() == definition {
             return Ok(false);
         }
         let tag = TagHash(bank);
@@ -526,7 +567,7 @@ fn with_row(
 ) -> AuthoringResult<Option<Vec<u8>>> {
     let key = row.key;
     let tag = TagHash(bank);
-    if crate::package_profile::canonical_package(tag.pkg_id()).is_none() {
+    if crate::package::profile::canonical_package(tag.pkg_id()).is_none() {
         return Err(invalid(format!(
             "Ability bank {tag} is outside the packages the build overlays"
         )));
@@ -640,7 +681,7 @@ fn retarget_referrers(
             else {
                 continue;
             };
-            if crate::package_profile::canonical_package(referrer_tag.pkg_id()).is_none() {
+            if crate::package::profile::canonical_package(referrer_tag.pkg_id()).is_none() {
                 return Err(invalid(format!(
                     "{referrer_tag} names blocks of ability bank {tag} by offset and is outside the packages the build overlays"
                 )));
@@ -697,7 +738,7 @@ fn add_evade_profiles(
         .map_err(|error| invalid(format!("Could not read the reference index: {error}")))?;
     for (controller, profiles) in wanted {
         let tag = TagHash(controller);
-        if crate::package_profile::canonical_package(tag.pkg_id()).is_none() {
+        if crate::package::profile::canonical_package(tag.pkg_id()).is_none() {
             return Err(invalid(format!(
                 "Movement controller {tag} is outside the packages the build overlays"
             )));
@@ -731,7 +772,7 @@ fn add_evade_profiles(
             else {
                 continue;
             };
-            if crate::package_profile::canonical_package(referrer_tag.pkg_id()).is_none() {
+            if crate::package::profile::canonical_package(referrer_tag.pkg_id()).is_none() {
                 return Err(invalid(format!(
                     "{referrer_tag} names blocks of movement controller {tag} by offset and is outside the packages the build overlays"
                 )));

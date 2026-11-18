@@ -7,6 +7,7 @@ mod damage_taken;
 mod duration;
 mod event_filter;
 mod group;
+mod incident;
 mod player;
 
 /// The refusal of a source game event that has no qualified Shadowkeep event.
@@ -108,19 +109,29 @@ pub(super) fn read(
         return Ok(Some(NativeNode { kind: 33, bytes }));
     }
     if (class, kind) == (0x808030D4, 12) {
+        let event: u32 = match (p.u32(at + 8)?, p.u32(at + 12)?) {
+            (0x6CEC7A87, 0x18CCBF24) => 0x6CEC7A87,
+            (0xB3311944, 0xC7161F86) => 0xB3311944,
+            (0xFBB59A0D, 0x4FE19919) => 0xFBB59A0D,
+            (0x83B708DF, 0x4FE19919) => 0x83B708DF,
+            (0x7E1308AB, 0xCBA6406B) => 0x7E1308AB,
+            (0x34FD8483, 0x4CF2C008) => 0x34FD8483,
+            // The source registry `81656529` derives `5C499528` from the kill event `790C2A95`
+            // through `9B60AB3F` and `FD485923`, whose `808021A3` filters add victim race 2 and
+            // the precision damage label `962EA19B`. Shadowkeep registers no event of that name.
+            // Its table `80B9E5BF` derives `633A260E` from the same `9B60AB3F` with one `80806455`
+            // filter holding the same race byte and label, and nothing else. `killing_player` is a
+            // member of the kill event in both games. No stock record listens for `633A260E`, so
+            // delivery to a perk is a gameplay question.
+            (0x5C499528, 0x4FE19919) => 0x633A260E,
+            _ => {
+                return incident::kill(source, p, at, native)?
+                    .context(ABSENT_GAME_EVENT)
+                    .map(Some);
+            }
+        };
         ensure!(
-            (0.0..=1.0).contains(&p.f32(at)?)
-                && p.u8(at + 4)? == 0xFF
-                && p.u8(at + 6)? == 0
-                && matches!(
-                    (p.u32(at + 8)?, p.u32(at + 12)?),
-                    (0x6CEC7A87, 0x18CCBF24)
-                        | (0xB3311944, 0xC7161F86)
-                        | (0xFBB59A0D, 0x4FE19919)
-                        | (0x83B708DF, 0x4FE19919)
-                        | (0x7E1308AB, 0xCBA6406B)
-                        | (0x34FD8483, 0x4CF2C008)
-                ),
+            (0.0..=1.0).contains(&p.f32(at)?) && p.u8(at + 4)? == 0xFF && p.u8(at + 6)? == 0,
             "{ABSENT_GAME_EVENT}"
         );
         // Source 76C450 and native 107DD50 compare the event value, then resolve
@@ -141,10 +152,9 @@ pub(super) fn read(
         // Other source activity signals still need their own producer evidence.
         // Byte +7 is a compiled condition index, not a reserved flag. Native
         // compilation rebuilds it, including the FF sentinel on extension children.
-        return Ok(Some(NativeNode {
-            kind,
-            bytes: p.bytes::<16>(at)?.to_vec(),
-        }));
+        let mut bytes = p.bytes::<16>(at)?.to_vec();
+        bytes[8..12].copy_from_slice(&event.to_le_bytes());
+        return Ok(Some(NativeNode { kind, bytes }));
     }
     if (class, kind) == (0x8080320C, 26) {
         return accumulator::read(source, p, at, native).map(Some);

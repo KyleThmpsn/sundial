@@ -17,6 +17,7 @@ workspace = true
 [features]
 default = []
 d2-model-importer = ["parhelion/d2-model-importer"]
+dawn = ["parhelion/dawn"]
 
 [dependencies]
 parhelion = { path = "../parhelion" }

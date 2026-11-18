@@ -85,6 +85,12 @@ const STRAND_COLOR: [u8; 19] = [
     0x3e, 1, 1, 7, 0x23, 0x22, 0, 0x34, 0x0b, 0x0f, 0x23, 0x22, 0, 0x35, 0x0c, 0x3f, 1, 3, 1,
 ];
 const STRAND_STOPS: [usize; 2] = [12, 13];
+/// The single ribbon's width program in section 4: curved age between constants 3 and 4 X, 0.015
+/// and 0.025 on the donor, into row 4 Y.
+const STRAND_WIDTH: [u8; 19] = [
+    0x3e, 1, 2, 7, 0x23, 0x22, 0, 0x34, 0x02, 0x0f, 0x23, 0x22, 0, 0x35, 0x03, 0x3f, 1, 4, 5,
+];
+const STRAND_WIDTHS: [usize; 2] = [3, 4];
 
 fn luminance(rgb: [f32; 3]) -> f32 {
     0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
@@ -131,6 +137,32 @@ fn constant(d: &Payload, index: usize) -> Result<[f32; 4]> {
     ])
 }
 
+/// Writes `value` to the default lane that route `index` of definition `d` reads. The route must
+/// read a default (bank 6) no other route shares.
+fn set_default(d: &mut Payload, index: usize, value: f32) -> Result<()> {
+    let route = |d: &Payload, index: usize| -> Result<(u8, u8)> {
+        Ok((d.u8(0x80 + index * 2)?, d.u8(0x81 + index * 2)?))
+    };
+    let (bank, scalar) = route(d, index)?;
+    ensure!(
+        bank == 6,
+        "Fallen bolt route {index} does not read a default"
+    );
+    let readers = (0..56)
+        .filter(|&other| route(d, other).ok() == Some((6, scalar)))
+        .count();
+    ensure!(readers == 1, "Fallen bolt route {index} shares its default");
+    let defaults = d.array(8, 16, Some(0x8080_0090))?;
+    let row = *defaults
+        .get(usize::from(scalar) / 4)
+        .context("Fallen bolt default")?;
+    put(
+        &mut d.0,
+        row + usize::from(scalar % 4) * 4,
+        &value.to_le_bytes(),
+    )
+}
+
 /// The streak beam `d` as a re-emitted flight beam (see `volume`): new life (route 5) and rate
 /// (route 10) defaults, each a lane no other route reads, the life ceiling, and section 5
 /// multiplying the intensity it stores in row 2 W by the age weight. Route 0 publishes the
@@ -143,31 +175,11 @@ fn reemit(d: &mut Payload) -> Result<Value> {
         d.u8(0x14b)? == 5 && route(d, 0)? == (1, 7),
         "Fallen bolt streak is not a beam with a published age"
     );
-    let defaults = d.array(8, 16, Some(0x8080_0090))?;
     for (index, value) in [
         (5, volume::BEAM_LIFE),
         (10, volume::BEAM_OVERLAP / volume::BEAM_LIFE),
     ] {
-        let (bank, scalar) = route(d, index)?;
-        ensure!(
-            bank == 6,
-            "Fallen bolt streak route {index} does not read a default"
-        );
-        let readers = (0..56)
-            .filter(|&other| route(d, other).ok() == Some((6, scalar)))
-            .count();
-        ensure!(
-            readers == 1,
-            "Fallen bolt streak route {index} shares its default"
-        );
-        let row = *defaults
-            .get(usize::from(scalar) / 4)
-            .context("Fallen bolt streak default")?;
-        put(
-            &mut d.0,
-            row + usize::from(scalar % 4) * 4,
-            &value.to_le_bytes(),
-        )?;
+        set_default(d, index, value)?;
     }
     put(&mut d.0, 0x120, &(volume::BEAM_LIFE + 0.05).to_le_bytes())?;
 
@@ -467,11 +479,16 @@ fn literal(
     ))
 }
 
+/// The single ribbon recolored between the `first` and `last` source stops. `shape` gives it a
+/// source sample lifetime in seconds and a half width in metres in place of the donor's, with
+/// the width held along the ribbon. That row 4 Y is a half width is inferred from the sprite
+/// rows, not read from the ribbon's vertex program.
 fn strand(
     native: &mut Reader,
     graph: &mut Graph,
     prefix: &str,
     [first, last]: [[f32; 3]; 2],
+    shape: Option<(f32, f32)>,
 ) -> Result<(String, Value)> {
     let name = format!("{prefix}-strand");
     let definition_tag = native.tag(STRAND, Some(SYSTEM_CLASS))?.u32(0)?;
@@ -486,6 +503,26 @@ fn strand(
         let color = matched(stop, [r, g, b])?;
         set_constant(&mut definition, index, color)?;
         written.push(color);
+    }
+    if let Some((life, radius)) = shape {
+        ensure!(
+            life.is_finite() && life > 0. && radius.is_finite() && radius > 0.,
+            "Source ribbon shape is invalid"
+        );
+        ensure!(
+            section(&definition, 4)?
+                .windows(STRAND_WIDTH.len())
+                .filter(|window| *window == STRAND_WIDTH)
+                .count()
+                == 1,
+            "Fallen bolt strand width program differs"
+        );
+        for index in STRAND_WIDTHS {
+            let [_, y, z, _] = constant(&definition, index)?;
+            set_constant(&mut definition, index, [radius, y, z])?;
+        }
+        set_default(&mut definition, 5, life)?;
+        put(&mut definition.0, 0x120, &(life + 0.05).to_le_bytes())?;
     }
     graph.add(
         &format!("{name}-definition"),
@@ -506,8 +543,60 @@ fn strand(
     )?;
     Ok((
         symbol,
-        json!({"donor_system":format!("{STRAND:08X}"),"written_stops":written}),
+        json!({"donor_system":format!("{STRAND:08X}"),"written_stops":written,
+            "life_seconds":shape.map(|shape| shape.0),"half_width_metres":shape.map(|shape| shape.1)}),
     ))
+}
+
+/// A source contrail profile as the single ribbon alone, and the locators its donor event binds:
+/// ordinal 0 its emitter and ordinal 1 its frame, the bolt's `root` and `world_space`.
+pub(in crate::halo_reach) struct Ribbon {
+    pub symbol: String,
+    pub locators: Vec<u8>,
+    pub report: Value,
+}
+
+/// The single ribbon with `profile`'s colors, sample lifetime and greatest half width, for a
+/// host that carries its emitter through the world, as a vehicle carries a trail marker. The
+/// ribbon joins each sample to the emitter's earlier positions, so it follows the path and faces
+/// the view. Its fade along its length, sample rate and texture stay the donor's.
+pub(in crate::halo_reach) fn ribbon(
+    cache: &Cache,
+    pages: &mut Pages,
+    native: &mut Reader,
+    graph: &mut Graph,
+    profile: &trail::Profile,
+    prefix: &str,
+    metres: f32,
+) -> Result<Ribbon> {
+    let tint = profile.palette_tint(cache, pages)?;
+    let stops = profile
+        .color
+        .stops()?
+        .into_iter()
+        .map(|stop| [0, 1, 2].map(|i| stop[i] * tint[i]))
+        .collect::<Vec<_>>();
+    let first = *stops.first().context("Source contrail color stops")?;
+    let last = *stops.last().context("Source contrail color stops")?;
+    let shape = (profile.life(), profile.radius(metres)?);
+    let donor = native.tag(OWNER, Some(0x8080_9c36))?;
+    let row = donor.array(event_of(&donor, STRAND)? + 0x40, 24, Some(0x8080_6cc8))?[0];
+    let locators = donor
+        .array(row, 1, Some(0x8080_0009))?
+        .into_iter()
+        .map(|at| donor.u8(at))
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        !locators.is_empty() && locators.iter().all(|&ordinal| ordinal < 2),
+        "Fallen bolt strand binds another locator"
+    );
+    let (symbol, report) = strand(native, graph, prefix, [first, last], Some(shape))?;
+    Ok(Ribbon {
+        symbol,
+        locators,
+        report: json!({"ribbon":report,"source_stops":stops,"palette_tint":tint,
+            "limits":["The ribbon's fade along its length, sample rate and texture stay the donor's. The source profile's alpha, tiling, scrolling and width change over the contrail's age are not carried."]}),
+    })
 }
 
 /// The Fallen bolt's streak and ribbons, recolored to the source contrail, as the only events
@@ -574,7 +663,7 @@ pub(super) fn host(
         systems.push((symbol, bindings(spec.system)?));
         reports.push(report);
     }
-    let (symbol, report) = strand(native, graph, prefix, [first, last])?;
+    let (symbol, report) = strand(native, graph, prefix, [first, last], None)?;
     systems.push((symbol, bindings(STRAND)?));
     reports.push(report);
     // The bolt's ordinal 0, its emitter, maps to the host marker below and 1 to `world_space`, the

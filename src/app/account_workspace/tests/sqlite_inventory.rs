@@ -2,12 +2,12 @@
 
 use super::*;
 use crate::app::inventory::{NewInventoryItem, set_inventory_locked_flag};
-use crate::persistence::sqlite_account::SqliteAccountDocument;
+use crate::persistence::sunrise_account::SunriseAccountDocument;
 use sundial_account::EquipmentSlot;
 
-fn sqlite_document(document: &WorkspaceDocument) -> &SqliteAccountDocument {
+fn sqlite_document(document: &WorkspaceDocument) -> &SunriseAccountDocument {
     match &document.account {
-        AccountDocument::Sqlite(sqlite) => sqlite,
+        AccountDocument::Sunrise(sqlite) => sqlite,
         _ => panic!("fixture should select SQLite"),
     }
 }
@@ -21,10 +21,10 @@ fn load_fixture(directory: &TestDirectory) -> WorkspaceDocument {
 }
 
 fn save_fixture(document: &mut WorkspaceDocument, directory: &TestDirectory) {
-    let AccountDocument::Sqlite(sqlite) = &mut document.account else {
+    let AccountDocument::Sunrise(sqlite) = &mut document.account else {
         panic!("fixture should select SQLite");
     };
-    crate::persistence::sqlite_account::tests::save_fixture_document(
+    crate::persistence::sunrise_account::tests::save_fixture_document(
         sqlite,
         &directory.0.join("before-save.sqlite3"),
     );
@@ -48,7 +48,7 @@ fn equip_subclass(document: &mut WorkspaceDocument, item_index: usize) {
 fn new_subclass_abilities_survive_swaps_before_save_and_reload_while_stored() {
     let directory = TestDirectory::new("sqlite-new-subclass-abilities");
     let database_path = directory.0.join("data").join("investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&database_path, 3);
     set_fixture_inventory_subclass_abilities(&database_path, [5, 7, 10, 11, 2]);
     let mut document = load_fixture(&directory);
     let location =
@@ -103,7 +103,7 @@ fn new_subclass_abilities_survive_swaps_before_save_and_reload_while_stored() {
 fn replacing_the_last_loaded_item_does_not_reuse_its_persistence_state() {
     let directory = TestDirectory::new("sqlite-replaced-item-identity");
     let database_path = directory.0.join("data").join("investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&database_path, 3);
     set_fixture_inventory_subclass_abilities(&database_path, [6, 8, 20, 21, 3]);
     let mut document = load_fixture(&directory);
     let removed_id = sqlite_document(&document).characters().characters()[0].inventory[0].id;
@@ -136,7 +136,7 @@ fn replacing_the_last_loaded_item_does_not_reuse_its_persistence_state() {
 fn removing_a_new_subclass_does_not_leak_its_unsaved_ability_selection() {
     let directory = TestDirectory::new("sqlite-removed-new-subclass");
     let database_path = directory.0.join("data").join("investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&database_path, 3);
     set_fixture_inventory_subclass_abilities(&database_path, [5, 7, 10, 11, 2]);
     let mut document = load_fixture(&directory);
     let location =
@@ -167,7 +167,7 @@ fn sqlite_lock_controls_preserve_masterwork_flags_for_stored_and_equipped_items(
     const FLAGS: u32 = 5;
     let directory = TestDirectory::new("sqlite-opaque-item-flags");
     let database_path = directory.0.join("data").join("investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&database_path, FLAGS);
+    crate::persistence::sunrise_account::tests::create_fixture(&database_path, FLAGS);
     Connection::open(&database_path)
         .unwrap()
         .execute(

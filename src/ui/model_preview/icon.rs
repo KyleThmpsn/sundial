@@ -129,13 +129,7 @@ fn local_render(
     programs: bool,
 ) -> Result<Artwork, String> {
     validate(pose, frame, size)?;
-    if [lighting.key, lighting.fill, lighting.exposure]
-        .iter()
-        .any(|v| !v.is_finite() || !(0.0..=16.0).contains(v))
-        || lighting.exposure <= 0.0
-    {
-        return Err("Invalid icon lighting".into());
-    }
+    validate_lighting(lighting)?;
     let model = appearance.load(packages, &model_preview::Load::default(), None, None)?;
     if programs {
         let missing = (0..model.triangles.len())
@@ -159,6 +153,37 @@ fn local_render(
         }
     }
     draw(&model, pose, frame, lighting, size)
+}
+
+/// Render an installed appearance, an arrangement with the dyes a shader gives it, as the
+/// preview reads it: the artwork of an item that keeps its stock model under another shader.
+pub fn appearance(
+    packages: &Path,
+    appearance: &Appearance,
+    pose: Pose,
+    frame: Frame,
+    lighting: Lighting,
+    size: usize,
+) -> Result<Artwork, String> {
+    validate(pose, frame, size)?;
+    validate_lighting(lighting)?;
+    let model = model_preview::appearance::load_reported(
+        packages,
+        appearance,
+        &model_preview::Load::default(),
+    )?;
+    draw(&model, pose, frame, lighting, size)
+}
+
+fn validate_lighting(lighting: Lighting) -> Result<(), String> {
+    if [lighting.key, lighting.fill, lighting.exposure]
+        .iter()
+        .any(|v| !v.is_finite() || !(0.0..=16.0).contains(v))
+        || lighting.exposure <= 0.0
+    {
+        return Err("Invalid icon lighting".into());
+    }
+    Ok(())
 }
 
 fn validate(pose: Pose, frame: Frame, size: usize) -> Result<(), String> {

@@ -17,6 +17,7 @@ pub struct Mesh {
     pub rests: BTreeMap<u32, usize>,
 }
 
+#[derive(Clone)]
 pub struct Surface {
     pub material: u32,
     pub model: u32,
@@ -28,6 +29,8 @@ pub struct Surface {
     pub has_colors: bool,
     pub lens: Option<Lens>,
     pub cutout: Option<Lens>,
+    /// The draw is the rim around an aperture's glass, which the aperture cutout leaves whole.
+    pub frame: bool,
     /// The aimed view that shows this transparent draw, when it is glass ahead of an enclosed
     /// sight's source eye.
     pub framed: Option<Framing>,
@@ -246,8 +249,6 @@ pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mes
                     if faces.is_empty() {
                         continue;
                     }
-                    let key =
-                        u32::try_from(out.surfaces.len()).context("Marathon material count")?;
                     let scale = [b.f32(0xa0)?, b.f32(0xa4)?, b.f32(0xa8)?];
                     let offset = [b.f32(0xb0)?, b.f32(0xb4)?, b.f32(0xb8)?];
                     ensure!(
@@ -271,37 +272,33 @@ pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mes
                         }
                         _ => None,
                     };
-                    out.surfaces.insert(
-                        key,
-                        Surface {
-                            material,
-                            model: tag,
-                            entity: hash(entry, "entity")?,
-                            stage: stage as u8,
-                            transform: mat,
-                            scale,
-                            offset,
-                            has_colors: colors.is_some(),
-                            framed,
-                            // The aperture's own mask draws take the scope adapter. Its glass is
-                            // ordinary transparent work and keeps its source material.
-                            lens: aperture
-                                .as_ref()
-                                .filter(|_| stage == 15)
-                                .map(|lens| lens.placed(&mat)),
-                            // An enclosed sight hides every surface at full aim instead, and its
-                            // source draws an unbroken eyepiece before that.
-                            cutout: aperture
-                                .as_ref()
-                                .filter(|lens| {
-                                    !lens.enclosed
-                                        && !lens.outline.is_empty()
-                                        && matches!(stage, 0 | 4 | 13)
-                                })
-                                .map(|lens| lens.placed(&mat)),
-                        },
-                    );
-                    selected.push((key, faces));
+                    // An enclosed sight hides every surface at full aim instead, and its source
+                    // draws an unbroken eyepiece before that.
+                    let cutout = aperture.as_ref().filter(|lens| {
+                        !lens.enclosed && !lens.outline.is_empty() && matches!(stage, 0 | 4 | 13)
+                    });
+                    // The rim that holds the glass keeps its fragments, as its own draw.
+                    let sets = scope::split(cutout, &b, &p, posed.as_deref(), faces)?;
+                    let surface = Surface {
+                        material,
+                        model: tag,
+                        entity: hash(entry, "entity")?,
+                        stage: stage as u8,
+                        transform: mat,
+                        scale,
+                        offset,
+                        has_colors: colors.is_some(),
+                        framed,
+                        // The aperture's own mask draws take the scope adapter. Its glass is
+                        // ordinary transparent work and keeps its source material.
+                        lens: aperture
+                            .as_ref()
+                            .filter(|_| stage == 15)
+                            .map(|lens| lens.placed(&mat)),
+                        cutout: cutout.map(|lens| lens.placed(&mat)),
+                        frame: false,
+                    };
+                    place(&mut out, &mut selected, &surface, sets)?;
                 }
             }
             append(
@@ -320,6 +317,28 @@ pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mes
     Ok(out)
 }
 type Draw = (u32, Vec<[u32; 3]>);
+
+/// Adds a source draw as one surface per triangle set. A rim set, flagged, takes no cutout.
+fn place(
+    out: &mut Mesh,
+    selected: &mut Vec<Draw>,
+    surface: &Surface,
+    sets: Vec<(Vec<[u32; 3]>, bool)>,
+) -> Result<()> {
+    for (faces, frame) in sets {
+        let key = u32::try_from(out.surfaces.len()).context("Marathon material count")?;
+        out.surfaces.insert(
+            key,
+            Surface {
+                cutout: surface.cutout.clone().filter(|_| !frame),
+                frame,
+                ..surface.clone()
+            },
+        );
+        selected.push((key, faces));
+    }
+    Ok(())
+}
 
 fn faces(
     model: &Payload,
@@ -445,7 +464,7 @@ fn append(
 
 pub use crate::presentation::geometry::Encoded;
 pub fn encode(mesh: &Mesh, native: &Payload, native_mesh: usize) -> Result<Encoded> {
-    crate::presentation::geometry::encode_source_passes(
+    crate::presentation::geometry::encode_weapon_passes(
         &crate::presentation::geometry::Mesh {
             positions: mesh.positions.clone(),
             attributes: mesh.attributes.clone(),
@@ -501,6 +520,7 @@ mod tests {
                             has_colors: false,
                             lens: None,
                             cutout: None,
+                            frame: false,
                             framed: None,
                         },
                     )

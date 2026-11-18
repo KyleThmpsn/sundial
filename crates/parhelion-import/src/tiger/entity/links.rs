@@ -17,7 +17,8 @@ pub struct Endpoint {
     pub namespace: u32,
     pub object: Option<Object>,
     /// Local component ordinal, 0xFFFF for disconnected, or an opaque external
-    /// selector. External selectors need their own explicitly supplied mapping.
+    /// selector. External selectors need their own explicitly supplied mapping. A named
+    /// Marathon external endpoint can have no object without being disconnected.
     pub selector: u64,
 }
 
@@ -65,6 +66,26 @@ impl Interface {
     /// The caller supplies the metadata referenced by the provider at +8.
     /// This applies to provider interfaces, not consumer parameter records.
     pub fn read(owner: &Payload, object: Object, metadata: &Payload, modern: bool) -> Result<Self> {
+        Self::read_layout(
+            owner,
+            object,
+            metadata,
+            if modern { 0x80809B25 } else { 0x80809C56 },
+        )
+    }
+
+    /// Marathon provider metadata has the same dispatch row fields with its own element class.
+    /// Matching ordinals describe source dispatch only, not a native method mapping.
+    pub fn read_marathon(owner: &Payload, object: Object, metadata: &Payload) -> Result<Self> {
+        Self::read_layout(owner, object, metadata, 0x8080BAFA)
+    }
+
+    fn read_layout(
+        owner: &Payload,
+        object: Object,
+        metadata: &Payload,
+        row_class: u32,
+    ) -> Result<Self> {
         ensure!(
             owner.u64(0)? == owner.0.len() as u64,
             "interface owner {:08X} class {:08X} at {:X} declares {} bytes but contains {}",
@@ -92,7 +113,7 @@ impl Interface {
         let metadata_tag = owner.u32(at + 8)?;
         ensure!(metadata_tag != u32::MAX, "interface metadata is null");
         let methods = metadata
-            .array(16, 24, Some(if modern { 0x80809B25 } else { 0x80809C56 }))?
+            .array(16, 24, Some(row_class))?
             .into_iter()
             .map(|row| {
                 Ok(Method {
@@ -133,7 +154,18 @@ impl Graph {
         Self::read_layout(entity, false)
     }
 
+    /// Read Marathon's component occurrences and typed connections without translating them.
+    /// Its compact endpoints retain the modern field widths, with separate resource classes.
+    /// An external named endpoint can omit its object and still carry a live selector.
+    pub fn read_marathon(entity: &Payload) -> Result<Self> {
+        Self::read_profile(entity, true, true)
+    }
+
     fn read_layout(entity: &Payload, modern: bool) -> Result<Self> {
+        Self::read_profile(entity, modern, false)
+    }
+
+    fn read_profile(entity: &Payload, modern: bool, marathon: bool) -> Result<Self> {
         ensure!(
             entity.u64(0)? == entity.0.len() as u64,
             "entity file size differs"
@@ -142,7 +174,13 @@ impl Graph {
             .array(
                 if modern { 8 } else { 16 },
                 12,
-                Some(if modern { 0x80809ACD } else { 0x80809C04 }),
+                Some(if marathon {
+                    0x8080BAA2
+                } else if modern {
+                    0x80809ACD
+                } else {
+                    0x80809C04
+                }),
             )?
             .into_iter()
             .map(|at| entity.u32(at))
@@ -153,7 +191,13 @@ impl Graph {
         );
         let read = |descriptor| -> Result<Vec<Connection>> {
             let stride = if modern { 56 } else { 72 };
-            let class = if modern { 0x80809A8F } else { 0x80809BC9 };
+            let class = if marathon {
+                0x8080BA61
+            } else if modern {
+                0x80809A8F
+            } else {
+                0x80809BC9
+            };
             entity
                 .array(descriptor, stride, Some(class))?
                 .into_iter()
@@ -188,6 +232,13 @@ impl Graph {
                                     && object.offset == 0,
                                 "disconnected controller endpoint has a live reference"
                             );
+                            None
+                        } else if marathon
+                            && ordinal > 0xFFFF
+                            && object.owner == u32::MAX
+                            && object.class == u32::MAX
+                            && object.offset == 0
+                        {
                             None
                         } else {
                             if ordinal < 0xFFFF {
@@ -332,6 +383,10 @@ impl Graph {
                             owner.bytes::<16>(usize::try_from(target.offset)?)?;
                             (target, ordinal)
                         } else {
+                            ensure!(
+                                endpoint.selector == 0xFFFF,
+                                "untranslated external named controller endpoint"
+                            );
                             (
                                 Object {
                                     owner: u32::MAX,

@@ -105,7 +105,7 @@ pub(in crate::item) fn build_private_perk_residency_chain(
         manager,
         PRIVATE_PERK_RESIDENCY_COMPANION_TEMPLATE,
         0x08,
-        crate::format::SHARED_TAG_COMPANION_CLASS,
+        crate::package::format::SHARED_TAG_COMPANION_CLASS,
         PRIVATE_PERK_RESIDENCY_COMPANION_TEMPLATE_SIZE,
         "private perk residency companion",
     )?;

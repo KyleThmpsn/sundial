@@ -101,7 +101,7 @@ pub(in crate::app) fn for_source(directory: &TestDirectory, sqlite: bool) -> Sun
     ))
     .unwrap();
     if sqlite {
-        crate::persistence::sqlite_account::tests::create_fixture(
+        crate::persistence::sunrise_account::tests::create_fixture(
             &directory.0.join("data/investment.sqlite3"),
             3,
         );

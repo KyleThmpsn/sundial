@@ -12,8 +12,7 @@ use sundial::package_authoring::entity::{
     weapon_component_binding_hashes, weapon_component_bindings,
 };
 use sundial::package_authoring::runtime::{
-    load_weapon_runtime_entity_at_pattern_index_with_manager,
-    load_weapon_runtime_entity_with_manager,
+    load_runtime_entity_at_pattern_index_with_manager, load_runtime_entity_with_manager,
 };
 
 type Slot = sundial::investment::WeaponInventorySlot;
@@ -285,9 +284,9 @@ fn rig(
 ) -> Result<&'static str, String> {
     const ATTACHMENT: u32 = 0xD3A5_500E;
     const MARKER_SET: u32 = 0x04CE_0B42;
-    let authored = load_weapon_runtime_entity_with_manager(staged, item)?;
-    let base = load_weapon_runtime_entity_at_pattern_index_with_manager(stock, base)?;
-    let look = load_weapon_runtime_entity_at_pattern_index_with_manager(stock, appearance)?;
+    let authored = load_runtime_entity_with_manager(staged, item)?;
+    let base = load_runtime_entity_at_pattern_index_with_manager(stock, base)?;
+    let look = load_runtime_entity_at_pattern_index_with_manager(stock, appearance)?;
     let owners = |entity: &[u8], binding: u32| {
         weapon_component_bindings(entity, binding)
             .ok()

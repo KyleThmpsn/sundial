@@ -9,7 +9,7 @@ pub(super) enum Value {
     /// or the input's coefficient when `scaling`. Each constant row holds its value in all four
     /// lanes.
     Timer {
-        fields: Vec<WeaponRuntimeField>,
+        fields: Vec<RuntimeField>,
         scaling: bool,
     },
     Flight(Vec<Parameter>),
@@ -20,11 +20,11 @@ pub(super) enum Value {
     Setting(Vec<Setting>),
     /// A modifier's amount: a factor when it multiplies, else an amount it adds.
     Amount {
-        fields: Vec<WeaponRuntimeField>,
+        fields: Vec<RuntimeField>,
         multiply: bool,
     },
     /// A named float of a component whose meaning is established.
-    Field(Vec<WeaponRuntimeField>),
+    Field(Vec<RuntimeField>),
     /// A movement controller value inside an opaque field.
     Movement(Vec<MovementValue>),
 }
@@ -37,7 +37,7 @@ pub(super) struct Property {
     pub(super) value: Value,
 }
 
-pub(super) type PropertySignature = (String, u32, u8, Option<(WeaponRuntimeFieldLocator, u32)>);
+pub(super) type PropertySignature = (String, u32, u8, Option<(RuntimeFieldLocator, u32)>);
 
 impl Property {
     /// What two properties share when one tile stands for both. Conditional damage rows stay
@@ -72,7 +72,7 @@ impl Property {
     }
 
     /// Grouped controls must disclose differing saved values instead of showing only the first.
-    pub(super) fn mixed(&self, values: &[WeaponRuntimeValueOverride]) -> bool {
+    pub(super) fn mixed(&self, values: &[RuntimeValueOverride]) -> bool {
         let readings = match &self.value {
             Value::Duration(items) => items
                 .iter()
@@ -132,7 +132,7 @@ impl Property {
     }
 
     /// The value it shows: its first value's own, else the stock one.
-    pub(super) fn current(&self, values: &[WeaponRuntimeValueOverride]) -> f32 {
+    pub(super) fn current(&self, values: &[RuntimeValueOverride]) -> f32 {
         let edited = match &self.value {
             Value::Duration(lengths) => lengths
                 .first()
@@ -158,7 +158,7 @@ impl Property {
         edited.unwrap_or(self.stock)
     }
 
-    pub(super) fn is_modified(&self, values: &[WeaponRuntimeValueOverride]) -> bool {
+    pub(super) fn is_modified(&self, values: &[RuntimeValueOverride]) -> bool {
         match &self.value {
             Value::Duration(lengths) => lengths
                 .iter()
@@ -186,7 +186,7 @@ impl Property {
 
     /// Sets the Unlimited flag of a length saved as Unlimited without it, so the length never
     /// ends, as it reads.
-    pub(super) fn keep_unlimited(&self, values: &mut Vec<WeaponRuntimeValueOverride>) {
+    pub(super) fn keep_unlimited(&self, values: &mut Vec<RuntimeValueOverride>) {
         let Value::Duration(lengths) = &self.value else {
             return;
         };
@@ -209,7 +209,7 @@ impl Property {
     }
 
     /// Sets every value it stands for to `value`.
-    pub(super) fn set(&self, values: &mut Vec<WeaponRuntimeValueOverride>, value: f32) {
+    pub(super) fn set(&self, values: &mut Vec<RuntimeValueOverride>, value: f32) {
         match &self.value {
             // Unlimited is -1 with the timer's flag set, and a length takes back the stock flag.
             Value::Duration(lengths) => {
@@ -243,11 +243,7 @@ impl Property {
             }
             Value::Amount { fields, .. } | Value::Field(fields) => {
                 for field in fields {
-                    put(
-                        values,
-                        field,
-                        WeaponRuntimeValue::Float32Bits(value.to_bits()),
-                    );
+                    put(values, field, RuntimeValue::Float32Bits(value.to_bits()));
                 }
             }
             Value::Movement(movement) => {
@@ -274,7 +270,7 @@ impl Property {
         }
     }
 
-    pub(super) fn reset(&self, values: &mut Vec<WeaponRuntimeValueOverride>) {
+    pub(super) fn reset(&self, values: &mut Vec<RuntimeValueOverride>) {
         match &self.value {
             Value::Duration(lengths) => {
                 values.retain(|each| {
@@ -450,7 +446,7 @@ pub(super) fn setting_choice(names: &[&'static str], value: f64) -> Option<&'sta
 pub(super) fn idle(
     property: &Property,
     siblings: &[Property],
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
 ) -> bool {
     let Value::Setting(settings) = &property.value else {
         return false;
@@ -558,7 +554,7 @@ pub(super) fn keep_ordered(
     property: &Property,
     before: f32,
     siblings: &[Property],
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     let after = property.current(values);
     if after.to_bits() == before.to_bits() {
@@ -613,7 +609,7 @@ pub(super) fn keep_ordered(
 /// A card's settings, read with the draft's values, as the settings that can turn another off.
 pub(super) struct Gate<'a> {
     pub(super) siblings: &'a [Property],
-    pub(super) values: &'a [WeaponRuntimeValueOverride],
+    pub(super) values: &'a [RuntimeValueOverride],
 }
 
 impl Gate<'_> {
@@ -688,7 +684,7 @@ pub(super) fn shown(
     property: &Property,
     siblings: &[Property],
     lanes: &[&RowLane],
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
 ) -> bool {
     confirmed(property)
         && !more(property)

@@ -79,7 +79,7 @@ pub(super) fn readback(
                 );
                 evidence.push(json!({"occurrence":occurrence,"source_owner":source_tag,
                     "native_owner":tag,"source_event":source_event,"event":event,
-                    "kind":"hud_override","resource":resource,"native_owner_sha256":sha(&native.0)}));
+                    "kind":"hud_override","resource":resource,"native_owner_sha256":sha256_hex(&native.0)}));
                 hud_count += 1;
                 continue;
             }
@@ -101,7 +101,7 @@ pub(super) fn readback(
                 evidence.push(json!({"occurrence":occurrence,"source_owner":source_tag,
                     "native_owner":tag,"source_event":source_event,"event":event,
                     "kind":"ability_completion","slot_binding":"controller_startup",
-                    "native_owner_sha256":sha(&native.0)}));
+                    "native_owner_sha256":sha256_hex(&native.0)}));
                 continue;
             }
             assert_eq!(native.u32(event + 0x30).unwrap(), 18);
@@ -155,7 +155,7 @@ pub(super) fn readback(
             evidence.push(
                 json!({"occurrence":occurrence,"source_owner":source_tag,"native_owner":tag,
                 "event":event,"source_event":source_event,"action":native.u32(event+0x38).unwrap(),
-                "native_owner_sha256":sha(&native.0)}),
+                "native_owner_sha256":sha256_hex(&native.0)}),
             );
         }
     }

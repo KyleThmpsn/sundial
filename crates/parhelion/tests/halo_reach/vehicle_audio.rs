@@ -1,11 +1,7 @@
 //! Follow vehicle playback to source PCM from an independently retained working recipe.
 use super::*;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
+use sundial::storage::sha256_hex;
 
 fn pcm(bytes: &[u8]) -> Result<Value> {
     ensure!(
@@ -26,8 +22,8 @@ fn pcm(bytes: &[u8]) -> Result<Value> {
             .get(at + 8..at + 8 + size)
             .context("Truncated vehicle audio chunk")?;
         match &bytes[at..at + 4] {
-            b"fmt " => format = Some(digest(body)),
-            b"data" => data = Some(digest(body)),
+            b"fmt " => format = Some(sha256_hex(body)),
+            b"data" => data = Some(sha256_hex(body)),
             _ => {}
         }
         at += 8 + size + (size & 1);
@@ -61,7 +57,9 @@ fn sound(
         let bytes = staged.tag(tag, None)?;
         let decoded = pcm(&bytes.0)?;
         actual.push(serde_json::to_string(&decoded)?);
-        media.push(json!({"tag":format!("{tag:08X}"),"sha256":digest(&bytes.0),"decoded":decoded}));
+        media.push(
+            json!({"tag":format!("{tag:08X}"),"sha256":sha256_hex(&bytes.0),"decoded":decoded}),
+        );
     }
     let mut wanted = expected
         .as_array()
@@ -77,7 +75,7 @@ fn sound(
         "Vehicle audio differs from the retained source recordings"
     );
     Ok(
-        json!({"cue":format!("{tag:08X}"),"bank":format!("{bank_tag:08X}"),"bank_sha256":digest(&bank.0),"started_layers":layers,"looping":looping,"media":media}),
+        json!({"cue":format!("{tag:08X}"),"bank":format!("{bank_tag:08X}"),"bank_sha256":sha256_hex(&bank.0),"started_layers":layers,"looping":looping,"media":media}),
     )
 }
 

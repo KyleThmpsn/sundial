@@ -564,8 +564,9 @@ pub(super) fn read(
 /// Whether an attach effect takes the [`closure`] route: every attachment to the event's other
 /// combatant, attachments of other targets whose graph has more owners than the dedicated
 /// one-, two- and three-owner forms, status pairs led by the shared framework network, a status
-/// beside a sequence alone, and three-owner graphs not led by a timed status, which is the only
-/// three-owner dedicated form.
+/// beside a sequence alone, three-owner graphs not led by a timed status, and a timed status
+/// beside a sequence and a channel bank that inherits nothing. The remaining three-owner graphs
+/// led by a timed status take the dedicated sound form.
 /// Eliksni Immunity's status follows the framework network, as Touch of Malice's status and
 /// Duration host do, and Devil's Touch's status follows two other owners.
 pub(super) fn closure_form(source: &Source, p: &Payload, at: usize) -> Result<bool> {
@@ -598,11 +599,23 @@ pub(super) fn closure_form(source: &Source, p: &Payload, at: usize) -> Result<bo
         // dedicated form. The sound form keeps a network as its third owner, and the conditional
         // form's bank inherits the channel the status count reads.
         [status, companion] => {
+            // A query publishes its own outputs and carries the shared network beside it.
+            // The complete effect route checks both owners and every graph connection.
+            if class(*status)? == 0x8080_3136 && *companion == 0x80AA_CEA6 {
+                return Ok(true);
+            }
+            // A standalone Duration host beside a sequence is the lens form: the host keeps the
+            // sequence's screen color event alive while the item is equipped.
+            if class(*status)? == 0x8080_29C3 && class(*companion)? == 0x8080_0610 {
+                return Ok(true);
+            }
             if class(*status)? != 0x8080_2698 {
                 return Ok(false);
             }
             match class(*companion)? {
                 0x8080_0610 => Ok(true),
+                // An ability restriction beside its status has a native owner of the same masks.
+                0x8080_2518 => Ok(true),
                 // The conditional form's bank inherits the channel its count reads, so only a
                 // bank that inherits nothing leaves the dedicated route.
                 0x8080_08F6 => {
@@ -612,7 +625,19 @@ pub(super) fn closure_form(source: &Source, p: &Payload, at: usize) -> Result<bo
                 _ => Ok(false),
             }
         }
-        [leader, _, _] => Ok(class(*leader)? != 0x8080_2698),
+        [leader, second, third] => {
+            if class(*leader)? != 0x8080_2698 {
+                return Ok(true);
+            }
+            // The sound form's third owner is a network. A status beside a sequence and a
+            // channel bank that inherits nothing joins the two closure pairs above in one graph,
+            // as Silimar's Joust's feedback status does with a sound and a particle event.
+            if class(*second)? != 0x8080_0610 || class(*third)? != 0x8080_08F6 {
+                return Ok(false);
+            }
+            let bank = source.read(*third)?;
+            Ok(bank.u64(bank.pointer(24)? + 0x108)? == 0)
+        }
         _ => Ok(false),
     }
 }
@@ -674,8 +699,19 @@ pub(super) fn closure(
         for row in graph.array(32, 12, Some(0x80800715))? {
             let owner_tag = graph.u32(row)?;
             let owner = source.read(owner_tag)?;
-            if owner.u32(owner.pointer(24)? - 4)? == 0x80802698 {
-                statuses.push(status_key(&owner, owner_tag)?);
+            let settings = owner.pointer(24)?;
+            match owner.u32(settings - 4)? {
+                0x80802698 => statuses.push(status_key(&owner, owner_tag)?),
+                // A standalone Duration host publishes its identity at `+104`, after the same
+                // flag word a status's Duration block holds at `+A0`.
+                0x808029C3 => {
+                    ensure!(
+                        owner.u32(settings + 0x100)? & !0x1F == 0,
+                        "Source attachment cleanup key needs a qualified Duration host"
+                    );
+                    statuses.push(owner.u32(settings + 0x104)?);
+                }
+                _ => {}
             }
         }
         ensure!(

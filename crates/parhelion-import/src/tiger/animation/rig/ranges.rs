@@ -224,10 +224,6 @@ pub(super) fn trail_procedural(
     append(out, instance + 0x40, 0x80808A06, rows, 8)
 }
 
-fn relative(bytes: &mut [u8], field: usize, target: usize) -> Result<()> {
-    put(bytes, field, &(target as i64 - field as i64).to_le_bytes())
-}
-
 pub(super) fn rebase(
     out: &mut [u8],
     original: &Payload,

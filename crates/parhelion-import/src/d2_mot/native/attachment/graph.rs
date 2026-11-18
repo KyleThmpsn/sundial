@@ -35,6 +35,7 @@ fn template(class: u32) -> Result<(u32, u32)> {
         0x8080433E => (0x80FEF780, 0x80BB75EE),
         0x8080313F => (0x80FEF6FD, 0x80BB74DC),
         0x80802939 => (0x80EF62A3, 0x80BAB778),
+        0x80802DB9 => (0x80EF8666, 0x80BB2FEB),
         _ => anyhow::bail!("attachment component {class:08X} has no native assembly"),
     })
 }
@@ -64,7 +65,15 @@ impl Plan {
             for &owner in &graph.components {
                 let original = &closure.owners[&owner];
                 let class = original.u32(original.pointer(24)? - 4)?;
-                let (template_tag, parent) = template(class)?;
+                // A stat modifier takes the shipped owner with its own row count.
+                let (template_tag, parent) = if class == 0x80802D2B {
+                    controller::stat::template(controller::stat::rows(original)?.len())?
+                } else if class == 0x8080B11F {
+                    // A status takes the shipped owner with its own modifier banks.
+                    controller::timed::template(original)?
+                } else {
+                    template(class)?
+                };
                 let envelope = native.tag(template_tag, None)?;
                 metadata(source, &[original], &mut metadata_table)?;
                 metadata(native, &[&envelope], &mut metadata_table)?;
@@ -266,6 +275,35 @@ impl Plan {
                     named(&result.named_conditions, bindings.selectors)?;
                     unbound.extend(result.unbound);
                     stable.extend(result.stable_inputs);
+                    (result.owner, result.allocation, result.objects)
+                }
+                0x80802DB9 => {
+                    let result = controller::timed::standalone(
+                        original,
+                        controller::timed::Templates {
+                            owner: &component.template,
+                            allocation: &allocation,
+                            scalar_input: &scalar_input,
+                            metadata: &self.metadata,
+                        },
+                        component.owner,
+                        component.allocation,
+                    )
+                    .with_context(|| format!("duration owner {:08X}", component.source))?;
+                    unbound.extend(result.unbound);
+                    stable.extend(result.stable_inputs);
+                    (result.owner, result.allocation, result.objects)
+                }
+                0x80802D2B => {
+                    let result = controller::stat::emit(
+                        original,
+                        &component.template,
+                        &allocation,
+                        component.owner,
+                        component.allocation,
+                    )
+                    .with_context(|| format!("stat modifier {:08X}", component.source))?;
+                    unbound.extend(result.unbound);
                     (result.owner, result.allocation, result.objects)
                 }
                 0x808032E5 => {

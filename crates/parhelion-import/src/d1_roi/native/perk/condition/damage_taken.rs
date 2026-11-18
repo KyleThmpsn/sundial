@@ -23,11 +23,11 @@ pub(super) fn read(
         "Source incoming event has unqualified state, distance or category restrictions"
     );
     // Source 76CFC0 checks this supplemental filter against the event's labels.
-    // Native 1080900 has no matching field. Only its canonical empty form is neutral.
+    // Native 1080900 has no matching field, so a nonempty one joins the single native
+    // label filter where that has an equivalent form.
+    let second = p.bytes::<64>(at + 0x98)? != [0; 64];
     ensure!(
-        p.bytes::<64>(at + 0x98)? == [0; 64]
-            && p.bytes::<128>(at + 0xE8)? == [0; 128]
-            && p.bytes::<4>(at + 0x168)? == [1; 4],
+        second || (p.bytes::<128>(at + 0xE8)? == [0; 128] && p.bytes::<4>(at + 0x168)? == [1; 4]),
         "Source incoming event has a supplemental label restriction"
     );
     let mut bytes = vec![0; 0xC8];
@@ -47,7 +47,12 @@ pub(super) fn read(
             links: BTreeMap::new(),
         }],
     };
-    filter::damage(source, p, at + 8, at + 0xD8, &mut graph, 8, native)?;
+    if second {
+        filter::types(p, at + 8, &mut graph, 8)?;
+        label::incoming(source, p, (at + 8, at + 0x98), &mut graph, 8 + 0x20, native)?;
+    } else {
+        filter::damage(source, p, at + 8, at + 0xD8, &mut graph, 8, native)?;
+    }
     player::ability_ranges(p, at + 0x178, &mut graph, 0xA8)?;
     graph
         .validate_node(NodeKind::Condition(5))

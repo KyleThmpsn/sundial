@@ -405,7 +405,7 @@ fn missing_importer_refuses_the_main_mod_and_switching_runtime_retires_the_famil
     assert!(
         !view
             .packages()
-            .join(crate::package_profile::PARHELION_ASSET_FILE_NAME)
+            .join(crate::package::profile::PARHELION_ASSET_FILE_NAME)
             .exists()
     );
     drop(view);

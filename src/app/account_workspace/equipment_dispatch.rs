@@ -5,7 +5,7 @@ use super::*;
 impl WorkspaceDocument {
     /// The JSON version does not upgrade the independent SQLite account contract.
     pub(in crate::app) fn supports_emote_collection(&self) -> bool {
-        self.source_kind() == AccountSourceKind::Sqlite
+        self.source_kind() == AccountSourceKind::Sunrise
             || (self.uses_json_account()
                 && crate::app::inventory::schema_mode(self.json()).supports_emote_collection())
     }
@@ -15,7 +15,7 @@ impl WorkspaceDocument {
             AccountSourceKind::Json => {
                 crate::app::inventory::schema_mode(self.json()).supports_masterwork_flags()
             }
-            AccountSourceKind::Sqlite => true,
+            AccountSourceKind::Sunrise => true,
             AccountSourceKind::Dawn | AccountSourceKind::Blocked => false,
         }
     }
@@ -46,7 +46,7 @@ pub(in crate::app) fn equipped_item_snapshots(
         AccountDocument::Json => {
             crate::app::equipment::equipped_item_snapshots(&document.json, character_index)
         }
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::equipped_item_snapshots(document, character_index)
         }
         AccountDocument::Blocked(_) => Err(blocked_string(document)),
@@ -86,7 +86,7 @@ pub(in crate::app) fn equip_definition(
             definition_hash,
             default_plugs,
         ),
-        AccountDocument::Sqlite(document) => sqlite::equip_definition(
+        AccountDocument::Sunrise(document) => sqlite::equip_definition(
             document,
             character_index,
             slot,
@@ -117,7 +117,7 @@ pub(in crate::app) fn set_equipment_item_level(
             slot,
             level,
         ),
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::set_equipment_item_level(document, character_index, slot, level)
         }
         AccountDocument::Blocked(reason) => Err(reason.clone()),
@@ -140,7 +140,7 @@ pub(in crate::app) fn set_equipment_item_flags(
             slot,
             flags,
         ),
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::set_equipment_item_flags(document, character_index, slot, flags)
         }
         AccountDocument::Blocked(reason) => Err(reason.clone()),
@@ -168,7 +168,7 @@ pub(in crate::app) fn set_equipment_item_plug(
             default_plugs,
             hash,
         ),
-        AccountDocument::Sqlite(document) => sqlite::set_equipment_item_plug(
+        AccountDocument::Sunrise(document) => sqlite::set_equipment_item_plug(
             document,
             character_index,
             slot,
@@ -197,7 +197,7 @@ pub(in crate::app) fn set_weapon_slot_empty(
         AccountDocument::Json => {
             crate::app::equipment::set_weapon_slot_empty(&mut document.json, character_index, slot)
         }
-        AccountDocument::Sqlite(document) => {
+        AccountDocument::Sunrise(document) => {
             sqlite::set_weapon_slot_empty(document, character_index, slot)
         }
         AccountDocument::Blocked(reason) => Err(reason.clone()),
@@ -218,7 +218,7 @@ pub(in crate::app) fn restore_class_armor(
             source_character_index,
             destination_character_index,
         ),
-        AccountDocument::Sqlite(document) => sqlite::restore_class_armor(
+        AccountDocument::Sunrise(document) => sqlite::restore_class_armor(
             document,
             source_character_index,
             destination_character_index,

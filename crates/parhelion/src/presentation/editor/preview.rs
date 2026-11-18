@@ -29,11 +29,11 @@ impl Editor {
                     Some(ContextPreview::Badge(mask)) => Some(mask.as_slice()),
                     _ => None,
                 };
-                crate::badge_icon::preview(Some(&current), mask)
+                crate::icon::badge::preview(Some(&current), mask)
                     .map(|image| color_image(&image))
                     .map_err(|e| e.to_string())
             }
-            _ => crate::watermark::render_custom_corner_preview(&current)
+            _ => crate::icon::watermark::render_custom_corner_preview(&current)
                 .map(|image| color_image(&image))
                 .map_err(|e| e.to_string()),
         };

@@ -44,23 +44,23 @@ use sundial::investment::{
     InvestmentCatalog, WeaponDamageProfile, WeaponDonorSummary, WeaponRarity,
 };
 use sundial::package_authoring::runtime::{
-    BindingHash, SchemaHandle, WeaponRuntimeField, WeaponRuntimeFieldLocator,
-    WeaponRuntimeFieldSource, WeaponRuntimeRootKind, WeaponRuntimeValue, WeaponRuntimeValueKind,
+    BindingHash, RuntimeField, RuntimeFieldLocator, RuntimeFieldSource, RuntimeRootKind,
+    RuntimeValue, RuntimeValueKind, SchemaHandle,
 };
 
 /// A generated-schema field named `name` at one fixed place in a weapon component's definition,
 /// for the runtime value editors' tests.
 pub(crate) fn runtime_field(
     name: &str,
-    kind: WeaponRuntimeValueKind,
-    value: WeaponRuntimeValue,
-) -> WeaponRuntimeField {
-    WeaponRuntimeField {
-        locator: WeaponRuntimeFieldLocator {
+    kind: RuntimeValueKind,
+    value: RuntimeValue,
+) -> RuntimeField {
+    RuntimeField {
+        locator: RuntimeFieldLocator {
             graph_tag: None,
             binding_hash: BindingHash::new(0xB176_70ED),
             resource_index: 0,
-            root: WeaponRuntimeRootKind::ComponentDefinition,
+            root: RuntimeRootKind::ComponentDefinition,
             root_schema: SchemaHandle::new(0x8080_388F),
             path: Vec::new(),
             type_handle: SchemaHandle::new(0x8080_2F16),
@@ -72,7 +72,7 @@ pub(crate) fn runtime_field(
         path_label: format!("Component / {name}"),
         kind,
         value,
-        source: WeaponRuntimeFieldSource::GeneratedSchema,
+        source: RuntimeFieldSource::GeneratedSchema,
         generated_kind: None,
         name_inferred: false,
     }

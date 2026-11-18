@@ -242,13 +242,13 @@ pub(super) fn draw_combat_profile_control(
         .labelled_by(label.id);
         },
     );
-    if variable && (draw_variable_damage_elements(ui, overrides) || changed) {
-        // The weapon rests on the first chosen element in selector order. A base weapon whose
+    if variable && (draw_variable_damage_types(ui, overrides) || changed) {
+        // The weapon rests on the first chosen damage type in selector order. A base weapon whose
         // damage cannot be converted, such as Hard Light itself, keeps its own marker.
         let resting = overrides
             .variable_damage
             .as_ref()
-            .and_then(|variable| variable_damage_resting_type(&variable.elements));
+            .and_then(|variable| variable_damage_resting_type(&variable.damage_types));
         let slot = profile
             .map(|profile| profile.inventory_slot)
             .or(donor.summary.inventory_slot);
@@ -364,30 +364,30 @@ pub(super) fn draw_optional_locale_text_field(
     ui.add_space(4.0);
 }
 
-/// Element checkboxes for a variable-damage weapon. Returns whether the set changed.
-fn draw_variable_damage_elements(ui: &mut egui::Ui, overrides: &mut WeaponRecipeOverrides) -> bool {
+/// Damage type checkboxes for a variable-damage weapon. Returns whether the set changed.
+fn draw_variable_damage_types(ui: &mut egui::Ui, overrides: &mut WeaponRecipeOverrides) -> bool {
     use crate::recipe::RecipeDamageType;
-    use crate::weapon::variable_damage::{SELECTOR_ORDER, element_label};
+    use crate::weapon::variable_damage::{SELECTOR_ORDER, damage_type_label};
     let Some(variable) = overrides.variable_damage.as_mut() else {
         return false;
     };
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
-        for element in SELECTOR_ORDER.into_iter().map(RecipeDamageType::from) {
-            let mut on = variable.elements.contains(&element);
-            let last_two = on && variable.elements.len() <= 2;
+        for damage_type in SELECTOR_ORDER.into_iter().map(RecipeDamageType::from) {
+            let mut on = variable.damage_types.contains(&damage_type);
+            let last_two = on && variable.damage_types.len() <= 2;
             if ui
                 .add_enabled(
                     !last_two,
-                    egui::Checkbox::new(&mut on, element_label(element.into())),
+                    egui::Checkbox::new(&mut on, damage_type_label(damage_type.into())),
                 )
                 .on_disabled_hover_text("Variable damage needs at least two damage types.")
                 .changed()
             {
                 if on {
-                    variable.elements.push(element);
+                    variable.damage_types.push(damage_type);
                 } else {
-                    variable.elements.retain(|chosen| *chosen != element);
+                    variable.damage_types.retain(|chosen| *chosen != damage_type);
                 }
                 changed = true;
             }
@@ -410,14 +410,14 @@ pub(super) fn draw_combat_profile_diagnostics(
     };
     if let Some(variable) = &overrides.variable_damage {
         ui.weak("Hold Reload to change damage type. The weapon keeps its own appearance.");
-        if variable.elements.len() < 2 {
+        if variable.damage_types.len() < 2 {
             ui.colored_label(
                 ui.visuals().error_fg_color,
                 "Variable damage needs at least two damage types.",
             );
         }
         if let Some(resting) = overrides.modern_damage_type
-            && !variable.elements.contains(&resting)
+            && !variable.damage_types.contains(&resting)
         {
             ui.colored_label(
                 ui.visuals().error_fg_color,

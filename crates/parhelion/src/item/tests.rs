@@ -4,7 +4,7 @@ mod independent_damage;
 mod staged_generation;
 use crate::progression::COLLECTIBLE_DISPLAY_CONDITION_OFFSET;
 use sundial::package_authoring::investment_schema::MODERN_ARC_DAMAGE_PERK_INDEX;
-use sundial::package_authoring::runtime::{WeaponRuntimeRootKind, WeaponRuntimeValue};
+use sundial::package_authoring::runtime::{RuntimeRootKind, RuntimeValue};
 
 mod personalization;
 mod presentation;

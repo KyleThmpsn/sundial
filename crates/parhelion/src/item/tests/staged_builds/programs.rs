@@ -51,8 +51,7 @@ fn private_graph_scopes_route_matching_fields_and_reject_the_wrong_asset() {
     let mut values = Vec::new();
     for (index, source) in stock.graphs.iter().enumerate() {
         let mut graph =
-            load_weapon_runtime_graph_for_entity(&manager, 0, 0, source.tag.0, &source.payload)
-                .unwrap();
+            load_runtime_graph_for_entity(&manager, 0, 0, source.tag.0, &source.payload).unwrap();
         graph.scope_fields();
         let speed = sandbox_perk::entity::projectile::parameters::discover(&graph)
             .into_iter()
@@ -72,7 +71,7 @@ fn private_graph_scopes_route_matching_fields_and_reject_the_wrong_asset() {
             .filter(|source| {
                 let mut locator = value.locator.clone();
                 locator.graph_tag = None;
-                resolve_weapon_runtime_field(&manager, &source.payload, &locator).is_ok()
+                resolve_runtime_field(&manager, &source.payload, &locator).is_ok()
             })
             .count()
             > 1

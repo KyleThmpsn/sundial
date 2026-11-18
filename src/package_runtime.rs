@@ -1,3 +1,5 @@
+//! The installed runtime and its packages: runtime identity, package reading, references, loading
+//! indexes and mod content.
 use std::{
     collections::BTreeSet,
     fs,
@@ -719,15 +721,5 @@ mod linux {
                 target.display()
             )
         })
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn linoodle_hash_rejects_untrusted_bytes() {
-            assert!(!bytes_have_expected_hash(b"not linoodle"));
-        }
     }
 }

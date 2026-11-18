@@ -10,6 +10,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use sundial::package_authoring::fnv1;
 
 /// The stock object type 16 turret with one player seat, flags `0002000C`, and its own weapon and
 /// unit. Its unit sets no parent link at definition `+0x6B0`, so its occupant controls only it.
@@ -62,11 +63,6 @@ fn rows(payload: &Payload, field: usize, (class, stride): (u32, usize)) -> Resul
 fn single(rows: Vec<usize>, what: &str) -> Result<usize> {
     ensure!(rows.len() == 1, "Stock turret {what} template differs");
     Ok(rows[0])
-}
-
-fn fnv(text: &str) -> u32 {
-    text.bytes()
-        .fold(EMPTY, |h, b| h.wrapping_mul(0x0100_0193) ^ u32::from(b))
 }
 
 /// Append `added` to the unit's turret rows after any it already carries, such as the tank's pod.
@@ -535,7 +531,7 @@ fn seated(
         position,
         orientation,
         name: if mount.gunner { 0x9F6D_B313 } else { EMPTY },
-        marker: fnv(marker),
+        marker: fnv1(marker),
     };
     Ok((
         row,
@@ -579,7 +575,7 @@ fn secondary_pod(
     child.remove_component(render)?;
     child.emit(native, graph, POD, 0, None)?;
     let root = &scene.models[0].model;
-    let barrel = section["barrel"]["marker"].as_str().unwrap_or_default();
+    let barrel = section["barrel_marker"].as_str().unwrap_or_default();
     let found = if barrel.is_empty() {
         Vec::new()
     } else {
@@ -602,7 +598,7 @@ fn secondary_pod(
             marker: if barrel.is_empty() {
                 EMPTY
             } else {
-                fnv(barrel)
+                fnv1(barrel)
             },
         },
         json!({"template":format!("{POD:08X}"),"fire":fire,"barrel_marker":barrel,

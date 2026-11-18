@@ -70,7 +70,7 @@ fn authored_accounts_require_the_active_runtime_format_and_keep_both_sources_unc
         .unwrap();
         let path = root.join("Sunrise/settings.json");
         let database = crate::persistence::investment_path(&path);
-        crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
+        crate::persistence::sunrise_account::tests::create_fixture(&database, 3);
         let database_before = fs::read(&database).unwrap();
         for schema in [6, 18] {
             let original = serde_json::to_vec(&json!({"version":schema})).unwrap();
@@ -142,9 +142,9 @@ fn replacement_cleanup_follows_the_runtime_and_does_not_fall_back_from_missing_d
         let dawn = crate::persistence::dawn_path(&settings);
         let sunrise = crate::persistence::investment_path(&settings);
         crate::persistence::dawn_account::tests::create_fixture(&dawn);
-        crate::persistence::sqlite_account::tests::create_fixture(&sunrise, 3);
+        crate::persistence::sunrise_account::tests::create_fixture(&sunrise, 3);
         let dawn_before = crate::account::read_authored_account_source(&dawn).unwrap();
-        let sunrise_before = crate::persistence::sqlite_account::snapshot::read(&sunrise).unwrap();
+        let sunrise_before = crate::persistence::sunrise_account::snapshot::read(&sunrise).unwrap();
         let review =
             preview_account_cleanup(root, &BTreeSet::from([2715114534, 300]), &[]).unwrap();
         let expected = match (brand, schema) {
@@ -164,7 +164,7 @@ fn replacement_cleanup_follows_the_runtime_and_does_not_fall_back_from_missing_d
             dawn_before
         );
         assert_eq!(
-            crate::persistence::sqlite_account::snapshot::read(&sunrise).unwrap(),
+            crate::persistence::sunrise_account::snapshot::read(&sunrise).unwrap(),
             sunrise_before
         );
         if brand == "Dawn" {

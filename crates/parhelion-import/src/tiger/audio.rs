@@ -316,17 +316,36 @@ pub(crate) fn prepare_media(
     graph: &Path,
     report: &mut Value,
 ) -> Result<()> {
+    if sources(report)?.0.is_empty() {
+        return Ok(());
+    }
+    let mut reader = Reader::discovery(modern, &graph.join("audio-reader"), true)
+        .with_context(|| format!("Open source audio packages at {}", modern.display()))?;
+    let mut native_reader = Reader::discovery(native, &graph.join("audio-native-reader"), false)
+        .with_context(|| format!("Open native audio packages at {}", native.display()))?;
+    convert_media(
+        (&mut reader, modern),
+        (&mut native_reader, native),
+        graph,
+        report,
+        bank::Dialect::MONUMENT_OF_TRIUMPH,
+        None,
+    )
+}
+
+/// The source bank and media tags the report's events name.
+fn sources(report: &Value) -> Result<(BTreeSet<u32>, BTreeSet<u32>)> {
     let mut tags = BTreeSet::new();
-    let events = report["matched_events"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .chain(report["firing_events"].as_array().into_iter().flatten())
-        .chain(report["clip_events"].as_array().into_iter().flatten())
-        .chain(report["effect_events"].as_array().into_iter().flatten())
-        .collect::<Vec<_>>();
     let mut banks = BTreeSet::new();
-    for event in &events {
+    for event in [
+        "matched_events",
+        "firing_events",
+        "clip_events",
+        "effect_events",
+    ]
+    .into_iter()
+    .flat_map(|list| report[list].as_array().into_iter().flatten())
+    {
         for sound in event["sounds"].as_array().into_iter().flatten() {
             banks.insert(u32::from_str_radix(
                 sound["bank"].as_str().context("source bank tag")?,
@@ -340,18 +359,31 @@ pub(crate) fn prepare_media(
             }
         }
     }
+    Ok((banks, tags))
+}
+
+/// Lower the report's version 150 source banks to Shadowkeep's 113 and decode their media,
+/// through readers the caller opened on the source and native packages. Marathon stores the
+/// same bank version as Monument of Triumph, so it converts through this route as well, in its
+/// own dialect. `held` names a source bank tag and the event in it that a held native cue
+/// starts, which that bank then repeats until its added stop event.
+pub(crate) fn convert_media(
+    (reader, modern): (&mut Reader, &Path),
+    (native_reader, native): (&mut Reader, &Path),
+    graph: &Path,
+    report: &mut Value,
+    dialect: bank::Dialect,
+    held: Option<(u32, &bank::held::Held)>,
+) -> Result<()> {
+    let (banks, tags) = sources(report)?;
     if banks.is_empty() {
         return Ok(());
     }
-    let mut reader = Reader::discovery(modern, &graph.join("audio-reader"), true)
-        .with_context(|| format!("Open source audio packages at {}", modern.display()))?;
-    let mut native_reader = Reader::discovery(native, &graph.join("audio-native-reader"), false)
-        .with_context(|| format!("Open native audio packages at {}", native.display()))?;
-    let source_settings = init_settings(&mut reader, 150).with_context(|| format!(
-        "Source Wwise Init validation failed in {}. Expected Monument of Triumph bank version 150. Check the source packages. FFmpeg is not used for bank validation",
+    let source_settings = init_settings(reader, 150).with_context(|| format!(
+        "Source Wwise Init validation failed in {}. Expected bank version 150. Check the source packages. FFmpeg is not used for bank validation",
         modern.display()
     ))?;
-    let native_settings = init_settings(&mut native_reader, 113).with_context(|| format!(
+    let native_settings = init_settings(native_reader, 113).with_context(|| format!(
         "Native Wwise Init validation failed in {}. Expected Shadowkeep bank version 113. Check the native packages. FFmpeg is not used for bank validation",
         native.display()
     ))?;
@@ -376,8 +408,14 @@ pub(crate) fn prepare_media(
             let source = reader.tag(tag, None).with_context(|| {
                 format!("Read source Wwise bank {tag:08X} from {}", modern.display())
             })?;
-            let bank = bank::lower_with_settings(&source.0, &source_settings, &native_settings)
-                .context("Wwise bank translation from version 150 to 113 failed. FFmpeg is not used for bank translation")?;
+            let bank = bank::lower_dialect(
+                &source.0,
+                &source_settings,
+                &native_settings,
+                dialect,
+                held.filter(|(bank, _)| *bank == tag).map(|(_, held)| held),
+            )
+            .context("Wwise bank translation from version 150 to 113 failed. FFmpeg is not used for bank translation")?;
             let file = format!("audio/{tag:08X}.bank.json");
             fs::write(graph.join(&file), serde_json::to_vec(&bank)?).with_context(|| {
                 format!(
@@ -385,7 +423,16 @@ pub(crate) fn prepare_media(
                     graph.join(&file).display()
                 )
             })?;
-            converted_banks.push(json!({"source_tag":format!("{tag:08X}"),"file":file,"version":113,"routing":"source"}));
+            let mut row = json!({"source_tag":format!("{tag:08X}"),"file":file,"version":113,"routing":"source"});
+            // Recorded so the graph says which sounds lost their automation over time.
+            if dialect.modulators == bank::Modulators::Omit
+                && bank::object_types(&source.0)?
+                    .iter()
+                    .any(|kind| matches!(kind, 19 | 20 | 22))
+            {
+                row["omitted_modulators"] = json!(true);
+            }
+            converted_banks.push(row);
             Ok(())
         })();
         if let Err(error) = result {

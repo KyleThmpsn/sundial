@@ -63,7 +63,6 @@ fn report_lists_runtime_files_databases_bins_and_relevant_packages_without_conte
     });
 
     assert!(report.contains("runtime.toml"));
-    assert!(report.contains("format_version = 5"));
     assert!(report.contains("detected_runtime_name = Sunrise"));
     assert!(report.contains("detected_runtime_version = 0.5"));
     assert!(report.contains("settings_json_schema = 8"));

@@ -153,7 +153,7 @@ impl Background {
     fn pixel(&self, x: u32, y: u32, width: u32, height: u32) -> Rgba<u8> {
         match self {
             Self::Transparent => Rgba([0; 4]),
-            Self::Sunrise => crate::badge_icon::card_background(x, y, width, height),
+            Self::Sunrise => crate::icon::badge::card_background(x, y, width, height),
             Self::Dawn => crate::branding::dawn_background(y, height),
             Self::Solid { color } => Rgba([color[0], color[1], color[2], 255]),
             Self::Gradient { start, end, angle } => {

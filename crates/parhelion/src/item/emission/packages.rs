@@ -31,8 +31,8 @@ enum Kind {
     /// A standalone package whose extended header region names tags.
     Named {
         tags: Vec<NewTagSpec>,
-        named: Vec<crate::format::NamedTag>,
-        references: Vec<crate::extend::NewTagReferenceOverride>,
+        named: Vec<crate::package::format::NamedTag>,
+        references: Vec<crate::package::extend::NewTagReferenceOverride>,
     },
 }
 
@@ -121,8 +121,8 @@ impl<'a> Packages<'a> {
         &mut self,
         id: u16,
         tags: Vec<NewTagSpec>,
-        named: Vec<crate::format::NamedTag>,
-        references: Vec<crate::extend::NewTagReferenceOverride>,
+        named: Vec<crate::package::format::NamedTag>,
+        references: Vec<crate::package::extend::NewTagReferenceOverride>,
     ) -> AuthoringResult<Ticket> {
         let count = tags.len();
         self.push(
@@ -145,7 +145,7 @@ impl<'a> Packages<'a> {
     }
 
     fn push(&mut self, id: u16, kind: Kind, check: Check) -> AuthoringResult<Ticket> {
-        let profile = crate::package_profile::authored_package(id)
+        let profile = crate::package::profile::authored_package(id)
             .ok_or_else(|| invalid("An emitted package has no registered profile"))?;
         match &kind {
             Kind::Standalone(package) => crate::mod_family::build::record_package(
@@ -216,8 +216,9 @@ impl<'a> Packages<'a> {
             ));
         }
         // Keep the shared DLL alive across jobs, but release it before the source view closes.
-        let _encoder = crate::block_codec::PackageBlockEncoder::open_for_packages(self.directory)?;
-        let chains = crate::chain::PatchChains::scan(self.directory)?;
+        let _encoder =
+            crate::package::block_codec::PackageBlockEncoder::open_for_packages(self.directory)?;
+        let chains = crate::package::chain::PatchChains::scan(self.directory)?;
         let workers = std::env::var("PARHELION_PACKAGE_WORKERS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -228,7 +229,7 @@ impl<'a> Packages<'a> {
             .jobs
             .iter()
             .map(|job| {
-                crate::package_profile::authored_package(job.id)
+                crate::package::profile::authored_package(job.id)
                     .expect("checked when planned")
                     .file_name
                     .to_owned()
@@ -405,10 +406,10 @@ impl<'a> Packages<'a> {
 impl Job {
     fn run(
         &self,
-        chains: &crate::chain::PatchChains,
+        chains: &crate::package::chain::PatchChains,
         report: &mut dyn FnMut(&str),
     ) -> AuthoringResult<crate::ExtendedOverlayArtifact> {
-        let profile = crate::package_profile::authored_package(self.id)
+        let profile = crate::package::profile::authored_package(self.id)
             .ok_or_else(|| invalid("An emitted package has no registered profile"))?;
         if let Some(path) = crate::mod_family::build::kept_path(profile.file_name) {
             report(&format!("Keeping Installed Package: {}", profile.file_name));
@@ -443,7 +444,7 @@ impl Job {
                 replacements,
                 tags,
                 references,
-            } => crate::extend::build_extended_overlay_with_chains(
+            } => crate::package::extend::build_extended_overlay_with_chains(
                 chains,
                 self.id,
                 replacements,
@@ -451,19 +452,21 @@ impl Job {
                 references,
                 &mut progress,
             ),
-            Kind::Standalone(package) => crate::extend::build_standalone_package_with_chains(
-                chains,
-                self.id,
-                profile.file_name,
-                &package.tags,
-                &package.references,
-                &mut progress,
-            ),
+            Kind::Standalone(package) => {
+                crate::package::extend::build_standalone_package_with_chains(
+                    chains,
+                    self.id,
+                    profile.file_name,
+                    &package.tags,
+                    &package.references,
+                    &mut progress,
+                )
+            }
             Kind::Named {
                 tags,
                 named,
                 references,
-            } => crate::extend::build_named_package_with_chains(
+            } => crate::package::extend::build_named_package_with_chains(
                 chains,
                 self.id,
                 profile.file_name,
@@ -524,7 +527,7 @@ impl Job {
     /// A digest of everything the package's build reads besides the source packages, which stay
     /// the same for the whole turn: its profile, the layout the member builds in, and every entry
     /// and reference it writes.
-    fn key(&self, profile: &crate::package_profile::AuthoredPackage) -> crate::turn_cache::Hash {
+    fn key(&self, profile: &crate::package::profile::AuthoredPackage) -> crate::turn_cache::Hash {
         use sha2::{Digest, Sha256};
         let mut digest = Sha256::new();
         let mut field = |bytes: &[u8]| {
@@ -535,9 +538,9 @@ impl Job {
         field(
             format!(
                 "{profile:?}/{:?}/{:?}/{:?}",
-                crate::package_profile::host(),
-                crate::package_profile::member(),
-                crate::package_profile::window()
+                crate::package::profile::host(),
+                crate::package::profile::member(),
+                crate::package::profile::window()
             )
             .as_bytes(),
         );

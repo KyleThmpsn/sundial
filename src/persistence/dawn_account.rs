@@ -1,12 +1,12 @@
-//! Adapter for the Dawn player-state database (schema 5).
+//! Adapter for the Dawn player-state database (schemas 5 and 7).
 //!
 //! Dawn keeps durable player state in `player-state.db` beside its settings file, which is a
 //! different layout from the Sunrise investment database: SOIDs are fixed-width hexadecimal text,
 //! settings are a key and value table rather than typed columns, and equipment is sparse.
 //!
-//! The contract is pinned to one reviewed Dawn commit. Sundial never creates, migrates, or
-//! checkpoints this database, and a layout Dawn would refuse to boot from is surfaced explicitly
-//! so it cannot be mistaken for the pinned one.
+//! Each schema is pinned to the layout Dawn itself creates, and the database's own version picks
+//! between them. Sundial never creates, migrates, or checkpoints this database, and a layout Dawn
+//! would refuse to boot from is surfaced explicitly so it cannot be mistaken for a pinned one.
 
 mod activity;
 mod carried;
@@ -75,6 +75,8 @@ struct Loaded {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DawnAccountDocument {
     path: PathBuf,
+    /// The supported `PRAGMA user_version` the database reported when it was loaded.
+    schema_version: i64,
     metadata: DawnMetadata,
     allocators: DawnAllocators,
     snapshot: DawnAccountSnapshot,
@@ -306,23 +308,28 @@ impl crate::persistence::native_account::NativeAccountDocument for DawnAccountDo
             Ok(())
         }
     }
-    /// Dawn stores abilities on the character row alone, so no item carries its own selection.
+    /// Schema 5 stores abilities on the character row alone. Schema 7 stores them on each
+    /// subclass item, which keeps its own picks while it sits in the inventory.
     fn persisted_item_abilities(
         &self,
-        _id: sundial_account::EntityId,
+        id: sundial_account::EntityId,
     ) -> Option<sundial_account::CharacterAbilities> {
-        None
+        let key = self.item_abilities_key(id)?;
+        self.carried.item_abilities.get(&key).copied()
     }
     fn set_persisted_item_abilities(
         &mut self,
-        _id: sundial_account::EntityId,
-        _abilities: sundial_account::CharacterAbilities,
+        id: sundial_account::EntityId,
+        abilities: sundial_account::CharacterAbilities,
     ) {
+        if let Some(key) = self.item_abilities_key(id) {
+            self.carried.item_abilities.insert(key, abilities);
+        }
     }
     fn profile_capabilities() -> sundial_account::ProfileCapabilities {
         Self::profile_capabilities()
     }
-    fn character_capabilities() -> sundial_account::CharacterCapabilities {
+    fn character_capabilities(&self) -> sundial_account::CharacterCapabilities {
         Self::character_capabilities()
     }
     fn settings_capabilities() -> sundial_account::AccountSettingsCapabilities {

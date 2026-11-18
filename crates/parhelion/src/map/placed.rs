@@ -24,7 +24,8 @@ fn target(payload: &[u8], field: usize) -> AuthoringResult<usize> {
     }
     bounded_relative_target(payload, field, "Placed record pointer")
 }
-fn words(payload: &[u8], descriptor: usize) -> AuthoringResult<Vec<u32>> {
+/// The `u32` rows of the array at `descriptor`, none when it is empty.
+pub(super) fn words(payload: &[u8], descriptor: usize) -> AuthoringResult<Vec<u32>> {
     if read_u64(payload, descriptor)? == 0 {
         return Ok(Vec::new());
     }

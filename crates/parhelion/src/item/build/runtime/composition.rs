@@ -65,7 +65,7 @@ pub(super) fn graft_rig(
     stock: &Stock<'_>,
     donor: &resolve::ResolvedWeapon,
     entity: &mut Vec<u8>,
-) -> AuthoringResult<Vec<WeaponRuntimeResourceAppend>> {
+) -> AuthoringResult<Vec<RuntimeResourceAppend>> {
     let Some(item_hash) = donor.donors.appearance_rig else {
         return Ok(Vec::new());
     };
@@ -177,7 +177,7 @@ pub(super) fn stat_patches(
     entity: &[u8],
     donor: &resolve::ResolvedWeapon,
     pattern_source: ResolvedSandboxPatternSource,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let mut patches = match (
         donor.donors.appearance_rig,
         donor.gear_art_pattern_source,

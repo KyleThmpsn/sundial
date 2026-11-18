@@ -11,10 +11,10 @@ pub(crate) fn synchronize_authored_collection_unlocks_at(
     let database_path = crate::persistence::investment_path(settings_path);
     if crate::game_settings::requires_sqlite_account(&original) {
         {
-            use crate::persistence::sqlite_account::{self, SqliteAccountDocumentLoad};
+            use crate::persistence::sunrise_account::{self, SunriseAccountDocumentLoad};
             let mut document =
-                match sqlite_account::load_document(&database_path).map_err(|e| e.to_string())? {
-                    SqliteAccountDocumentLoad::Loaded(document) => document,
+                match sunrise_account::load_document(&database_path).map_err(|e| e.to_string())? {
+                    SunriseAccountDocumentLoad::Loaded(document) => document,
                     _ => return Err(
                         "A compatible Sunrise investment database is required for authored unlocks"
                             .into(),
@@ -25,7 +25,7 @@ pub(crate) fn synchronize_authored_collection_unlocks_at(
                 None
             } else {
                 Some(
-                    sqlite_account::save_document_checked(&mut document, &mut require_closed)
+                    sunrise_account::save_document_checked(&mut document, &mut require_closed)
                         .map_err(|e| e.to_string())?
                         .backup,
                 )
@@ -43,7 +43,7 @@ pub(crate) fn synchronize_authored_collection_unlocks_at(
 }
 
 fn apply_native_authored_unlocks(
-    document: &mut crate::persistence::sqlite_account::SqliteAccountDocument,
+    document: &mut crate::persistence::sunrise_account::SunriseAccountDocument,
     unlocks: &[(usize, u8, u16)],
 ) -> Result<usize, String> {
     let mut changed = 0;

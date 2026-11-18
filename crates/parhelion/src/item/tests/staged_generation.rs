@@ -4,8 +4,7 @@ use crate::plug_classification::PlugClassification;
 use sundial::package_authoring::{
     entity::weapon_component_binding_hashes,
     runtime::{
-        load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_entity_with_manager,
+        load_runtime_entity_at_pattern_index_with_manager, load_runtime_entity_with_manager,
     },
 };
 
@@ -262,8 +261,7 @@ fn real_default_weapon_generation_preserves_native_chains() {
         }
         let ammo = spec.overrides.ammo_type.unwrap();
         assert_eq!(item_string_ammo_type(&item_strings).unwrap(), Some(ammo));
-        let authored =
-            load_weapon_runtime_entity_with_manager(&manager, spec.identity.item_hash).unwrap();
+        let authored = load_runtime_entity_with_manager(&manager, spec.identity.item_hash).unwrap();
         let binding = weapon_component_bindings(&authored.payload, 0x5F0D_D954).unwrap()[0];
         let owner = manager.read_tag(TagHash(binding.owner_tag)).unwrap();
         let content_definition =
@@ -285,7 +283,7 @@ fn real_default_weapon_generation_preserves_native_chains() {
         // Some stock inventory items share a pattern whose identity is another item hash.
         // Follow the item's authoritative pattern index, just as the compiler does.
         let (source_definition, _) = load(spec.donor_item_hash);
-        let source = load_weapon_runtime_entity_at_pattern_index_with_manager(
+        let source = load_runtime_entity_at_pattern_index_with_manager(
             &manager,
             weapon_pattern_index(&source_definition).unwrap().unwrap(),
         )
@@ -498,18 +496,34 @@ fn real_default_weapon_generation_preserves_native_chains() {
                         )
                         .unwrap();
                         for value in &edit.runtime_values {
-                            let matching = installed.graphs.iter().filter_map(|graph| {
-                                let mut locator = value.locator.clone();
-                                if let Some(source_tag) = locator.graph_tag.map(|tag| tag.get()) {
-                                    let source = stock.graphs.iter().find(|source| source.tag.0 == source_tag)?;
-                                    if !graph.action_offsets.iter().any(|offset| source.action_offsets.contains(offset)) {
-                                        return None;
+                            let matching = installed
+                                .graphs
+                                .iter()
+                                .filter_map(|graph| {
+                                    let mut locator = value.locator.clone();
+                                    if let Some(source_tag) = locator.graph_tag.map(|tag| tag.get())
+                                    {
+                                        let source = stock
+                                            .graphs
+                                            .iter()
+                                            .find(|source| source.tag.0 == source_tag)?;
+                                        if !graph
+                                            .action_offsets
+                                            .iter()
+                                            .any(|offset| source.action_offsets.contains(offset))
+                                        {
+                                            return None;
+                                        }
+                                        locator.graph_tag = None;
                                     }
-                                    locator.graph_tag = None;
-                                }
-                                sundial::package_authoring::runtime::resolve_weapon_runtime_field(
-                                    &manager, &graph.payload, &locator).ok()
-                            }).collect::<Vec<_>>();
+                                    sundial::package_authoring::runtime::resolve_runtime_field(
+                                        &manager,
+                                        &graph.payload,
+                                        &locator,
+                                    )
+                                    .ok()
+                                })
+                                .collect::<Vec<_>>();
                             assert_eq!(matching.len(), 1);
                             assert_eq!(matching[0].field.value, value.value);
                             assert!(dependencies.contains(&matching[0].owner_tag));

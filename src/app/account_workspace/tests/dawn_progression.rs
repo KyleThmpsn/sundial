@@ -9,7 +9,7 @@ fn runtime_selection_routes_progression_without_touching_the_other_database_or_s
     let dawn = dir.0.join("player-state.db");
     let sunrise = dir.0.join("data/investment.sqlite3");
     crate::persistence::dawn_account::tests::create_fixture(&dawn);
-    crate::persistence::sqlite_account::tests::create_fixture(&sunrise, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&sunrise, 3);
     let other_bytes = fs::read(&sunrise).unwrap();
     let mut workspace = WorkspaceDocument::load(seed.clone(), &settings, true);
     assert_eq!(workspace.source_kind(), AccountSourceKind::Dawn);
@@ -38,7 +38,7 @@ fn runtime_selection_routes_progression_without_touching_the_other_database_or_s
         json!([[123, 1]])
     );
     let other = WorkspaceDocument::load(seed, &settings, false);
-    assert_eq!(other.source_kind(), AccountSourceKind::Sqlite);
+    assert_eq!(other.source_kind(), AccountSourceKind::Sunrise);
     assert_ne!(
         other.progression_view(0)["state"]["unlocks"]["account_flag_runs"],
         json!([[123, 1]])

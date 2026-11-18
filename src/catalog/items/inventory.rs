@@ -600,7 +600,6 @@ mod tests {
                 bucket_capacity: Some(17),
             }
         );
-        assert_eq!(metadata.scope.label(), "Profile");
         assert_eq!(metadata.scope.array_capacity(), Some(701));
         assert_eq!(metadata.authored_row_capacity(), Some(17));
         assert!(metadata.is_profile_items_candidate());

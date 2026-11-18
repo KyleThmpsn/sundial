@@ -53,7 +53,7 @@ fn real_personalization_stages_distinct_badges_corner_icons_and_lore() {
     for entry in fs::read_dir(&packages).unwrap() {
         let entry = entry.unwrap();
         if entry.path().extension().is_some_and(|ext| ext == "pkg")
-            && !crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+            && !crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
                 .iter()
                 .any(|name| entry.file_name() == *name)
         {

@@ -20,7 +20,7 @@ use sundial::package_authoring::ability_settings::{
 };
 use sundial::package_authoring::ability_spawns::{describe, spawns, table_graphs, tables};
 use sundial::package_authoring::runtime::modifiers;
-use sundial::package_authoring::runtime::{WeaponRuntimeField, WeaponRuntimeValue};
+use sundial::package_authoring::runtime::{RuntimeField, RuntimeValue};
 use sundial::package_authoring::sandbox_perk::entity::effect_length::{
     self, EffectLength, UNLIMITED,
 };
@@ -83,7 +83,7 @@ fn more_fold(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug + Copy,
     (properties, lanes): (&[Property], &[&RowLane]),
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     let tucked = properties
         .iter()
@@ -135,11 +135,7 @@ fn more_fold(
 }
 
 /// A card's lead tiles: the values it shows, in groups.
-fn lead_tiles(
-    ui: &mut egui::Ui,
-    properties: &[Property],
-    values: &mut Vec<WeaponRuntimeValueOverride>,
-) {
+fn lead_tiles(ui: &mut egui::Ui, properties: &[Property], values: &mut Vec<RuntimeValueOverride>) {
     let members = properties
         .iter()
         .enumerate()
@@ -168,7 +164,7 @@ fn grouped_tiles(
     ui: &mut egui::Ui,
     members: &[(usize, &Property)],
     properties: &[Property],
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     if members.is_empty() {
         return;
@@ -264,7 +260,7 @@ fn group_tile(
     width: f32,
     (index, property): (usize, &Property),
     properties: &[Property],
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     let inactive = idle(property, properties, values);
     let before = property.current(values);
@@ -342,7 +338,7 @@ fn value_table(
     salt: impl std::hash::Hash + std::fmt::Debug,
     headings: &[String],
     rows: Vec<TableRow<'_>>,
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     let gap = 12.0;
     let name_width = rows
@@ -437,7 +433,7 @@ fn property_cell(
     ui: &mut egui::Ui,
     (index, width): (usize, f32),
     (property, siblings): (&Property, &[Property]),
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     property.keep_unlimited(values);
     let current = property.current(values);
@@ -608,7 +604,7 @@ fn variant_card(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug + Copy,
     cards: &[&Card],
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     let first = cards[0];
     let title = if cards.iter().all(|card| card.name == first.name) {
@@ -640,7 +636,7 @@ fn variant_card(
                 .map_or_else(|| card.title.clone(), |(own, _)| own.to_owned())
         })
         .collect::<Vec<_>>();
-    let reading: &[WeaponRuntimeValueOverride] = values;
+    let reading: &[RuntimeValueOverride] = values;
     let lead = variant_rows(cards, |property, properties| {
         shown(property, properties, &[], reading)
     });
@@ -938,7 +934,7 @@ fn card_folds(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug + Copy,
     (properties, lanes): (&[Property], &[&RowLane]),
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     more_fold(ui, (salt, "more"), (properties, lanes), values);
     let unconfirmed = properties
@@ -1386,7 +1382,7 @@ fn card_tiles(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug + Copy,
     card: &Card,
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     let properties = &card.properties;
     lead_tiles(ui, properties, values);
@@ -1401,7 +1397,7 @@ fn draw_tree_cards(
     salt: impl std::hash::Hash + std::fmt::Debug + Copy,
     tree: &Tree,
     (depth, skip, alternatives): (usize, Option<u32>, bool),
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     let skipped =
         |card: &Card| skip.is_some_and(|graph| card.graphs.iter().any(|(tag, _)| *tag == graph));
@@ -1477,7 +1473,7 @@ impl GraphCards {
         ui: &mut egui::Ui,
         packages: &Path,
         graph: u32,
-        values: &mut Vec<WeaponRuntimeValueOverride>,
+        values: &mut Vec<RuntimeValueOverride>,
     ) {
         match self.0.poll(ui.ctx(), packages, graph) {
             Some(Ok(tree)) => {
@@ -1517,7 +1513,7 @@ fn property_tile(
     width: f32,
     index: usize,
     property: &Property,
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
 ) {
     property_tile_state(ui, width, index, property, values, false);
 }
@@ -1527,7 +1523,7 @@ fn paired_tile(
     width: f32,
     index: usize,
     (property, siblings): (&Property, &[Property]),
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
     inactive: bool,
 ) {
     let before = property.current(values);
@@ -1540,7 +1536,7 @@ fn property_tile_state(
     width: f32,
     index: usize,
     property: &Property,
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
     inactive: bool,
 ) {
     property_tile_named(
@@ -1560,7 +1556,7 @@ fn property_tile_named(
     width: f32,
     index: usize,
     (property, shown): (&Property, &str),
-    values: &mut Vec<WeaponRuntimeValueOverride>,
+    values: &mut Vec<RuntimeValueOverride>,
     inactive: bool,
 ) {
     property.keep_unlimited(values);
@@ -1740,11 +1736,7 @@ fn setting_choice(
     (value != current).then_some(value)
 }
 
-fn property_state_hint(
-    ui: &mut egui::Ui,
-    property: &Property,
-    values: &[WeaponRuntimeValueOverride],
-) {
+fn property_state_hint(ui: &mut egui::Ui, property: &Property, values: &[RuntimeValueOverride]) {
     if property.mixed(values) {
         ui.weak("Mixed Values").on_hover_text(
             "Changing this control updates every matching part. Use Technical to edit individual parts.",

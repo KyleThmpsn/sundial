@@ -4,18 +4,14 @@ use super::{identity::Stage, program::Program};
 use crate::tiger::{payload::Payload, reader::Reader};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use sundial::storage::sha256_hex;
 use tiger_pkg::TagHash;
 
 pub mod material;
 
 #[cfg(test)]
 mod tests;
-
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
 
 fn bytes(payload: &Payload, at: usize, stride: usize) -> Result<Vec<u8>> {
     let rows = payload.array(at, stride, None)?;
@@ -56,7 +52,7 @@ fn dynamic(reader: &mut Reader, tag: u32, vectors: usize) -> Result<Value> {
     );
     Ok(
         json!({"tag":format!("{tag:08X}"),"data":format!("{reference:08X}"),
-        "header_sha256":digest(&header.0),"data_sha256":digest(&data.0),"vectors":vectors}),
+        "header_sha256":sha256_hex(&header.0),"data_sha256":sha256_hex(&data.0),"vectors":vectors}),
     )
 }
 
@@ -118,7 +114,7 @@ impl Scopes {
             let buffer = dynamic(reader, payload.u32(external)?, vectors)?;
             rows.push(
                 json!({"tag":format!("{tag:08X}"),"modern":modern,"index":index,
-                "vectors":vectors,"slot":slot,"scope_sha256":digest(&payload.0),
+                "vectors":vectors,"slot":slot,"scope_sha256":sha256_hex(&payload.0),
                 "program":hex::encode(expected),"buffer":buffer}),
             );
         }
@@ -339,11 +335,11 @@ impl Rigid {
             );
         }
         let evidence = json!({"material":format!("{material:08X}"),"source_shader":format!("{shader:08X}"),
-            "source_header_sha256":digest(&header.0),"source_bytecode_sha256":digest(&source),
+            "source_header_sha256":sha256_hex(&header.0),"source_bytecode_sha256":sha256_hex(&source),
             "source_identity":format!("{:08X}",header.u32(12)?),"source_identity_resolved":false,
-            "source_hlsl_sha256":digest(hlsl.as_bytes()),"adapted_hlsl_sha256":digest(text.as_bytes()),
+            "source_hlsl_sha256":sha256_hex(hlsl.as_bytes()),"adapted_hlsl_sha256":sha256_hex(text.as_bytes()),
             "scope_producers":scopes.receipt(),"native_input_layout":stream.native_layout(),"vertex_stride":32,
-            "vertex_data_sha256":digest(stream.data()),
+            "vertex_data_sha256":sha256_hex(stream.data()),
             "program":program.receipt(),"gpu_equivalence_required":true,
             "package_enrolled":false,"gameplay_verified":false});
         Ok(Self {

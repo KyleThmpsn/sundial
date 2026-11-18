@@ -105,7 +105,7 @@ fn empty_database_blocks_stale_json() {
 #[test]
 fn official_database_is_authoritative_and_preserves_inactive_json() {
     let directory = TestDirectory::new("workspace-sqlite-source");
-    crate::persistence::sqlite_account::tests::create_fixture(
+    crate::persistence::sunrise_account::tests::create_fixture(
         &directory.0.join("data").join("investment.sqlite3"),
         3,
     );
@@ -113,7 +113,7 @@ fn official_database_is_authoritative_and_preserves_inactive_json() {
     json["state"]["account"] = json!({"settings": {"display": {}}});
     let document = WorkspaceDocument::load(json.clone(), &settings_path(&directory), false);
 
-    assert_eq!(document.source_kind(), AccountSourceKind::Sqlite);
+    assert_eq!(document.source_kind(), AccountSourceKind::Sunrise);
     assert_eq!(account::character_count(&document), 1);
     assert_eq!(document.json(), &json);
 }
@@ -131,7 +131,7 @@ fn old_schemas_ignore_databases_before_and_after_loading() {
             match database_kind {
                 0 => fs::write(&database, b"").unwrap(),
                 1 => fs::write(&database, b"not SQLite").unwrap(),
-                _ => crate::persistence::sqlite_account::tests::create_fixture(&database, 3),
+                _ => crate::persistence::sunrise_account::tests::create_fixture(&database, 3),
             }
             let original = fs::read(&database).unwrap();
             assert_eq!(document.verify_account_source_unchanged(), Ok(()));
@@ -156,7 +156,7 @@ fn schema18_requires_a_database_even_when_json_contains_characters() {
 fn sqlite_subclass_abilities_follow_the_owned_item_across_an_equip_swap() {
     let directory = TestDirectory::new("workspace-sqlite-subclass-abilities");
     let database_path = directory.0.join("data").join("investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&database_path, 3);
     set_fixture_inventory_subclass_abilities(&database_path, [6, 8, 20, 21, 3]);
     let mut document = WorkspaceDocument::load(
         json!({"version": 18, "state": {}}),
@@ -172,7 +172,7 @@ fn sqlite_subclass_abilities_follow_the_owned_item_across_an_equip_swap() {
     };
 
     let outgoing_item_id = match &document.account {
-        AccountDocument::Sqlite(sqlite) => {
+        AccountDocument::Sunrise(sqlite) => {
             sqlite.characters().characters()[0].equipment
                 [&sundial_account::EquipmentSlot::new("subclass")]
                 .as_ref()
@@ -188,7 +188,7 @@ fn sqlite_subclass_abilities_follow_the_owned_item_across_an_equip_swap() {
     )
     .unwrap();
     match &document.account {
-        AccountDocument::Sqlite(sqlite) => assert_eq!(
+        AccountDocument::Sunrise(sqlite) => assert_eq!(
             sqlite.persisted_item_abilities(outgoing_item_id),
             Some(outgoing_selection)
         ),
@@ -220,7 +220,7 @@ fn sqlite_subclass_abilities_follow_the_owned_item_across_an_equip_swap() {
         incoming_selection
     );
     match &document.account {
-        AccountDocument::Sqlite(sqlite) => {
+        AccountDocument::Sunrise(sqlite) => {
             let character = &sqlite.characters().characters()[0];
             let equipped = character.equipment[&sundial_account::EquipmentSlot::new("subclass")]
                 .as_ref()
@@ -242,7 +242,7 @@ fn sqlite_subclass_abilities_follow_the_owned_item_across_an_equip_swap() {
 fn sqlite_subclass_equip_replaces_an_invalid_persisted_selection_with_defaults() {
     let directory = TestDirectory::new("workspace-sqlite-invalid-subclass-abilities");
     let database_path = directory.0.join("data").join("investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&database_path, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&database_path, 3);
     set_fixture_inventory_subclass_abilities(&database_path, [63, 63, 63, 63, 63]);
     let mut document = WorkspaceDocument::load(
         json!({"version": 18, "state": {}}),
@@ -274,7 +274,7 @@ fn sqlite_subclass_equip_replaces_an_invalid_persisted_selection_with_defaults()
         defaults
     );
     match &document.account {
-        AccountDocument::Sqlite(sqlite) => {
+        AccountDocument::Sunrise(sqlite) => {
             let equipped = sqlite.characters().characters()[0].equipment
                 [&sundial_account::EquipmentSlot::new("subclass")]
                 .as_ref()
@@ -383,7 +383,7 @@ fn json_characters(count: usize) -> serde_json::Value {
 #[test]
 fn official_sqlite_equipment_contract_is_available_for_schema18() {
     let directory = TestDirectory::new("workspace-sqlite-equipment-capabilities");
-    crate::persistence::sqlite_account::tests::create_fixture(
+    crate::persistence::sunrise_account::tests::create_fixture(
         &directory.0.join("data/investment.sqlite3"),
         3,
     );
@@ -401,10 +401,10 @@ fn official_sqlite_equipment_contract_is_available_for_schema18() {
             .iter()
             .any(|item| item.slot == "artifact" && item.definition_hash == Some(42))
     );
-    let AccountDocument::Sqlite(native) = &mut document.account else {
+    let AccountDocument::Sunrise(native) = &mut document.account else {
         panic!("expected SQLite")
     };
-    crate::persistence::sqlite_account::tests::save_fixture_document(
+    crate::persistence::sunrise_account::tests::save_fixture_document(
         native,
         &directory.0.join("artifact-backup.sqlite3"),
     );
@@ -422,7 +422,7 @@ fn official_sqlite_equipment_contract_is_available_for_schema18() {
 fn v18_runtime_and_progression_edits_use_native_domains_and_preserve_inactive_json() {
     let directory = TestDirectory::new("workspace-v18-domains");
     let path = directory.0.join("data/investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&path, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&path, 3);
     let db = Connection::open(&path).unwrap();
     db.execute_batch("INSERT INTO characters SELECT 1,soid+1,race,gender,class,level,preview_available,appearance_value,last_orbited_destination,content_bypass,equipped_title,acquired_subclass_mask,next_inventory_serial FROM characters; INSERT INTO unlocks VALUES(0,2,42,0,2); INSERT INTO unlocks VALUES(1,2,50,0,2);").unwrap();
     let json = json!({"version":18,"state":{"account":{"opaque":true},"characters":["legacy"],"unlocks":{"opaque":true}},"server":{"entitlements":["legacy"]}});
@@ -439,11 +439,11 @@ fn v18_runtime_and_progression_edits_use_native_domains_and_preserve_inactive_js
     assert_eq!(document.json(), &json);
     let summaries = super::sqlite_change_summaries(
         match &original.account {
-            AccountDocument::Sqlite(v) => v,
+            AccountDocument::Sunrise(v) => v,
             _ => panic!(),
         },
         match &document.account {
-            AccountDocument::Sqlite(v) => v,
+            AccountDocument::Sunrise(v) => v,
             _ => panic!(),
         },
         50,
@@ -454,10 +454,10 @@ fn v18_runtime_and_progression_edits_use_native_domains_and_preserve_inactive_js
             "{domain}: {summaries:?}"
         );
     }
-    let AccountDocument::Sqlite(native) = &mut document.account else {
+    let AccountDocument::Sunrise(native) = &mut document.account else {
         panic!()
     };
-    crate::persistence::sqlite_account::tests::save_fixture_document(
+    crate::persistence::sunrise_account::tests::save_fixture_document(
         native,
         &directory.0.join("backup.sqlite3"),
     );
@@ -504,27 +504,27 @@ fn v18_runtime_and_progression_edits_use_native_domains_and_preserve_inactive_js
 fn native_runtime_drafts_remain_editable_but_invalid_values_cannot_be_saved() {
     let directory = TestDirectory::new("sqlite-runtime-draft");
     let path = directory.0.join("data/investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&path, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&path, 3);
     let mut document =
         WorkspaceDocument::load(json!({"version":18}), &settings_path(&directory), false);
-    let before = crate::persistence::sqlite_account::snapshot::read(&path).unwrap();
+    let before = crate::persistence::sunrise_account::snapshot::read(&path).unwrap();
     let mut draft = document.runtime_view();
     draft["server"]["entitlements"] = json!([{"name":"","owned":"handle"}]);
     draft["state"]["characters"][0]["last_orbited_destination"] = json!("0x");
     document.apply_runtime_view(draft).unwrap();
     assert!(document.save_sqlite(|| Ok(())).is_err());
     assert_eq!(
-        crate::persistence::sqlite_account::snapshot::read(&path).unwrap(),
+        crate::persistence::sunrise_account::snapshot::read(&path).unwrap(),
         before
     );
     let mut draft = document.runtime_view();
     draft["server"]["entitlements"][0]["name"] = json!("test");
     draft["state"]["characters"][0]["last_orbited_destination"] = json!("0x1234");
     document.apply_runtime_view(draft).unwrap();
-    let AccountDocument::Sqlite(native) = &mut document.account else {
+    let AccountDocument::Sunrise(native) = &mut document.account else {
         panic!()
     };
-    crate::persistence::sqlite_account::tests::save_fixture_document(
+    crate::persistence::sunrise_account::tests::save_fixture_document(
         native,
         &directory.0.join("backup.sqlite3"),
     );

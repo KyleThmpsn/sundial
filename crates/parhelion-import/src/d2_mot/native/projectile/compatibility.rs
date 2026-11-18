@@ -201,7 +201,7 @@ pub(crate) fn sequence(
     native: &Reader,
     assets: &mut Assets,
     namespace: &str,
-    element: f32,
+    damage_type: f32,
     sound: u32,
 ) -> Result<(Payload, sequence::Bindings, Vec<Value>)> {
     let parsed = sequence::Sequence::read(source)?;
@@ -296,7 +296,7 @@ pub(crate) fn sequence(
             &(source.pointer(events[old] + 16)? as i64 - field as i64).to_le_bytes(),
         )?;
     }
-    controls(source, &mut output, &parsed.controls, &kept, element)?;
+    controls(source, &mut output, &parsed.controls, &kept, damage_type)?;
     let size = output.0.len() as u64;
     put(&mut output, 0, &size.to_le_bytes())?;
     sequence::Sequence::read(&output)?;
@@ -333,14 +333,14 @@ fn controls(
     output: &mut Payload,
     controls: &[sequence::Control],
     kept: &BTreeMap<usize, usize>,
-    element: f32,
+    damage_type: f32,
 ) -> Result<()> {
     for control in controls {
         if control.class == 0x808091D9 && source.u32(control.offset + 0x4C)? == 0x49FCE899 {
             let selected = (source.f32(control.offset + 0x40)?
                 ..=source.f32(control.offset + 0x44)?)
-                .contains(&element);
-            // The source element chooses presentation even when Shadowkeep cannot
+                .contains(&damage_type);
+            // The source damage type chooses presentation even when Shadowkeep cannot
             // represent its gameplay damage type, as with Stasis and Strand.
             let (lower, upper) = if selected {
                 (-f32::MAX, f32::MAX)

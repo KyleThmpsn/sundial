@@ -52,7 +52,7 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
     let source = &event["sounds"][0];
     let hex = |v: &Value| u32::from_str_radix(v.as_str().unwrap(), 16).unwrap();
     let manager = open_manager(&packages).unwrap();
-    let id = crate::package_profile::PARHELION_ASSET_PACKAGE_ID;
+    let id = crate::package::profile::PARHELION_ASSET_PACKAGE_ID;
     let allocated = |package, ordinal| {
         AppendedTagAllocator::new(package, 0)
             .assigned_tag(ordinal, "Fixture", "asset")
@@ -287,8 +287,8 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
     fs::create_dir(&destination).unwrap();
     let mut emitted = BTreeMap::new();
     for package in &assets.packages {
-        let profile = crate::package_profile::authored_package(package.id).unwrap();
-        let artifact = crate::extend::build_standalone_package_with_references(
+        let profile = crate::package::profile::authored_package(package.id).unwrap();
+        let artifact = crate::package::extend::build_standalone_package_with_references(
             &packages,
             package.id,
             profile.file_name,

@@ -1,6 +1,6 @@
 //! Native rigid material carriers and source plans with explicit unresolved fields.
 //! There is deliberately no executable material emitter before root flags resolve.
-use super::{Rigid, bytes, digest};
+use super::{Rigid, bytes};
 use crate::tiger::shader::{
     buffer,
     identity::Stage,
@@ -10,6 +10,7 @@ use crate::tiger::{payload::Payload, reader::Reader};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use sundial::storage::sha256_hex;
 
 #[cfg(test)]
 mod tests;
@@ -140,7 +141,7 @@ impl Template {
             "native rigid material color extent differs"
         );
         let evidence = json!({"tag":format!("{tag:08X}"),"native_class":"808071E8",
-            "source_template_sha256":digest(&payload.0),"scope_masks":["00000007","80000007"],
+            "source_template_sha256":sha256_hex(&payload.0),"scope_masks":["00000007","80000007"],
             "packed_root":"007F7F00","state":"00000000","inline_vector":hex::encode(bytes(&payload, 0x318, 16)?),
             "vertex":vertex_program.receipt(),"pixel":pixel_program.receipt(),"color":values.receipt(),
             "color_header":format!("{color_tag:08X}"),"color_bits":hex::encode(values.data())});
@@ -249,8 +250,8 @@ impl Plan {
         let color = buffer::Buffer::from_package(reader, payload.u32(0x324)?)?;
         ensure!(color.vectors() == 1, "rigid source color extent differs");
         let evidence = json!({"source":format!("{material:08X}"),"source_class":"80806DAA",
-            "source_payload_sha256":digest(&payload.0),"source_payload":hex::encode(&payload.0),
-            "source_pixel_header":hex::encode(&header.0),"source_pixel_header_sha256":digest(&header.0),
+            "source_payload_sha256":sha256_hex(&payload.0),"source_payload":hex::encode(&payload.0),
+            "source_pixel_header":hex::encode(&header.0),"source_pixel_header_sha256":sha256_hex(&header.0),
             "source_pixel_identity":format!("{:08X}",header.u32(12)?),"source_identity_resolved":false,
             "pixel":pixel.receipt(),"color":color.receipt(),"color_bits":hex::encode(color.data()),
             "inline_vector":hex::encode(bytes(&payload, 0x300, 16)?),"rigid":rigid.receipt(),

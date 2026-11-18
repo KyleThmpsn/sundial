@@ -1,19 +1,17 @@
 //! Native value and provenance formatting shared by inspectors and property editors.
-use super::{
-    WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeValue, WeaponRuntimeValueKind,
-};
+use super::{RuntimeField, RuntimeFieldSource, RuntimeValue, RuntimeValueKind};
 /// Whether a native consumer proves what this field means, rather than reflection naming it.
-pub fn proven(field: &WeaponRuntimeField) -> bool {
+pub fn proven(field: &RuntimeField) -> bool {
     super::structure::proven(field.locator.type_handle.get(), field.locator.value_offset)
 }
 
-pub fn value_text(field: &WeaponRuntimeField) -> String {
+pub fn value_text(field: &RuntimeField) -> String {
     if let Some(meaning) =
         super::modifiers::field_meaning(field.locator.type_handle.get(), field.locator.value_offset)
     {
         let number = match field.value {
-            WeaponRuntimeValue::Signed(value) => Some(value),
-            WeaponRuntimeValue::Unsigned(value) => i64::try_from(value).ok(),
+            RuntimeValue::Signed(value) => Some(value),
+            RuntimeValue::Unsigned(value) => i64::try_from(value).ok(),
             _ => None,
         };
         if let Some((value, name)) = meaning.choices.iter().find(|(v, _)| Some(*v) == number) {
@@ -21,28 +19,27 @@ pub fn value_text(field: &WeaponRuntimeField) -> String {
         }
     }
     match &field.value {
-        WeaponRuntimeValue::Boolean(value) => value.to_string(),
-        WeaponRuntimeValue::Signed(value) => value.to_string(),
-        WeaponRuntimeValue::Unsigned(value) => match field.kind {
-            WeaponRuntimeValueKind::HexIdentifier { bits }
-            | WeaponRuntimeValueKind::BitFlags { bits } => {
+        RuntimeValue::Boolean(value) => value.to_string(),
+        RuntimeValue::Signed(value) => value.to_string(),
+        RuntimeValue::Unsigned(value) => match field.kind {
+            RuntimeValueKind::HexIdentifier { bits } | RuntimeValueKind::BitFlags { bits } => {
                 format!("0x{value:0width$X}", width = usize::from(bits) / 4)
             }
-            WeaponRuntimeValueKind::Enum { .. } => format!("{value} (enum)"),
+            RuntimeValueKind::Enum { .. } => format!("{value} (enum)"),
             _ => value.to_string(),
         },
-        WeaponRuntimeValue::Float32Bits(bits) => float_text(*bits),
-        WeaponRuntimeValue::Float64Bits(bits) => {
+        RuntimeValue::Float32Bits(bits) => float_text(*bits),
+        RuntimeValue::Float64Bits(bits) => {
             format!("{} (0x{bits:016X})", f64::from_bits(*bits))
         }
-        WeaponRuntimeValue::Vector4Float32Bits(bits) => format!(
+        RuntimeValue::Vector4Float32Bits(bits) => format!(
             "[{}]",
             bits.iter()
                 .map(|bits| float_text(*bits))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        WeaponRuntimeValue::Bytes(bytes) => {
+        RuntimeValue::Bytes(bytes) => {
             let mut text = hex_bytes(&bytes[..bytes.len().min(32)]);
             if bytes.len() > 32 {
                 text.push_str(&format!(" … ({} bytes)", bytes.len()));
@@ -52,13 +49,13 @@ pub fn value_text(field: &WeaponRuntimeField) -> String {
     }
 }
 
-pub fn exact_value_text(field: &WeaponRuntimeField) -> String {
+pub fn exact_value_text(field: &RuntimeField) -> String {
     match &field.value {
-        WeaponRuntimeValue::Bytes(bytes) => hex_bytes(bytes),
-        WeaponRuntimeValue::Float32Bits(bits) => {
+        RuntimeValue::Bytes(bytes) => hex_bytes(bytes),
+        RuntimeValue::Float32Bits(bits) => {
             format!("{} · bits 0x{bits:08X}", float_text(*bits))
         }
-        WeaponRuntimeValue::Vector4Float32Bits(bits) => {
+        RuntimeValue::Vector4Float32Bits(bits) => {
             format!("{} · bits {:08X?}", value_text(field), bits)
         }
         _ => value_text(field),
@@ -82,25 +79,25 @@ fn hex_bytes(bytes: &[u8]) -> String {
         .join(" ")
 }
 
-pub fn kind_label(kind: &WeaponRuntimeValueKind) -> String {
+pub fn kind_label(kind: &RuntimeValueKind) -> String {
     match kind {
-        WeaponRuntimeValueKind::Boolean => "Boolean".to_owned(),
-        WeaponRuntimeValueKind::SignedInteger { bits } => format!("Signed {bits}-bit integer"),
-        WeaponRuntimeValueKind::UnsignedInteger { bits } => {
+        RuntimeValueKind::Boolean => "Boolean".to_owned(),
+        RuntimeValueKind::SignedInteger { bits } => format!("Signed {bits}-bit integer"),
+        RuntimeValueKind::UnsignedInteger { bits } => {
             format!("Unsigned {bits}-bit integer")
         }
-        WeaponRuntimeValueKind::Enum { bits } => format!("{bits}-bit enum"),
-        WeaponRuntimeValueKind::BitFlags { bits } => format!("{bits}-bit flags"),
-        WeaponRuntimeValueKind::HexIdentifier { bits } => format!("{bits}-bit identifier"),
-        WeaponRuntimeValueKind::Float32 => "32-bit float".to_owned(),
-        WeaponRuntimeValueKind::Float64 => "64-bit float".to_owned(),
-        WeaponRuntimeValueKind::Vector4Float32 => "Four 32-bit floats".to_owned(),
-        WeaponRuntimeValueKind::FixedBytes { size } => format!("{size} exact bytes"),
+        RuntimeValueKind::Enum { bits } => format!("{bits}-bit enum"),
+        RuntimeValueKind::BitFlags { bits } => format!("{bits}-bit flags"),
+        RuntimeValueKind::HexIdentifier { bits } => format!("{bits}-bit identifier"),
+        RuntimeValueKind::Float32 => "32-bit float".to_owned(),
+        RuntimeValueKind::Float64 => "64-bit float".to_owned(),
+        RuntimeValueKind::Vector4Float32 => "Four 32-bit floats".to_owned(),
+        RuntimeValueKind::FixedBytes { size } => format!("{size} exact bytes"),
     }
 }
 
 /// What the native consumers prove this field does, when they prove it.
-pub fn field_help(field: &WeaponRuntimeField) -> Option<&'static str> {
+pub fn field_help(field: &RuntimeField) -> Option<&'static str> {
     let (schema, offset) = (field.locator.type_handle.get(), field.locator.value_offset);
     super::modifiers::field_meaning(schema, offset)
         .map(|meaning| meaning.help)
@@ -108,13 +105,13 @@ pub fn field_help(field: &WeaponRuntimeField) -> Option<&'static str> {
         .or_else(|| super::invisibility::field_help(schema, offset))
 }
 
-pub fn field_tooltip(field: &WeaponRuntimeField) -> String {
+pub fn field_tooltip(field: &RuntimeField) -> String {
     let meaning = field_help(field).map_or(String::new(), |help| format!("\n{help}"));
     let source = match field.source {
-        WeaponRuntimeFieldSource::GeneratedSchema => "generated package schema",
-        WeaponRuntimeFieldSource::NativeMember => "named native member",
-        WeaponRuntimeFieldSource::OpaqueNativeType => "unnamed native fixed-size type",
-        WeaponRuntimeFieldSource::NativeDeclaration => "checked native storage declaration",
+        RuntimeFieldSource::GeneratedSchema => "generated package schema",
+        RuntimeFieldSource::NativeMember => "named native member",
+        RuntimeFieldSource::OpaqueNativeType => "unnamed native fixed-size type",
+        RuntimeFieldSource::NativeDeclaration => "checked native storage declaration",
     };
     let path = field
         .locator
@@ -152,19 +149,19 @@ pub fn field_tooltip(field: &WeaponRuntimeField) -> String {
     )
 }
 
-pub fn summary_value(value: &WeaponRuntimeValue) -> String {
+pub fn summary_value(value: &RuntimeValue) -> String {
     match value {
-        WeaponRuntimeValue::Boolean(value) => if *value { "On" } else { "Off" }.into(),
-        WeaponRuntimeValue::Signed(value) => value.to_string(),
-        WeaponRuntimeValue::Unsigned(value) => value.to_string(),
-        WeaponRuntimeValue::Float32Bits(bits) => float_text(*bits),
-        WeaponRuntimeValue::Float64Bits(bits) => float64_text(*bits),
-        WeaponRuntimeValue::Vector4Float32Bits(bits) => bits
+        RuntimeValue::Boolean(value) => if *value { "On" } else { "Off" }.into(),
+        RuntimeValue::Signed(value) => value.to_string(),
+        RuntimeValue::Unsigned(value) => value.to_string(),
+        RuntimeValue::Float32Bits(bits) => float_text(*bits),
+        RuntimeValue::Float64Bits(bits) => float64_text(*bits),
+        RuntimeValue::Vector4Float32Bits(bits) => bits
             .iter()
             .map(|bits| float_text(*bits))
             .collect::<Vec<_>>()
             .join(", "),
-        WeaponRuntimeValue::Bytes(bytes) => bytes
+        RuntimeValue::Bytes(bytes) => bytes
             .iter()
             .map(|byte| format!("{byte:02X}"))
             .collect::<Vec<_>>()

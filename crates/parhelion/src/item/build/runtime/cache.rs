@@ -33,7 +33,7 @@ const ENTRY_LIMIT: u64 = 512 * 1024 * 1024;
 /// every saved fragment compiles again. A rebuild that leaves it alone keeps the fragments.
 /// The package version is part of the identity too, so a release never replays a fragment an
 /// earlier version saved even if a raise was missed.
-const REVISION: u32 = 4;
+const REVISION: u32 = 16;
 
 pub(super) struct Session {
     root: PathBuf,
@@ -532,7 +532,7 @@ fn remove_former_folders(cache: &Path) {
 /// missed in both passes of every build. The main mod's fragments keep the names they had.
 fn fragment_name(name: &[u8]) -> Vec<u8> {
     let mut name = name.to_vec();
-    if let Some(member) = crate::package_profile::member() {
+    if let Some(member) = crate::package::profile::member() {
         name.extend_from_slice(b"\0mod/");
         name.extend_from_slice(member.source().as_bytes());
     }

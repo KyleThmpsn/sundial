@@ -66,7 +66,7 @@ impl Workbench {
             if let Some(catalog) = catalog {
                 let choices = self.templates.get_or_insert_with(|| {
                     catalog.perk_template_choices_from(
-                        crate::package_profile::is_stock_item_definition,
+                        crate::package::profile::is_stock_item_definition,
                     )
                 });
                 let counts = self

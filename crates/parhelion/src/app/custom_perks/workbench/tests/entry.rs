@@ -90,7 +90,7 @@ fn native_micro_missile_entry_applies_speed_without_experimental_mode() {
         }));
     let mut app = PackageAuthoringApp {
         sandbox_perk_choices: catalog
-            .weapon_sandbox_perk_choices_from(crate::package_profile::is_stock_item_definition),
+            .weapon_sandbox_perk_choices_from(crate::package::profile::is_stock_item_definition),
         catalog: Some(catalog),
         packages,
         recipe,

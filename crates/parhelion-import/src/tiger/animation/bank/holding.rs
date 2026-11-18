@@ -13,7 +13,9 @@ pub struct Hold {
     pub layers: Vec<Layer>,
 }
 
-fn copy_rows(
+/// Replaces the array at `field` with copies of the rows at `sources`. Each copy's array
+/// descriptors at `pointers` keep naming the arrays its source names.
+pub(super) fn copy_rows(
     p: &mut Payload,
     field: usize,
     class: u32,

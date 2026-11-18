@@ -167,7 +167,7 @@ fn real_independent_damage_preserves_placement_appearance_and_ammo() {
     use crate::recipe::RecipeDamageType;
     let packages = crate::test_support::stock_packages();
     let mut recipes = Vec::new();
-    for (name, hash, donor, element) in [
+    for (name, hash, donor, damage_type) in [
         (
             "Arc in Kinetic",
             0x4CE3_CE93,
@@ -185,7 +185,7 @@ fn real_independent_damage_preserves_placement_appearance_and_ammo() {
             crate::WeaponRecipe::new_named_weapon_for_donor(name, hash, donor).unwrap();
         recipe.flavor =
             "Slot/damage experiment. Placement, appearance and ammo are inherited.".to_owned();
-        recipe.overrides.modern_damage_type = Some(element);
+        recipe.overrides.modern_damage_type = Some(damage_type);
         assert!(recipe.overrides.inventory_slot.is_none());
         assert!(recipe.overrides.ammo_type.is_none());
         assert!(recipe.presentation_donor.is_none());
@@ -238,18 +238,16 @@ fn real_independent_damage_preserves_placement_appearance_and_ammo() {
         };
         assert_eq!(weapon_damage_descriptor(&result).unwrap(), expected);
         // Damage-only authoring must not graft runtime components or tune ammo properties.
-        let source_runtime =
-            sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager(
-                &stock,
-                project.weapons[index].donor_item_hash,
-            )
-            .unwrap();
-        let result_runtime =
-            sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager(
-                &authored,
-                plan.item_hash,
-            )
-            .unwrap();
+        let source_runtime = sundial::package_authoring::runtime::load_runtime_entity_with_manager(
+            &stock,
+            project.weapons[index].donor_item_hash,
+        )
+        .unwrap();
+        let result_runtime = sundial::package_authoring::runtime::load_runtime_entity_with_manager(
+            &authored,
+            plan.item_hash,
+        )
+        .unwrap();
         assert_eq!(source_runtime.payload, result_runtime.payload);
     }
     export_trial_recipes(&recipes);

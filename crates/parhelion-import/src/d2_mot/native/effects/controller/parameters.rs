@@ -10,8 +10,8 @@ pub struct Parameters {
 }
 
 impl Parameters {
-    /// Use only after every declared value has been supplied by the private
-    /// creation action and the enclosing graph has excluded later writers.
+    /// Use only after the private creation action's values have been written and the
+    /// enclosing graph has excluded later writers.
     pub fn freeze_creation(&mut self) -> Result<()> {
         let root = self.owner.pointer(16)?;
         let methods = self.owner.array(0x30, 16, Some(0x808091A4))?;
@@ -37,6 +37,8 @@ impl Parameters {
 /// Specialize the initial values of one private graph for a constant creation
 /// action. The enclosing transaction must keep this graph private to callers
 /// with the same parameters and must reject external writes to this component.
+/// A declared parameter the action does not supply keeps its declared value, as it does
+/// when the creation context holds no row for it.
 pub fn with_defaults(source: &Payload, values: &BTreeMap<u32, [u8; 16]>) -> Result<Payload> {
     let si = source.pointer(16)?;
     let sd = source.pointer(24)?;
@@ -47,8 +49,8 @@ pub fn with_defaults(source: &Payload, values: &BTreeMap<u32, [u8; 16]>) -> Resu
     let inputs = source.array(si + 0x40, 48, Some(0x8080875C))?;
     let declarations = source.array(sd + 0xB8, 80, Some(0x8080875D))?;
     ensure!(
-        inputs.len() == declarations.len() && values.len() == declarations.len(),
-        "constant creation must supply every declared parameter"
+        inputs.len() == declarations.len() && values.len() <= declarations.len(),
+        "constant creation supplies more parameters than its component declares"
     );
     let mut output = source.clone();
     let mut names = BTreeSet::new();

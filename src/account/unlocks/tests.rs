@@ -7,11 +7,11 @@ use std::fs;
 fn native_authored_unlocks_cover_character_scopes_and_repeat_without_changes() {
     let directory = TestDirectory::new("authored-native-scopes");
     let path = directory.0.join("investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&path, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&path, 3);
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch("INSERT INTO characters SELECT 1,soid+1,race,gender,class,level,preview_available,appearance_value,last_orbited_destination,content_bypass,equipped_title,acquired_subclass_mask,next_inventory_serial FROM characters;").unwrap();
-    let crate::persistence::sqlite_account::SqliteAccountDocumentLoad::Loaded(mut document) =
-        crate::persistence::sqlite_account::load_document(&path).unwrap()
+    let crate::persistence::sunrise_account::SunriseAccountDocumentLoad::Loaded(mut document) =
+        crate::persistence::sunrise_account::load_document(&path).unwrap()
     else {
         panic!()
     };
@@ -24,7 +24,7 @@ fn native_authored_unlocks_cover_character_scopes_and_repeat_without_changes() {
         apply_native_authored_unlocks(&mut document, &unlocks).unwrap(),
         0
     );
-    crate::persistence::sqlite_account::tests::save_fixture_document(
+    crate::persistence::sunrise_account::tests::save_fixture_document(
         &mut document,
         &directory.0.join("backup.sqlite3"),
     );
@@ -58,7 +58,7 @@ fn legacy_unlock_sync_ignores_an_existing_database() {
         serde_json::to_vec(&unlock_settings_for_test()).unwrap(),
     )
     .unwrap();
-    crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&database, 3);
     let original_database = fs::read(&database).unwrap();
     let (saved_path, _, changed) = synchronize_authored_collection_unlocks_at(
         &settings,
@@ -80,7 +80,7 @@ fn sqlite_unlock_sync_updates_active_database_and_preserves_json() {
     let mut defaults = unlock_settings_for_test();
     defaults["version"] = json!(18);
     fs::write(&settings, serde_json::to_vec(&defaults).unwrap()).unwrap();
-    crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&database, 3);
     let json_before = fs::read(&settings).unwrap();
 
     let (saved_path, backup, changed) = synchronize_authored_collection_unlocks_at(

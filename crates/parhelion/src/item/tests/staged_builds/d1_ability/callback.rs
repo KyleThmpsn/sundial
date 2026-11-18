@@ -56,5 +56,5 @@ pub(super) fn readback(owner: &Payload, tag: u32, bank: bool) -> serde_json::Val
             "controller lost its embedded callback targets"
         );
     }
-    json!({"owner":tag,"sha256":sha(&owner.0),"callbacks":rows})
+    json!({"owner":tag,"sha256":sha256_hex(&owner.0),"callbacks":rows})
 }

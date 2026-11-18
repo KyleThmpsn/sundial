@@ -10,7 +10,7 @@ use super::Input;
 use crate::{
     AuthoringResult,
     error::invalid,
-    item::WeaponRuntimeResourcePatch,
+    item::RuntimeResourcePatch,
     tag_payload::{read_i64, read_u8, read_u32, read_u64},
 };
 use sundial::package_authoring::{
@@ -35,7 +35,7 @@ pub(super) fn patches(
     manager: &PackageManager,
     entity: &[u8],
     values: &[&Input],
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     if values.is_empty() {
         return Ok(Vec::new());
     }
@@ -104,7 +104,7 @@ pub(super) fn patches(
                 .checked_sub(start)
                 .and_then(|offset| u32::try_from(offset).ok())
                 .ok_or_else(|| invalid("Native Charge literal precedes its resource"))?;
-            Ok(WeaponRuntimeResourcePatch {
+            Ok(RuntimeResourcePatch {
                 binding_hash: WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
                 resource_index,
                 offset,

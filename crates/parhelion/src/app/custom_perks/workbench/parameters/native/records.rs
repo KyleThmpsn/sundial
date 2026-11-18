@@ -43,10 +43,10 @@ pub(super) struct Drawn {
 }
 
 impl Drawn {
-    pub(super) fn of(current: Option<WeaponRuntimeValue>, original: &WeaponRuntimeValue) -> Self {
+    pub(super) fn of(current: Option<RuntimeValue>, original: &RuntimeValue) -> Self {
         let number = match &current {
-            Some(WeaponRuntimeValue::Signed(value)) => Some(*value),
-            Some(WeaponRuntimeValue::Unsigned(value)) => i64::try_from(*value).ok(),
+            Some(RuntimeValue::Signed(value)) => Some(*value),
+            Some(RuntimeValue::Unsigned(value)) => i64::try_from(*value).ok(),
             _ => None,
         };
         Self {
@@ -66,7 +66,7 @@ pub(super) struct Source {
 #[derive(Clone, Copy)]
 pub(super) struct Entry<'f> {
     pub group: usize,
-    pub field: &'f WeaponRuntimeField,
+    pub field: &'f RuntimeField,
 }
 
 /// Values whose names appear in one record, by group, and a table for each set of records

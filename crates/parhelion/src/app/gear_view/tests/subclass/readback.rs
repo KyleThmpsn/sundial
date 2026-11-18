@@ -560,10 +560,11 @@ pub(in super::super) fn read_back_screen_art(
     let manager = open_shadowkeep_package_manager(packages).unwrap();
     let pictures = |container: u32| {
         let payload =
-            crate::icon_edit::read_icon_container(&manager, tiger_pkg::TagHash(container)).unwrap();
+            crate::icon::edit::read_icon_container(&manager, tiger_pkg::TagHash(container))
+                .unwrap();
         let layer = tiger_pkg::TagHash(u32::from_le_bytes(payload[0x14..0x18].try_into().unwrap()));
         let layer_payload = manager.read_tag(layer).unwrap();
-        crate::icon_edit::texture_reference_offsets(&layer_payload, layer)
+        crate::icon::edit::texture_reference_offsets(&layer_payload, layer)
             .unwrap()
             .into_iter()
             .map(|(_, header)| header)
@@ -590,7 +591,7 @@ pub(in super::super) fn read_back_screen_art(
         "{name}'s screen art keeps one picture per attunement"
     );
     assert_ne!(own[0], base[0], "{name}'s top picture is a painted copy");
-    let painted = crate::icon_edit::decode_texture(&manager, own[0]).unwrap();
+    let painted = crate::icon::edit::decode_texture(&manager, own[0]).unwrap();
     assert_eq!(
         painted
             .get_pixel(painted.width() / 2, painted.height() / 2)
@@ -764,7 +765,7 @@ pub(in super::super) fn read_back_ability(
     locator.graph_tag = None;
     let read = |entity: u32| {
         let payload = manager.read_tag(tiger_pkg::TagHash(entity)).unwrap();
-        resolve_weapon_runtime_field(&manager, &payload, &locator)
+        resolve_runtime_field(&manager, &payload, &locator)
             .unwrap_or_else(|error| panic!("{} of 0x{entity:08X}: {error}", value.name))
             .field
             .value
@@ -1263,7 +1264,7 @@ pub(in super::super) fn read_back_spawn(
     spawn_locator.graph_tag = None;
     let read_spawn = |graph: u32| {
         let payload = manager.read_tag(tiger_pkg::TagHash(graph)).ok()?;
-        resolve_weapon_runtime_field(manager, &payload, &spawn_locator)
+        resolve_runtime_field(manager, &payload, &spawn_locator)
             .ok()
             .map(|resolved| resolved.field.value)
     };
@@ -1418,9 +1419,10 @@ pub(in super::super) fn read_back_subclass(
             authored.damage_type, chosen,
             "{name} shows the damage type its strings were given"
         );
-        // Its definition swaps the element unlock flag the base shares with its element's stock
-        // subclasses for the chosen element's, and sets the unlock values that element's stock
-        // subclasses set. The game kept the base's icon while only the strings changed.
+        // Its definition swaps the damage type unlock flag the base shares with its damage type's
+        // stock subclasses for the chosen damage type's, and sets the unlock values that damage
+        // type's stock subclasses set. The game kept the base's icon while only the strings
+        // changed.
         let manager = open_shadowkeep_package_manager(packages).unwrap();
         let unlocks =
             |catalog: &InvestmentCatalog, hash: u32| {
@@ -1458,7 +1460,7 @@ pub(in super::super) fn read_back_subclass(
                 }
                 (flags, values)
             };
-        let element = |damage: Option<WeaponDamageType>| {
+        let damage_unlock = |damage: Option<WeaponDamageType>| {
             let mut shared = None::<std::collections::BTreeSet<u16>>;
             let mut values = None;
             for each in stock
@@ -1482,26 +1484,26 @@ pub(in super::super) fn read_back_subclass(
             assert_eq!(
                 shared.len(),
                 1,
-                "stock subclasses of one damage type share one element flag"
+                "stock subclasses of one damage type share one unlock flag"
             );
             (shared, values.unwrap())
         };
         let (flags, values) = unlocks(staged, report.item_hash);
         let (base_flags, _) = unlocks(stock, base.hash);
-        let (base_element, _) = element(base.damage_type);
-        let (chosen_element, chosen_values) = element(chosen);
+        let (base_unlock, _) = damage_unlock(base.damage_type);
+        let (chosen_unlock, chosen_values) = damage_unlock(chosen);
         assert_eq!(
             flags,
             base_flags
-                .difference(&base_element)
-                .chain(&chosen_element)
+                .difference(&base_unlock)
+                .chain(&chosen_unlock)
                 .copied()
                 .collect::<std::collections::BTreeSet<_>>(),
-            "{name} carries its chosen damage type's element flag"
+            "{name} carries its chosen damage type's unlock flag"
         );
         assert_eq!(
             values, chosen_values,
-            "{name} sets its chosen damage type's element values"
+            "{name} sets its chosen damage type's unlock values"
         );
     }
     serde_json::json!({

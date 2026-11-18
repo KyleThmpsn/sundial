@@ -123,6 +123,7 @@ pub(crate) fn validate(
     merge_data: &[ArtifactMetadata],
     diagnostics: Option<&ArtifactMetadata>,
     scripts: &[ArtifactMetadata],
+    packs: &[ArtifactMetadata],
 ) -> Result<(), String> {
     let mut ids = BTreeSet::new();
     let mut listed = BTreeMap::new();
@@ -158,6 +159,7 @@ pub(crate) fn validate(
             .chain(merge_data)
             .chain(diagnostics)
             .chain(scripts)
+            .chain(packs)
     };
     // Only another member's files sit in a folder of the run, one level deep.
     for artifact in expected() {
@@ -285,9 +287,9 @@ pub(crate) fn incoming(
             .filter(|(a, _)| a.file_name.ends_with(".pkg"))
         {
             let profile =
-                crate::package_profile::authored_package_for_file_name(&artifact.file_name)
+                crate::package::profile::authored_package_for_file_name(&artifact.file_name)
                     .ok_or("Unknown managed package")?;
-            if crate::package_profile::canonical_package(profile.package_id).is_some() {
+            if crate::package::profile::canonical_package(profile.package_id).is_some() {
                 main.patches.push(path.clone());
             } else {
                 main.packages.push(path.clone());

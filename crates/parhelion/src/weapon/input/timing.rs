@@ -1,6 +1,8 @@
 //! Prepared firing curves belong to the imported graph and its validated native carrier.
 use super::*;
 use sha2::{Digest, Sha256};
+mod curves;
+mod overrides;
 
 #[derive(Deserialize)]
 pub(crate) struct Timing {
@@ -8,6 +10,12 @@ pub(crate) struct Timing {
     native_resource: u64,
     native_sha256: String,
     edits: Vec<Edit>,
+    #[serde(default)]
+    appended_curves: Vec<curves::Curve>,
+    #[serde(default)]
+    native_translations: Option<u32>,
+    #[serde(default)]
+    stat_overrides: Vec<overrides::Change>,
 }
 
 #[derive(Deserialize)]
@@ -27,6 +35,7 @@ pub(crate) fn imported(graph: &serde_json::Value) -> AuthoringResult<Option<Timi
     let weapon = match graph["source"].as_str() {
         Some("d1_roi") => graph["kind"] == "weapon",
         Some("d2_mot") => graph["kind"].is_null() || graph["kind"] == "weapon",
+        Some("marathon") => graph["kind"].is_null() || graph["kind"] == "weapon",
         _ => false,
     };
     if !weapon {
@@ -38,14 +47,38 @@ pub(crate) fn imported(graph: &serde_json::Value) -> AuthoringResult<Option<Timi
 }
 
 impl Timing {
-    /// Reimports replace the graph, while native carrier changes require a new conversion.
-    /// Reads participate in the normal runtime cache's native dependency fingerprints.
-    pub(crate) fn patches(
+    /// Additional columns have private storage. Existing native columns, named outputs and
+    /// unselected tables retain their samples and domains.
+    pub(crate) fn appends(
         &self,
         manager: &PackageManager,
         entity: &[u8],
         group: u32,
-    ) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    ) -> AuthoringResult<Vec<crate::item::RuntimeResourceAppend>> {
+        if self.appended_curves.is_empty() && self.stat_overrides.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (owner, resource) = self.carrier(manager, entity, group)?;
+        let (_, mut appends) = overrides::plans(&owner, resource, &self.stat_overrides)?;
+        if !self.appended_curves.is_empty() {
+            appends.push(curves::append(
+                &owner,
+                resource,
+                group,
+                self.native_translations
+                    .ok_or_else(|| invalid("Imported curves have no table descriptor"))?,
+                &self.appended_curves,
+            )?);
+        }
+        Ok(appends)
+    }
+
+    fn carrier(
+        &self,
+        manager: &PackageManager,
+        entity: &[u8],
+        group: u32,
+    ) -> AuthoringResult<(Vec<u8>, usize)> {
         let bindings = weapon_component_bindings(entity, WEAPON_STAT_TRANSLATOR_COMPONENT_KEY)
             .map_err(invalid)?;
         let [binding] = bindings.as_slice() else {
@@ -66,6 +99,18 @@ impl Timing {
         }
         let resource = usize::try_from(binding.resource_offset)
             .map_err(|_| invalid("Imported firing resource offset overflow"))?;
+        Ok((owner, resource))
+    }
+
+    /// Reimports replace the graph, while native carrier changes require a new conversion.
+    /// Reads participate in the normal runtime cache's native dependency fingerprints.
+    pub(crate) fn patches(
+        &self,
+        manager: &PackageManager,
+        entity: &[u8],
+        group: u32,
+    ) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
+        let (owner, resource) = self.carrier(manager, entity, group)?;
         let mut offsets = std::collections::BTreeSet::new();
         let mut patches = Vec::new();
         for edit in &self.edits {
@@ -78,13 +123,15 @@ impl Timing {
             if edit.offset % 4 != 0
                 || !offsets.insert(edit.offset)
                 || owner.get(at..end) != Some(edit.before.as_slice())
-                || !f32::from_le_bytes(edit.after).is_finite()
+                // A sample or literal is a finite float. A rewritten row's component read also
+                // carries the unused-selector word.
+                || !(f32::from_le_bytes(edit.after).is_finite() || edit.after == [0xFF; 4])
             {
                 return Err(invalid(
                     "Imported firing curve has an invalid native sample",
                 ));
             }
-            patches.push(WeaponRuntimeResourcePatch {
+            patches.push(RuntimeResourcePatch {
                 binding_hash: WEAPON_STAT_TRANSLATOR_COMPONENT_KEY,
                 resource_index: 0,
                 offset: edit.offset,
@@ -94,6 +141,7 @@ impl Timing {
                 graph_trajectories: None,
             });
         }
+        patches.extend(overrides::plans(&owner, resource, &self.stat_overrides)?.0);
         Ok(patches)
     }
 }

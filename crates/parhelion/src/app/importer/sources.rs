@@ -492,7 +492,7 @@ impl PackageAuthoringApp {
             self.catalog
                 .as_ref()
                 .and_then(|catalog| catalog.item_definition_tag(hash))
-                .is_none_or(crate::package_profile::is_stock_item_definition)
+                .is_none_or(crate::package::profile::is_stock_item_definition)
         };
         let order = |donors: &mut dyn Iterator<Item = &WeaponDonorSummary>| {
             let mut donors = donors.filter(|donor| stock(donor.hash)).collect::<Vec<_>>();

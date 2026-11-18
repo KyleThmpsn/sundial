@@ -122,9 +122,9 @@ pub const POLICIES: [ActionPolicy; 6] = [
     },
     ActionPolicy {
         kind: 2,
-        name: "Unobserved Policy 2",
-        summary: "Registered by the client. No surveyed action uses it.",
-        configuration_class: 0x00000000,
+        name: "Programmed Weapon Floats",
+        summary: "While the action is active, the weapon's three float overrides are set to 0.01, 1 and 1 and the weapon takes the configured value program. Removal restores the saved floats. No surveyed action uses it, and what the program drives is not established.",
+        configuration_class: 0x80803E0A,
         actions: 0,
     },
     ActionPolicy {
@@ -254,7 +254,7 @@ pub fn plain_effect_title(kind: u8) -> Option<&'static str> {
         35 => "Override Animation Input",
         37 => "Label the Event When the Damage Source Matches",
         40 => "Change Outgoing Damage",
-        41 => "Hold a Named Count",
+        41 => "Give a Sword a Key",
         42 => "Set the Effect's Counter",
         43 => "Send a Game Signal",
         47 => "Set Transmat Effect",

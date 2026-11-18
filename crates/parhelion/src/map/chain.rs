@@ -3434,7 +3434,7 @@ struct Entries(TagHash);
 impl Entries {
     fn at(self, offset: usize) -> AuthoringResult<TagHash> {
         let index = self.0.entry_index() as usize + offset;
-        if index >= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+        if index >= crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
             return Err(invalid("The map root chain exceeds one package"));
         }
         Ok(TagHash::new(self.0.pkg_id(), index as u16))

@@ -13,9 +13,12 @@ pub(crate) fn native_companion<'a>(
     companions: &'a mut Companions,
 ) -> AuthoringResult<&'a (TagHash, Vec<u8>)> {
     if !companions.contains_key(&source_parent) {
-        let chain = crate::chain::discover_patch_chain(directory, TagHash(source_parent).pkg_id())?;
+        let chain = crate::package::chain::discover_patch_chain(
+            directory,
+            TagHash(source_parent).pkg_id(),
+        )?;
         let bytes = fs::read(&chain.latest().path).map_err(|e| invalid(e.to_string()))?;
-        let layout = crate::format::PackageLayout::parse(&bytes)?;
+        let layout = crate::package::format::PackageLayout::parse(&bytes)?;
         // Enrollment belongs to the package. Cache every row once instead of
         // reopening the same native package for each loading owner.
         for row in layout.shared_tag_enrollment_rows(&bytes)?.chunks_exact(8) {

@@ -16,7 +16,7 @@ mod health;
 mod identity;
 mod item;
 pub use address::{BindingHash, GraphTag, SchemaHandle};
-pub use item::load as load_weapon_runtime_entity_for_item_with_manager;
+pub use item::load as load_runtime_entity_for_item_with_manager;
 mod invisibility;
 pub use identity::{
     NativeMember, native_holders, native_member_names, native_members, native_pointer_layout,
@@ -26,7 +26,7 @@ pub(crate) use identity::{native_declaration, native_layouts};
 pub mod modifiers;
 
 mod values;
-pub use values::encode_weapon_runtime_value;
+pub use values::encode_runtime_value;
 use values::*;
 
 mod decode;
@@ -36,10 +36,10 @@ mod structure;
 pub use structure::{NativeStructure, NativeStructureField};
 
 mod native;
-pub use native::{decode_weapon_runtime_field_value, encode_weapon_runtime_field_value};
+pub use native::{decode_runtime_field_value, encode_runtime_field_value};
 
 mod compatibility;
-pub use compatibility::{WeaponRuntimeResourceShape, load_weapon_runtime_resource_shape};
+pub use compatibility::{RuntimeResourceShape, load_runtime_resource_shape};
 mod transfer;
 pub use transfer::runtime_fields_share_semantics;
 
@@ -117,14 +117,14 @@ pub(crate) fn inherits(mut class: u32, parent: u32, base_of: impl Fn(u32) -> Opt
 /// Which native root inside a component-owner payload contains a runtime value.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WeaponRuntimeRootKind {
+pub enum RuntimeRootKind {
     Instance,
     Definition,
     ComponentInstance,
     ComponentDefinition,
 }
 
-impl WeaponRuntimeRootKind {
+impl RuntimeRootKind {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -139,7 +139,7 @@ impl WeaponRuntimeRootKind {
 /// Stable semantic path element used to re-resolve a field after donor grafts.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WeaponRuntimePathElement {
+pub struct RuntimePathElement {
     pub name_hash: u32,
     pub type_handle: SchemaHandle,
     /// Offset within the containing record, or the row index for a native array step.
@@ -152,15 +152,15 @@ pub struct WeaponRuntimePathElement {
 /// reflected or native traversal path then prove the field still has its declared storage layout.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WeaponRuntimeFieldLocator {
+pub struct RuntimeFieldLocator {
     /// Selects one referenced graph in a private perk. Omitted by legacy and donor-relative edits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_tag: Option<GraphTag>,
     pub binding_hash: BindingHash,
     pub resource_index: u16,
-    pub root: WeaponRuntimeRootKind,
+    pub root: RuntimeRootKind,
     pub root_schema: SchemaHandle,
-    pub path: Vec<WeaponRuntimePathElement>,
+    pub path: Vec<RuntimePathElement>,
     pub type_handle: SchemaHandle,
     /// Final byte offset relative to the selected root for reflected paths, or to the
     /// declaring object for a checked native traversal path.
@@ -168,7 +168,7 @@ pub struct WeaponRuntimeFieldLocator {
     pub byte_size: u32,
 }
 
-impl WeaponRuntimeFieldLocator {
+impl RuntimeFieldLocator {
     /// Check a private perk's graph selection before resolving its donor-relative path.
     pub fn for_graph(&self, tag: GraphTag) -> Result<Self, String> {
         if self.graph_tag.is_some_and(|selected| selected != tag) {
@@ -199,7 +199,7 @@ impl WeaponRuntimeFieldLocator {
 /// Native value representation. Floating-point values retain their exact bit patterns.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum WeaponRuntimeValue {
+pub enum RuntimeValue {
     Boolean(bool),
     Signed(i64),
     Unsigned(u64),
@@ -212,7 +212,7 @@ pub enum WeaponRuntimeValue {
 /// The editor and encoder appropriate for a runtime field.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WeaponRuntimeValueKind {
+pub enum RuntimeValueKind {
     Boolean,
     SignedInteger { bits: u8 },
     UnsignedInteger { bits: u8 },
@@ -225,7 +225,7 @@ pub enum WeaponRuntimeValueKind {
     FixedBytes { size: u32 },
 }
 
-impl WeaponRuntimeValueKind {
+impl RuntimeValueKind {
     #[must_use]
     pub const fn byte_size(&self) -> u32 {
         match self {
@@ -277,7 +277,7 @@ impl WeaponRuntimeValueKind {
 
 /// Evidence used to discover a runtime field.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WeaponRuntimeFieldSource {
+pub enum RuntimeFieldSource {
     /// A named stored field from a generated package schema.
     GeneratedSchema,
     /// A named member from the native content registry.
@@ -290,17 +290,17 @@ pub enum WeaponRuntimeFieldSource {
 
 /// One independently writable runtime value.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeField {
-    pub locator: WeaponRuntimeFieldLocator,
+pub struct RuntimeField {
+    pub locator: RuntimeFieldLocator,
     /// Resolved byte offset in the component-owner payload. This is diagnostic state rather than
     /// part of the stable recipe locator because different donors may place the same resource at
     /// different owner offsets.
     pub owner_offset: u32,
     pub name: String,
     pub path_label: String,
-    pub kind: WeaponRuntimeValueKind,
-    pub value: WeaponRuntimeValue,
-    pub source: WeaponRuntimeFieldSource,
+    pub kind: RuntimeValueKind,
+    pub value: RuntimeValue,
+    pub source: RuntimeFieldSource,
     /// Low byte of generated-schema metadata, when the path begins at such a field.
     pub generated_kind: Option<u8>,
     /// Whether this field's own name came from the inferred name table rather than a
@@ -312,14 +312,14 @@ pub struct WeaponRuntimeField {
 /// One typed recipe edit. The locator is re-resolved before the encoded value is written.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WeaponRuntimeValueOverride {
-    pub locator: WeaponRuntimeFieldLocator,
-    pub value: WeaponRuntimeValue,
+pub struct RuntimeValueOverride {
+    pub locator: RuntimeFieldLocator,
+    pub value: RuntimeValue,
 }
 
 /// One abstract binding/resource edge from a weapon entity.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeBinding {
+pub struct RuntimeBinding {
     pub binding_hash: u32,
     pub binding_label: String,
     pub resource_index: u16,
@@ -331,13 +331,13 @@ pub struct WeaponRuntimeBinding {
 
 /// One native root in a component-owner payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeRoot {
-    pub kind: WeaponRuntimeRootKind,
+pub struct RuntimeRoot {
+    pub kind: RuntimeRootKind,
     pub schema: u32,
     pub owner_offset: u32,
     pub byte_size: u32,
     pub generated_schema: bool,
-    pub fields: Vec<WeaponRuntimeField>,
+    pub fields: Vec<RuntimeField>,
     /// Native declaration details, including checked paths used by native field editing.
     /// Storage declarations do not establish an unnamed value's gameplay meaning.
     pub structure: Arc<NativeStructure>,
@@ -345,7 +345,7 @@ pub struct WeaponRuntimeRoot {
 
 /// One concrete resource selected by an abstract runtime-component binding.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeResource {
+pub struct RuntimeResource {
     pub binding_hash: u32,
     pub binding_label: String,
     pub resource_index: u16,
@@ -354,34 +354,34 @@ pub struct WeaponRuntimeResource {
     pub concrete_class: u32,
     /// Other active bindings that select this exact owner/class/offset tuple.
     pub alias_bindings: Vec<(u32, u16)>,
-    pub instance: WeaponRuntimeRoot,
-    pub definition: Option<WeaponRuntimeRoot>,
+    pub instance: RuntimeRoot,
+    pub definition: Option<RuntimeRoot>,
 }
 
 /// One deduplicated component owner and the roots it contributes.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeOwner {
+pub struct RuntimeOwner {
     pub owner_tag: u32,
     /// Deterministic binding used to address this owner after component donor grafts.
     pub anchor_binding_hash: u32,
     pub anchor_resource_index: u16,
-    pub roots: Vec<WeaponRuntimeRoot>,
+    pub roots: Vec<RuntimeRoot>,
 }
 
 /// Complete package-backed runtime graph for one stock weapon pattern.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeGraph {
+pub struct RuntimeGraph {
     pub item_hash: u32,
     pub pattern_global_id_hash: u32,
     pub entity_tag: u32,
-    pub bindings: Vec<WeaponRuntimeBinding>,
-    pub resources: Vec<WeaponRuntimeResource>,
-    pub owners: Vec<WeaponRuntimeOwner>,
+    pub bindings: Vec<RuntimeBinding>,
+    pub resources: Vec<RuntimeResource>,
+    pub owners: Vec<RuntimeOwner>,
 }
 
 /// Resolved stock runtime entity used when composing independent component donors.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeEntitySource {
+pub struct RuntimeEntitySource {
     pub item_hash: u32,
     pub pattern_global_id_hash: u32,
     /// Selects this item's variant inside a shared weapon-content component.
@@ -392,7 +392,7 @@ pub struct WeaponRuntimeEntitySource {
     pub payload: Vec<u8>,
 }
 
-impl WeaponRuntimeGraph {
+impl RuntimeGraph {
     /// Private perk fields retain their graph identity without changing donor-relative locators.
     pub fn scope_fields(&mut self) {
         let tag = self.entity_tag;
@@ -409,7 +409,7 @@ impl WeaponRuntimeGraph {
             }
         }
     }
-    pub fn fields(&self) -> impl Iterator<Item = &WeaponRuntimeField> {
+    pub fn fields(&self) -> impl Iterator<Item = &RuntimeField> {
         self.resources
             .iter()
             .flat_map(|resource| {
@@ -433,10 +433,10 @@ impl WeaponRuntimeGraph {
 
 /// A locator resolved against the final, donor-grafted entity at build time.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResolvedWeaponRuntimeField {
+pub struct ResolvedRuntimeField {
     pub owner_tag: u32,
     pub owner_offset: usize,
-    pub field: WeaponRuntimeField,
+    pub field: RuntimeField,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -485,7 +485,7 @@ struct GeneratedField {
 
 #[derive(Clone, Copy)]
 struct OwnerRootDescriptor {
-    kind: WeaponRuntimeRootKind,
+    kind: RuntimeRootKind,
     target: usize,
     schema: u32,
     limit: usize,
@@ -494,21 +494,21 @@ struct OwnerRootDescriptor {
 static RUNTIME_REGISTRY: OnceLock<Result<RuntimeRegistry, String>> = OnceLock::new();
 
 /// Loads every package-backed runtime field for a stock weapon item.
-pub fn load_weapon_runtime_graph(
+pub fn load_runtime_graph(
     install_directory: &Path,
     item_hash: u32,
-) -> Result<WeaponRuntimeGraph, String> {
+) -> Result<RuntimeGraph, String> {
     let manager = open_shadowkeep_packages(install_directory)?;
-    load_weapon_runtime_graph_with_manager(&manager, item_hash)
+    load_runtime_graph_with_manager(&manager, item_hash)
 }
 
 /// Loads every package-backed runtime field while reusing an existing package manager.
-pub fn load_weapon_runtime_graph_with_manager(
+pub fn load_runtime_graph_with_manager(
     manager: &PackageManager,
     item_hash: u32,
-) -> Result<WeaponRuntimeGraph, String> {
-    let source = load_weapon_runtime_entity_with_manager(manager, item_hash)?;
-    load_weapon_runtime_graph_for_entity(
+) -> Result<RuntimeGraph, String> {
+    let source = load_runtime_entity_with_manager(manager, item_hash)?;
+    load_runtime_graph_for_entity(
         manager,
         source.item_hash,
         source.pattern_global_id_hash,
@@ -518,23 +518,23 @@ pub fn load_weapon_runtime_graph_with_manager(
 }
 
 /// Loads a sandbox pattern by the row's item identity. Investment item hashes can differ from
-/// that identity. Use [`load_weapon_runtime_entity_for_item_with_manager`] for an item donor.
-pub fn load_weapon_runtime_entity_with_manager(
+/// that identity. Use [`load_runtime_entity_for_item_with_manager`] for an item donor.
+pub fn load_runtime_entity_with_manager(
     manager: &PackageManager,
     item_hash: u32,
-) -> Result<WeaponRuntimeEntitySource, String> {
+) -> Result<RuntimeEntitySource, String> {
     let sandbox_payload = read_sandbox_pattern_table(manager)?;
     let pattern = sandbox_pattern_identity(&sandbox_payload, item_hash)?.ok_or_else(|| {
         format!("Item 0x{item_hash:08X} does not have a sandbox-pattern runtime row")
     })?;
-    load_weapon_runtime_entity_from_pattern(manager, pattern)
+    load_runtime_entity_from_pattern(manager, pattern)
 }
 
 /// Resolves the authoritative item and entity at an investment sandbox-pattern row index.
-pub fn load_weapon_runtime_entity_at_pattern_index_with_manager(
+pub fn load_runtime_entity_at_pattern_index_with_manager(
     manager: &PackageManager,
     pattern_index: u16,
-) -> Result<WeaponRuntimeEntitySource, String> {
+) -> Result<RuntimeEntitySource, String> {
     let sandbox_payload = read_sandbox_pattern_table(manager)?;
     let pattern = sandbox_pattern_identity_at(&sandbox_payload, usize::from(pattern_index))?
         .ok_or_else(|| {
@@ -549,16 +549,16 @@ pub fn load_weapon_runtime_entity_at_pattern_index_with_manager(
             "Weapon pattern index {pattern_index} has an inactive item or runtime identity"
         ));
     }
-    load_weapon_runtime_entity_from_pattern(manager, pattern)
+    load_runtime_entity_from_pattern(manager, pattern)
 }
 
 /// Resolves many sandbox-pattern rows at once, reading the pattern and assignment tables once
 /// rather than once per row. Each row keeps its own result, so one unreadable row does not hide
 /// the others.
-pub fn load_weapon_runtime_entities_at_pattern_indices_with_manager(
+pub fn load_runtime_entities_at_pattern_indices_with_manager(
     manager: &PackageManager,
     pattern_indices: &[u16],
-) -> Result<Vec<Result<WeaponRuntimeEntitySource, String>>, String> {
+) -> Result<Vec<Result<RuntimeEntitySource, String>>, String> {
     let sandbox_payload = read_sandbox_pattern_table(manager)?;
     let assignments = read_entity_assignments(manager)?;
     Ok(pattern_indices
@@ -603,10 +603,10 @@ fn read_entity_assignments(manager: &PackageManager) -> Result<Vec<u8>, String> 
     })
 }
 
-fn load_weapon_runtime_entity_from_pattern(
+fn load_runtime_entity_from_pattern(
     manager: &PackageManager,
     pattern: SandboxPatternIdentity,
-) -> Result<WeaponRuntimeEntitySource, String> {
+) -> Result<RuntimeEntitySource, String> {
     let assignments = read_entity_assignments(manager)?;
     entity_from_assignments(manager, &assignments, pattern)
 }
@@ -615,7 +615,7 @@ fn entity_from_assignments(
     manager: &PackageManager,
     assignments: &[u8],
     pattern: SandboxPatternIdentity,
-) -> Result<WeaponRuntimeEntitySource, String> {
+) -> Result<RuntimeEntitySource, String> {
     let entity_tag = weapon_entity_assignment(assignments, pattern.pattern_global_id_hash)?
         .ok_or_else(|| {
             format!(
@@ -636,7 +636,7 @@ fn entity_from_assignments(
     let entity = manager
         .read_tag(entity_tag)
         .map_err(|error| format!("Could not read runtime weapon entity {entity_tag}: {error}"))?;
-    Ok(WeaponRuntimeEntitySource {
+    Ok(RuntimeEntitySource {
         item_hash: pattern.item_hash,
         pattern_global_id_hash: pattern.pattern_global_id_hash,
         weapon_content_group_hash: pattern.weapon_content_group_hash,
@@ -648,13 +648,13 @@ fn entity_from_assignments(
 
 /// Decodes an already-resolved runtime entity. This is used after Parhelion applies component
 /// donors in memory, ensuring the field UI reflects the effective graph rather than the base donor.
-pub fn load_weapon_runtime_graph_for_entity(
+pub fn load_runtime_graph_for_entity(
     manager: &PackageManager,
     item_hash: u32,
     pattern_global_id_hash: u32,
     entity_tag: u32,
     entity: &[u8],
-) -> Result<WeaponRuntimeGraph, String> {
+) -> Result<RuntimeGraph, String> {
     let registry = runtime_registry()?;
     let bindings = collect_runtime_bindings(entity, registry)?;
     let mut owner_anchors = BTreeMap::<u32, (u32, u16)>::new();
@@ -725,7 +725,7 @@ pub fn load_weapon_runtime_graph_for_entity(
             anchor_resource_index,
             resource_ranges.get(&owner_tag).map_or(&[], Vec::as_slice),
         )?;
-        owners.push(WeaponRuntimeOwner {
+        owners.push(RuntimeOwner {
             owner_tag,
             anchor_binding_hash,
             anchor_resource_index,
@@ -769,7 +769,7 @@ pub fn load_weapon_runtime_graph_for_entity(
         }
     }
     native::append_fields(manager, &mut resources, &mut owners, &owner_payloads)?;
-    Ok(WeaponRuntimeGraph {
+    Ok(RuntimeGraph {
         item_hash,
         pattern_global_id_hash,
         entity_tag,
@@ -780,13 +780,12 @@ pub fn load_weapon_runtime_graph_for_entity(
 }
 
 fn enrich_component_field_labels(
-    resources: &mut [WeaponRuntimeResource],
+    resources: &mut [RuntimeResource],
     owner_tag: u32,
-    owner_roots: &[WeaponRuntimeRoot],
+    owner_roots: &[RuntimeRoot],
 ) {
     let mut labels =
-        BTreeMap::<(u32, u32), (usize, String, String, WeaponRuntimeFieldSource, Option<u8>)>::new(
-        );
+        BTreeMap::<(u32, u32), (usize, String, String, RuntimeFieldSource, Option<u8>)>::new();
     for field in owner_roots.iter().flat_map(|root| &root.fields) {
         let score = semantic_runtime_label_score(&field.path_label);
         if score == 0 {
@@ -846,11 +845,11 @@ fn semantic_runtime_label_score(label: &str) -> usize {
 }
 
 /// Re-resolves and validates a saved locator against the final runtime entity.
-pub fn resolve_weapon_runtime_field(
+pub fn resolve_runtime_field(
     manager: &PackageManager,
     entity: &[u8],
-    locator: &WeaponRuntimeFieldLocator,
-) -> Result<ResolvedWeaponRuntimeField, String> {
+    locator: &RuntimeFieldLocator,
+) -> Result<ResolvedRuntimeField, String> {
     if locator.graph_tag.is_some() {
         return Err("A graph-scoped field requires an explicit source graph.".into());
     }
@@ -869,10 +868,10 @@ pub fn resolve_weapon_runtime_field(
     let registry = runtime_registry()?;
     let field = if matches!(
         locator.root,
-        WeaponRuntimeRootKind::ComponentInstance
-            | WeaponRuntimeRootKind::ComponentDefinition
+        RuntimeRootKind::ComponentInstance
+            | RuntimeRootKind::ComponentDefinition
     ) {
-        let runtime_binding = WeaponRuntimeBinding {
+        let runtime_binding = RuntimeBinding {
             binding_hash: locator.binding_hash.get(),
             binding_label: runtime_binding_label(
                 locator.binding_hash.get(),
@@ -886,7 +885,7 @@ pub fn resolve_weapon_runtime_field(
             concrete_class: binding.concrete_class,
             resource_offset: binding.resource_offset,
         };
-        if locator.root == WeaponRuntimeRootKind::ComponentInstance
+        if locator.root == RuntimeRootKind::ComponentInstance
             && runtime_binding.concrete_class != locator.root_schema.get()
         {
             return Err(format!(
@@ -896,9 +895,9 @@ pub fn resolve_weapon_runtime_field(
         }
         let resource = decode_component_resource(manager, &payload, &runtime_binding, registry)?;
         let root = match locator.root {
-            WeaponRuntimeRootKind::ComponentInstance => Some(resource.instance),
-            WeaponRuntimeRootKind::ComponentDefinition => resource.definition,
-            WeaponRuntimeRootKind::Instance | WeaponRuntimeRootKind::Definition => None,
+            RuntimeRootKind::ComponentInstance => Some(resource.instance),
+            RuntimeRootKind::ComponentDefinition => resource.definition,
+            RuntimeRootKind::Instance | RuntimeRootKind::Definition => None,
         }
         .ok_or_else(|| {
             format!(
@@ -979,7 +978,7 @@ pub fn resolve_weapon_runtime_field(
             locator.value_offset
         )
     })?;
-    Ok(ResolvedWeaponRuntimeField {
+    Ok(ResolvedRuntimeField {
         owner_tag: binding.owner_tag,
         owner_offset: usize::try_from(field.owner_offset)
             .map_err(|_| "Runtime field offset does not fit this platform")?,
@@ -990,11 +989,11 @@ pub fn resolve_weapon_runtime_field(
 fn collect_runtime_bindings(
     entity: &[u8],
     registry: &RuntimeRegistry,
-) -> Result<Vec<WeaponRuntimeBinding>, String> {
+) -> Result<Vec<RuntimeBinding>, String> {
     let mut bindings = Vec::new();
     for binding_hash in weapon_component_binding_hashes(entity)? {
         for binding in weapon_component_bindings(entity, binding_hash)? {
-            bindings.push(WeaponRuntimeBinding {
+            bindings.push(RuntimeBinding {
                 binding_hash,
                 binding_label: runtime_binding_label(
                     binding_hash,
@@ -1022,9 +1021,9 @@ fn collect_runtime_bindings(
 }
 
 fn canonical_runtime_resources(
-    bindings: &[WeaponRuntimeBinding],
-) -> Vec<(WeaponRuntimeBinding, Vec<(u32, u16)>)> {
-    let mut aliases = BTreeMap::<(u32, u64, u32), Vec<&WeaponRuntimeBinding>>::new();
+    bindings: &[RuntimeBinding],
+) -> Vec<(RuntimeBinding, Vec<(u32, u16)>)> {
+    let mut aliases = BTreeMap::<(u32, u64, u32), Vec<&RuntimeBinding>>::new();
     for binding in bindings {
         aliases
             .entry((
@@ -1051,7 +1050,7 @@ fn canonical_runtime_resources(
         .collect()
 }
 
-fn runtime_resource_binding_priority(binding: &WeaponRuntimeBinding) -> (u8, u16, u32, u16) {
+fn runtime_resource_binding_priority(binding: &RuntimeBinding) -> (u8, u16, u32, u16) {
     let semantic = matches!(
         binding.binding_hash,
         WEAPON_INPUT_COMPONENT_KEY

@@ -44,7 +44,7 @@ pub(crate) fn ordinal(id: usize, tag: TagHash) -> AuthoringResult<usize> {
 #[cfg(feature = "d2-model-importer")]
 pub(crate) struct Stream {
     id: usize,
-    pub allocator: crate::appended_tags::AppendedTagAllocator,
+    pub allocator: crate::package::appended_tags::AppendedTagAllocator,
     pub tags: Vec<NewTagSpec>,
 }
 
@@ -55,7 +55,7 @@ impl Stream {
         plans().insert(id, graph::GraphPlan::new(assets)?);
         Ok(Self {
             id,
-            allocator: crate::appended_tags::AppendedTagAllocator::assets(id),
+            allocator: crate::package::appended_tags::AppendedTagAllocator::assets(id),
             tags: Vec::new(),
         })
     }
@@ -63,7 +63,7 @@ impl Stream {
     pub(crate) fn target(
         &mut self,
     ) -> (
-        crate::appended_tags::AppendedTagAllocator,
+        crate::package::appended_tags::AppendedTagAllocator,
         &mut Vec<NewTagSpec>,
     ) {
         (self.allocator, &mut self.tags)

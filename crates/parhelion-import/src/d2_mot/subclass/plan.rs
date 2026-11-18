@@ -1,5 +1,5 @@
 use super::source::Capture;
-use crate::d2_mot::ability::{self, Contract, Element, Selection, source::number};
+use crate::d2_mot::ability::{self, Contract, DamageType, Selection, source::number};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Request {
     pub item_hash: u32,
     /// Explicit intent, not a claim that a source damage provider was decoded.
-    pub element: Option<Element>,
+    #[serde(rename = "element")]
+    pub damage_type: Option<DamageType>,
     pub selections: Vec<Selection>,
 }
 
@@ -37,11 +38,11 @@ pub struct Input {
 
 #[derive(Debug, Serialize)]
 pub struct Damage {
-    pub requested: Option<Element>,
+    pub requested: Option<DamageType>,
     /// Source presentation continues to select Strand effects when gameplay uses Kinetic.
-    pub presentation: Option<Element>,
-    /// Representable native element only. No damage profiles have been emitted or verified.
-    pub native: Option<Element>,
+    pub presentation: Option<DamageType>,
+    /// Representable native damage type only. No damage profiles have been emitted or verified.
+    pub native: Option<DamageType>,
     pub policy: DamagePolicy,
     pub source_providers_resolved: bool,
 }
@@ -49,7 +50,8 @@ pub struct Damage {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DamagePolicy {
-    NativeElement,
+    #[serde(rename = "native_element")]
+    NativeDamageType,
     StrandAsKinetic,
     Unresolved,
 }
@@ -137,7 +139,7 @@ pub fn plan(input: &Input) -> Result<Plan> {
         inspected.len() == input.capture.animations.len(),
         "Animation evidence is not reachable from the subclass or selected abilities"
     );
-    let native = input.request.element.and_then(Element::native);
+    let native = input.request.damage_type.and_then(DamageType::native);
     let mut pending = vec![
         Contract::SourceSubclassIdentity,
         Contract::SourceDamageProviders,
@@ -157,12 +159,12 @@ pub fn plan(input: &Input) -> Result<Plan> {
         abilities,
         innate,
         damage: Damage {
-            requested: input.request.element,
-            presentation: input.request.element,
+            requested: input.request.damage_type,
+            presentation: input.request.damage_type,
             native,
-            policy: match input.request.element {
-                Some(Element::Strand) => DamagePolicy::StrandAsKinetic,
-                _ if native.is_some() => DamagePolicy::NativeElement,
+            policy: match input.request.damage_type {
+                Some(DamageType::Strand) => DamagePolicy::StrandAsKinetic,
+                _ if native.is_some() => DamagePolicy::NativeDamageType,
                 _ => DamagePolicy::Unresolved,
             },
             source_providers_resolved: false,

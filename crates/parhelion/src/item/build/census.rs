@@ -37,12 +37,13 @@ pub(crate) fn census(
     let resolved =
         resolve::resolve_project_weapons_with_progress(&sources, &grouped, &plan, &mut progress)?;
     let parents = added_parents(&plan);
-    let mut add = |pages: &[u16], first: bool| -> AuthoringResult<()> {
-        if first {
-            for &page in pages {
-                if usize::from(page) < STOCK_PRESENTATION_NODE_COUNT {
-                    *census.fronts.entry(usize::from(page)).or_default() += 1;
-                }
+    let mut add = |pages: &[u16], position| -> AuthoringResult<()> {
+        for &page in pages {
+            let page = usize::from(page);
+            if page < STOCK_PRESENTATION_NODE_COUNT
+                && crate::collection::leads_stock_collectibles(position, page)
+            {
+                *census.fronts.entry(page).or_default() += 1;
             }
         }
         count(&mut census.counts, &sources.stock_nodes, &parents, pages)
@@ -52,17 +53,12 @@ pub(crate) fn census(
             continue;
         };
         let pages = collection.pages.iter().collect::<Vec<_>>();
-        add(
-            &pages,
-            crate::collection::leads_stock_collectibles(
-                weapon.weapon.overrides.collection_position,
-            ),
-        )?;
+        add(&pages, weapon.weapon.overrides.collection_position)?;
     }
     #[cfg(feature = "d2-model-importer")]
     {
         for page in linked_ornament_pages(&sources, &plan, &grouped)? {
-            add(&[page], crate::collection::leads_stock_collectibles(None))?;
+            add(&[page], None)?;
         }
     }
     Ok(census)
@@ -102,6 +98,7 @@ fn count(
         .map(|&page| stock_ancestor(parents, page))
         .collect::<AuthoringResult<Vec<_>>>()?;
     let (_, _, node_rows, _) = array_at(nodes, 8)?;
+    let mut objectives = BTreeSet::new();
     for node in presentation_ancestor_nodes(nodes, &starts)? {
         let objective = read_u16(
             nodes,
@@ -109,7 +106,10 @@ fn count(
                 + node * PRESENTATION_NODE_ROW_SIZE
                 + PRESENTATION_NODE_OBJECTIVE_INDEX_OFFSET,
         )?;
-        if objective != u16::MAX && usize::from(objective) < crate::badge::STOCK_OBJECTIVE_COUNT {
+        if objective != u16::MAX
+            && usize::from(objective) < crate::badge::STOCK_OBJECTIVE_COUNT
+            && objectives.insert(objective)
+        {
             *counts.entry(objective).or_default() += 1;
         }
     }

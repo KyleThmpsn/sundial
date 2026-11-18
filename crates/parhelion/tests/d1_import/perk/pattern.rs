@@ -1,6 +1,7 @@
 //! Follow a private attachment through its component and compare the numeric contract.
 use super::*;
 mod audio;
+mod channel;
 mod closure;
 mod connected;
 mod duration;
@@ -269,7 +270,30 @@ pub(super) fn check(
         }
         _ => false,
     };
-    if source.u8(s + 2)? == 3 || owners.len() > 3 || network_led {
+    let query = owners.iter().any(|&tag| {
+        reader
+            .read(tag)
+            .and_then(|p| p.u32(p.pointer(24)? - 4))
+            .ok()
+            == Some(0x80803136)
+    });
+    // A timed status beside a sequence and a channel bank that inherits nothing has no
+    // dedicated three-owner form. The sound form's third owner is a network.
+    let class = |tag: u32| -> CheckResult<u32> {
+        let owner = reader.read(tag)?;
+        Ok(owner.u32(owner.pointer(24)? - 4)?)
+    };
+    let banked = match owners.as_slice() {
+        [status, sequence, bank] => {
+            let third = reader.read(*bank)?;
+            class(*status)? == 0x80802698
+                && class(*sequence)? == 0x80800610
+                && class(*bank)? == 0x808008F6
+                && third.u64(third.pointer(24)? + 0x108)? == 0
+        }
+        _ => false,
+    };
+    if source.u8(s + 2)? == 3 || owners.len() > 3 || network_led || query || banked {
         let graph = attached;
         closure::check(reader, stock, emitted, &graph, native.u32(n + 16)?)?;
     } else {
@@ -282,6 +306,96 @@ pub(super) fn check(
         )?;
     }
     player::owner(reader, stock, emitted, source, s, native, n)
+}
+
+/// An attachment whose graph holds one modifier bank that no connection row names translates as
+/// two attachments on the same target: the bank as a modifier graph of its own, stored first,
+/// then the rest of the graph. Both live as long as the action's attachment, as the source's one
+/// graph does. Returns how many of `effects` the source effect at `s` took, zero for any other
+/// attachment.
+/// Holds a staged private graph to the source graph it translates, owner by owner.
+pub(super) fn translated_graph(
+    reader: &Source,
+    stock: &mut Reader,
+    emitted: &mut Reader,
+    source: &Payload,
+    native_tag: u32,
+) -> CheckResult<()> {
+    closure::check(reader, stock, emitted, source, native_tag)
+}
+
+pub(super) fn detached_bank(
+    reader: &Source,
+    stock: &mut Reader,
+    emitted: &mut Reader,
+    source: &Payload,
+    s: usize,
+    native: &Payload,
+    effects: &[usize],
+) -> CheckResult<usize> {
+    let attached = reader.read(source.u32(s + 16)?)?;
+    let mut banks = Vec::new();
+    for row in attached.array(32, 12, Some(0x80800715))? {
+        let tag = attached.u32(row)?;
+        let owner = reader.read(tag)?;
+        if owner.u32(owner.pointer(24)? - 4)? == 0x808020DE {
+            banks.push(tag);
+        }
+    }
+    let (&[bank], &[first, second, ..]) = (banks.as_slice(), effects) else {
+        return Ok(0);
+    };
+    for connection in attached.array(0x30, 88, Some(0x8080054E))? {
+        if attached.u32(connection + 8)? == bank || attached.u32(connection + 48)? == bank {
+            return Ok(0);
+        }
+    }
+    let (a, b) = (native.pointer(first)?, native.pointer(second)?);
+    if native.u8(a)? != 1 || native.u8(b)? != 1 {
+        return Ok(0);
+    }
+    let graph_tag = native.u32(a + 16)?;
+    let lone = emitted.tag(graph_tag, Some(0x80809C0F))?;
+    let targets = lone.array(16, 12, Some(0x80809C04))?;
+    if targets.len() != 1 {
+        return Ok(0);
+    }
+    for n in [a, b] {
+        assert_eq!(source.bytes::<3>(s + 1)?, native.bytes::<3>(n + 1)?);
+        assert_eq!(source.bytes::<24>(s + 24)?, native.bytes::<24>(n + 24)?);
+        player::owner(reader, stock, emitted, source, s, native, n)?;
+    }
+    // An exact stock graph can be shared unchanged, as a plain modifier graph can.
+    if stock
+        .manager
+        .get_entry(tiger_pkg::TagHash(graph_tag))
+        .is_some()
+    {
+        let original = stock.tag(graph_tag, Some(0x80809C0F))?;
+        assert_eq!(lone.0, original.0, "Stock attachment graph changed");
+    }
+    let target_tag = lone.u32(targets[0])?;
+    let target = emitted.tag(target_tag, Some(0x80809C36))?;
+    if stock
+        .manager
+        .get_entry(tiger_pkg::TagHash(target_tag))
+        .is_some()
+    {
+        let original = stock.tag(target_tag, Some(0x80809C36))?;
+        assert_eq!(target.0, original.0, "Stock modifier owner changed");
+    }
+    let owner = reader.read(bank)?;
+    let rows = owner.array(owner.pointer(24)? + 96, 96, Some(0x8080205F))?;
+    modifier_rows(reader, stock, &owner, &target, target_tag, rows)?;
+    closure::check_without(
+        reader,
+        stock,
+        emitted,
+        &attached,
+        native.u32(b + 16)?,
+        Some(bank),
+    )?;
+    Ok(2)
 }
 
 /// Follow the private graph independently of whether an attachment or feedback created it.
@@ -356,6 +470,12 @@ pub(super) fn graph(
                 companion.array(companion.pointer(24)? + 96, 96, Some(0x8080205F))?,
             );
         }
+        if owner.u32(owner.pointer(24)? - 4)? == 0x80802698
+            && class == 0x808008F6
+            && companion.u64(companion.pointer(24)? + 0x108)? == 0
+        {
+            return channel::check(reader, stock, emitted, &graph, native_tag);
+        }
         return conditional_status(reader, stock, emitted, &graph, native_tag);
     }
     assert_eq!(owners.len(), 1);
@@ -365,19 +485,29 @@ pub(super) fn graph(
     }
     let rows = owner.array(owner.pointer(24)? + 96, 96, Some(0x8080205F))?;
     let graph_tag = native_tag;
-    assert!(
-        stock.tag(graph_tag, None).is_err(),
-        "Attachment must be private"
-    );
     let graph = emitted.tag(graph_tag, Some(0x80809C0F))?;
+    // An exact stock graph can be shared unchanged. Source row equivalence below still
+    // applies, and any changed graph or owner must use a private identity.
+    if stock
+        .manager
+        .get_entry(tiger_pkg::TagHash(graph_tag))
+        .is_some()
+    {
+        let original = stock.tag(graph_tag, Some(0x80809C0F))?;
+        assert_eq!(graph.0, original.0, "Stock attachment graph changed");
+    }
     let owners = graph.array(16, 12, Some(0x80809C04))?;
     assert_eq!(owners.len(), 1, "Attachment acquired a companion effect");
     let target_tag = graph.u32(owners[0])?;
-    assert!(
-        stock.tag(target_tag, None).is_err(),
-        "Modifier must be private"
-    );
     let target = emitted.tag(target_tag, Some(0x80809C36))?;
+    if stock
+        .manager
+        .get_entry(tiger_pkg::TagHash(target_tag))
+        .is_some()
+    {
+        let original = stock.tag(target_tag, Some(0x80809C36))?;
+        assert_eq!(target.0, original.0, "Stock modifier owner changed");
+    }
     modifier_rows(reader, stock, &owner, &target, target_tag, rows)
 }
 
@@ -762,9 +892,24 @@ fn unit(reader: &Source, stock: &mut Reader, component: u8, input: u16) -> Check
     Ok(target.f32(n + 40)? / source.f32(s + 48)?)
 }
 
+fn definition(target: &Payload) -> CheckResult<usize> {
+    // The header schema can be a second view after mutable arrays. Embedded pairs and
+    // graph providers use the reciprocal definition reached from the runtime instance.
+    let instance = target.pointer(16)?;
+    let definition = usize::try_from(target.u64(instance + 8)?)?;
+    let schema = target.pointer(24)?;
+    assert_eq!(target.u64(definition + 8)?, instance as u64);
+    assert_eq!(target.u32(instance)?, target.u32(definition)?);
+    assert_eq!(target.u32(instance + 4)?, target.u32(definition - 4)?);
+    assert_eq!(target.u32(definition + 4)?, target.u32(instance - 4)?);
+    assert_eq!(target.u32(schema - 4)?, target.u32(definition - 4)?);
+    assert_eq!(target.u32(schema)?, target.u32(definition)?);
+    Ok(definition)
+}
+
 fn host_competition(source: &Payload, target: &Payload) -> CheckResult<()> {
     let s = source.pointer(24)?;
-    let n = target.pointer(24)?;
+    let n = definition(target)?;
     let priority = i32::from_le_bytes(source.bytes::<4>(s + 0x17C)?);
     assert_eq!(target.u8(n + 0x58)?, source.u8(s + 0xB0)?);
     assert_eq!(target.bytes::<3>(n + 0x59)?, [0; 3]);
@@ -812,8 +957,9 @@ fn status_fields(
     let tag = target.u32(target.pointer(16)?)?;
     host_competition(source, target)?;
     let from = source.pointer(24)? + 0xF0;
-    let to = target.pointer(24)? + 0xE0;
-    assert_eq!(target.u32(target.pointer(24)? - 4)?, 0x80804205);
+    let native = definition(target)?;
+    let to = native + 0xE0;
+    assert_eq!(target.u32(native - 4)?, 0x80804205);
     assert_eq!(target.u32(to + 4)?, 0x80804211);
     hud::check(
         reader,
@@ -846,7 +992,7 @@ fn status_fields(
         let instance = usize::try_from(target.u64(n + 8)?)?;
         assert_eq!(target.u32(instance)?, tag);
         assert_eq!(target.u64(instance + 8)?, n as u64);
-        assert!(code[0] > target.pointer(24)?);
+        assert!(code[0] > native);
     }
     let duration_from = from + 0x160;
     let duration_to = to + 0x148;
@@ -958,7 +1104,7 @@ fn conditional_status(
         assert!(stock.tag(tag, None).is_err());
         let target = emitted.tag(tag, Some(0x80809C36))?;
         let a = source.pointer(24)?;
-        let b = target.pointer(24)?;
+        let b = definition(&target)?;
         if source.u32(a - 4)? == 0x80802698 {
             host_competition(&source, &target)?;
             assert_eq!(target.u32(b - 4)?, 0x80804205);

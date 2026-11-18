@@ -11,7 +11,7 @@ fn native_reclamation_order_uses_special_ammo() {
     ))
     .unwrap();
     assert_eq!(recipe.overrides.ammo_type, Some(RecipeAmmoType::Special));
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();

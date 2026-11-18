@@ -24,7 +24,9 @@ pub mod browse;
 pub mod inputs;
 pub use inputs::MaterialInputs;
 mod animation;
+mod audio;
 pub use animation::inspect as inspect_animation;
+pub use animation::inspect_character as inspect_character_animation;
 mod gameplay;
 mod geometry;
 pub(crate) use gameplay::inventory_icon;
@@ -34,6 +36,8 @@ mod optic;
 pub use optic::restore_source_eye;
 mod refresh;
 mod rig;
+mod runtime;
+pub use runtime::inspect as inspect_runtime;
 mod tier;
 use crate::tiger::{
     payload::Payload,
@@ -163,7 +167,7 @@ fn build(
     } else {
         "Fitting the donor's animations…"
     });
-    let (rig, animation) = if entry.get("ornament").is_some() {
+    let (rig, mut animation) = if entry.get("ornament").is_some() {
         wear(source, native, parts, item_tag, source_animation)?
     } else {
         animate(source, native, parts, item_tag, root, source_animation)?
@@ -270,6 +274,9 @@ fn build(
         &mut g,
         parts,
         hash(entry, "target_item")?,
+        mesh.surfaces
+            .values()
+            .any(|surface| matches!(surface.stage, 15 | 17)),
     )?;
     let result = json!({"item_hash":hash(entry,"target_item")?,"art_key":hash(entry,"art_key")?,"native_item":hash(entry,"native_item")?,"native_assignment":hash(parent,"assignment")?,"source_model":entry["models"][0]["model"],"source_models":entry["models"],"source_owner":owner_tag,"source_entity":entity_tag,"native_model":model_tag,"model_slot":model_slot,"plates_slot":plates_slot,"parent":"parent","companion":"parent-companion","nodes":g.nodes,"native_draw_parts":mesh.groups.len(),"vertices":mesh.positions.len(),"triangles":mesh.groups.iter().filter(|(key,_)|matches!(mesh.surfaces[key].stage,0|2|8|15)).map(|g|g.1.len()).sum::<usize>(),"appearance":"Translated Marathon pixel programs, authored material inputs and native render passes","materials":materials,"omitted_passes":mesh.omitted,"animation":"Static source assemblies attached to native weapon root. Native donor gameplay and whole-weapon animation.","installable":false});
     let mut result = result;
@@ -287,6 +294,12 @@ fn build(
     result["live_displays"] = json!(true);
     result["reticle_drivers"] = json!(true);
     result["optics_revision"] = json!(1);
+    if let Some(equipment) = animation
+        .as_object_mut()
+        .and_then(|v| v.remove("equipment_animation"))
+    {
+        result["equipment_animation"] = equipment;
+    }
     result["animation"] = animation;
     result["material_inputs"] = json!(MaterialInputs::default());
     let item = native.tag(hash(&template, "item_tag")?, Some(0x80807bea))?;
@@ -425,7 +438,7 @@ pub fn prepare(
             (&mut source, &mut native),
             &entry,
             (working, &out),
-            native_packages,
+            (packages, native_packages),
             &mut aims,
             earlier.as_deref(),
             &mut step,
@@ -442,7 +455,7 @@ pub fn prepare(
                 (&mut source, &mut native),
                 &entry,
                 (working, &out),
-                native_packages,
+                (packages, native_packages),
                 &mut aims,
                 None,
                 &mut step,
@@ -562,7 +575,7 @@ fn prepare_entry(
     (source, native): (&mut Reader, &mut Reader),
     entry: &Value,
     (working, out): (&Path, &Path),
-    native_packages: &Path,
+    (packages, native_packages): (&Path, &Path),
     aims: &mut std::collections::BTreeMap<String, Value>,
     earlier: Option<&Path>,
     step: &mut dyn FnMut(&str),
@@ -608,6 +621,22 @@ fn prepare_entry(
             report["source_perks"] =
                 json!({"source":"marathon","status":"unsupported","reason":format!("{error:#}")});
         }
+    }
+    gameplay::settle_reload(&mut report);
+    // A camo is worn on its weapon and fires with the weapon's sound.
+    if earlier.is_none() && entry.get("ornament").is_none() {
+        step("Translating the firing sound…");
+        let template: Value = serde_json::from_slice(&fs::read(
+            Path::new(entry["native_template"].as_str().context("template path")?)
+                .join("template-report.json"),
+        )?)?;
+        audio::author(
+            (&mut *source, packages),
+            (&mut *native, native_packages),
+            &mut report,
+            hash(&template, "item_tag")?,
+            &working.join(slug).join("graph"),
+        )?;
     }
     // A camo wears its weapon's sight, so it aims with the weapon's magnification.
     if let Some(owner) = entry["wears"].as_str() {

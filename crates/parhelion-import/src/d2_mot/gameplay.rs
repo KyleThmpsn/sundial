@@ -121,7 +121,7 @@ pub(crate) fn browse_metadata(
             let block = resource(item, 0x68, 0x80807381)?;
             perk_hashes(item, block, table(r, 0x808076AA)?.as_ref())?
         };
-        metadata.damage = source_element(&perks);
+        metadata.damage = source_damage_type(&perks);
     }
     Ok(metadata)
 }
@@ -154,8 +154,8 @@ pub fn source(r: &mut Reader, hash: u32, index: usize, item: &Payload) -> Result
     )
 }
 
-/// The source item's element from its base perks: kinetic, arc, solar, void, stasis or strand.
-pub(crate) fn source_element(perks: &[u32]) -> Option<&'static str> {
+/// The source item's damage type from its base perks: kinetic, arc, solar, void, stasis or strand.
+pub(crate) fn source_damage_type(perks: &[u32]) -> Option<&'static str> {
     // An empty base-perk list has no elemental damage provider. Keep that
     // absence explicitly instead of inheriting an elemental donor's damage.
     if perks.is_empty() {
@@ -189,15 +189,15 @@ fn exported_perks(source: &Value) -> Option<Vec<u32>> {
     )
 }
 
-/// The source item's element as its exported base perks give it.
-pub(crate) fn exported_element(source: &Value) -> Option<&'static str> {
-    source_element(&exported_perks(source)?)
+/// The source item's damage type as its exported base perks give it.
+pub(crate) fn exported_damage_type(source: &Value) -> Option<&'static str> {
+    source_damage_type(&exported_perks(source)?)
 }
 
 fn damage(perks: &[u32]) -> Option<&'static str> {
     // The legacy runtime cannot represent Stasis or Strand damage. Keep the
-    // gameplay donor's element instead of authoring a Kinetic marker.
-    source_element(perks).filter(|element| !matches!(*element, "stasis" | "strand"))
+    // gameplay donor's damage type instead of authoring a Kinetic marker.
+    source_damage_type(perks).filter(|damage| !matches!(*damage, "stasis" | "strand"))
 }
 
 /// The recipe rarity of a modern definition's rarity byte at `+0xA0`.
@@ -246,7 +246,7 @@ fn properties(source: &Value) -> Value {
 }
 
 fn reset_planned_damage(recipe: &mut Value) -> Result<()> {
-    // The initial recipe may have a coarse planned element. Source gameplay
+    // The initial recipe may have a coarse planned damage type. Source gameplay
     // properties are authoritative, including the absence of a supported one.
     recipe["overrides"]
         .as_object_mut()
@@ -342,6 +342,33 @@ fn categories(socket: &Value) -> BTreeSet<u64> {
         .collect()
 }
 
+/// How many source sockets find no lane of their categories on a base with the lanes
+/// `native`, each lane taking one source socket as the column mapping does. A base with a
+/// single trait socket leaves a source's second trait column unplaced, and a base with no
+/// tracker socket its tracker. Sockets no Shadowkeep weapon has count the same on every base.
+pub(crate) fn unplaced_sockets(source: &Value, native: &Value) -> usize {
+    let empty = Vec::new();
+    let sources = source["sockets"].as_array().unwrap_or(&empty);
+    let targets = native["sockets"].as_array().unwrap_or(&empty);
+    let mut used = BTreeSet::new();
+    for (lane, target) in targets.iter().enumerate() {
+        let allowed = categories(target);
+        if let Some((index, _)) = sources
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| !used.contains(i) && !categories(s).is_disjoint(&allowed))
+            .min_by_key(|(i, _)| (i.abs_diff(lane), *i))
+        {
+            used.insert(index);
+        }
+    }
+    sources
+        .iter()
+        .enumerate()
+        .filter(|(index, socket)| !used.contains(index) && !categories(socket).is_empty())
+        .count()
+}
+
 fn default_hash(socket: &Value) -> Option<u64> {
     socket["choices"]
         .as_array()?
@@ -357,22 +384,160 @@ const INTRINSIC_CATEGORY: u64 = 0x67FB_A961;
 const TRACKER_CATEGORY: u64 = 0xAFB3_306E;
 /// Weapon perk plugs, as opposed to shaders (14), masterworks and trackers (13) and mods (37).
 const PERK_ITEM_KIND: u64 = 15;
+/// The empty catalyst plug's category (`72334481`), which every exotic catalyst socket offers
+/// beside the weapon's own catalyst.
+const CATALYST_CATEGORY: u64 = 0x7233_4481;
 /// The most source plugs a column offers freely, as few as a random-roll column's curated perks.
 const REUSABLE_CHOICES: usize = 4;
 /// The most plugs a column rolls from: the rows one 64-bit ownership mask covers, also the
 /// largest Shadowkeep randomized set.
 const ROLL_POOL: usize = 64;
 
-/// A base lane whose default plug is a weapon perk other than the frame.
+/// The source plugs of a socket that Shadowkeep has no item for and that name no art.
+fn missing_plugs(plugs: &[Value], available: &BTreeMap<u32, u64>) -> Vec<u32> {
+    plugs
+        .iter()
+        .filter(|plug| plug["art_indices"].as_array().is_some_and(Vec::is_empty))
+        .filter_map(|plug| u32::try_from(plug["hash"].as_u64()?).ok())
+        .filter(|hash| !available.contains_key(hash))
+        .collect()
+}
+
+/// A base lane whose default plug is a weapon perk other than the frame. A lane that only
+/// rolls has no default, and its first plug stands for it.
 fn perk_lane(target: &Value) -> bool {
     target["socket_type"] != u16::MAX
         && target["choices"]
             .as_array()
-            .and_then(|choices| choices.iter().find(|choice| choice["default"] == true))
+            .and_then(|choices| {
+                choices
+                    .iter()
+                    .find(|choice| choice["default"] == true)
+                    .or(choices.first())
+            })
             .is_some_and(|default| {
                 default["item_kind"].as_u64() == Some(PERK_ITEM_KIND)
                     && default["category"].as_u64() != Some(INTRINSIC_CATEGORY)
             })
+}
+
+/// Adds the plugs that stay freely swappable to `choices`, up to four: the source's curated
+/// plugs, its initial plug, own entries and reusable set in that order. An export without
+/// curated positions leads with its default, and a socket that only rolls with its first
+/// supported plug.
+fn lead_choices(
+    plugs: &[Value],
+    supported: impl Fn(&&Value) -> bool,
+    choices: &mut Vec<u64>,
+) -> Result<()> {
+    let curated = |plug: &Value| {
+        plug["curated"]
+            .as_u64()
+            .or_else(|| (plug["default"] == true).then_some(0))
+    };
+    let mut offered = plugs
+        .iter()
+        .filter(&supported)
+        .filter_map(|plug| Some((curated(plug)?, plug)))
+        .collect::<Vec<_>>();
+    offered.sort_by_key(|(position, _)| *position);
+    for (_, plug) in offered {
+        let hash = plug["hash"].as_u64().context("plug hash")?;
+        if choices.len() < REUSABLE_CHOICES && !choices.contains(&hash) {
+            choices.push(hash);
+        }
+    }
+    if choices.is_empty()
+        && let Some(plug) = plugs.iter().find(&supported)
+    {
+        choices.push(plug["hash"].as_u64().context("plug hash")?);
+    }
+    Ok(())
+}
+
+/// Adds every other supported plug to the roll pool after the leading choices, and reports each
+/// one a full pool leaves out.
+fn fill_roll_pool(
+    plugs: &[Value],
+    supported: impl Fn(&&Value) -> bool,
+    choices: &mut Vec<u64>,
+    fallbacks: &mut Vec<Value>,
+    (lane, source_index): (usize, usize),
+) -> Result<()> {
+    for plug in plugs.iter().filter(&supported) {
+        let hash = plug["hash"].as_u64().context("plug hash")?;
+        if choices.contains(&hash) {
+            continue;
+        }
+        if choices.len() < ROLL_POOL {
+            choices.push(hash);
+        } else {
+            fallbacks.push(
+                json!({"socket":lane,"source_socket":source_index,"omitted_plug":hash,
+                "reason":"the socket's roll pool is full"}),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn supported_plug(plug: &Value, available: &BTreeMap<u32, u64>, allowed: &BTreeSet<u64>) -> bool {
+    let Some(hash) = plug["hash"].as_u64().and_then(|v| u32::try_from(v).ok()) else {
+        return false;
+    };
+    available.get(&hash).is_some_and(|category| {
+        allowed.contains(category) && Some(*category) == plug["category"].as_u64()
+    }) && plug["art_indices"].as_array().is_some_and(Vec::is_empty)
+}
+
+/// Give a source perk socket another column using a compatible base lane's layout.
+fn add_perk_column(
+    socket: &Value,
+    target: &Value,
+    available: &BTreeMap<u32, u64>,
+    source_index: usize,
+    layout: usize,
+    result: &mut Vec<Value>,
+    fallbacks: &mut Vec<Value>,
+) -> Result<()> {
+    let allowed = categories(target);
+    let supported = |plug: &&Value| supported_plug(plug, available, &allowed);
+    let plugs = socket["choices"].as_array().context("source choices")?;
+    let column = result.len();
+    let mut choices = Vec::new();
+    lead_choices(plugs, supported, &mut choices)?;
+    if choices.is_empty() {
+        // A column needs a Shadowkeep plug to open on.
+        fallbacks.push(json!({"source_socket":source_index,
+            "reason":"the base has no free lane for this perk socket and Shadowkeep has none of its plugs, so the column is left out"}));
+        return Ok(());
+    }
+    fill_roll_pool(
+        plugs,
+        supported,
+        &mut choices,
+        fallbacks,
+        (column, source_index),
+    )?;
+    let reusable = choices.len().min(REUSABLE_CHOICES);
+    let mut added = json!({
+        "choices":choices.iter().map(|h|format!("0x{h:08X}")).collect::<Vec<_>>(),
+        "socket_type":target["socket_type"],
+    });
+    if reusable < choices.len() {
+        added["reusable_choices"] = json!(reusable);
+        added["randomized_selection_program"] = json!([{"opcode":11,"operand":1}]);
+    }
+    result.push(added);
+    fallbacks.push(json!({"socket":column,"source_socket":source_index,
+        "layout_lane":layout,
+        "reason":"the base lane of this perk socket's category is taken, so it takes a new column"}));
+    let missing = missing_plugs(plugs, available);
+    if !missing.is_empty() {
+        fallbacks.push(json!({"socket":column,"source_socket":source_index,
+            "layout_lane":layout,"unsupported_plugs":missing}));
+    }
+    Ok(())
 }
 
 fn columns(
@@ -385,6 +550,9 @@ fn columns(
     let sources = source["sockets"].as_array().context("source sockets")?;
     let targets = native["sockets"].as_array().context("target sockets")?;
     let mut used = BTreeSet::new();
+    // Lanes whose source default Shadowkeep lacks. The private perk step may fill them, so a
+    // placed plug takes another lane, or a column of its own.
+    let mut reserved = BTreeSet::new();
     let mut result = vec![Value::Null; targets.len()];
     for (lane, target) in targets.iter().enumerate() {
         let allowed = categories(target);
@@ -397,19 +565,27 @@ fn columns(
             continue;
         };
         used.insert(source_index);
-        // The source tracker socket is consumed here so it cannot take another lane.
-        if allowed.contains(&TRACKER_CATEGORY) {
+        // The source tracker socket is consumed here so it cannot take another lane. So are its
+        // mod socket and, unless it is an exotic whose catalyst may take the lane, its masterwork
+        // socket. Each keeps the base's own socket, which offers Shadowkeep's plugs of that kind
+        // through its stock plug set and never rolls.
+        if allowed.contains(&TRACKER_CATEGORY)
+            || private::mod_lane(target)
+            || (source["rarity"].as_u64() != Some(5) && private::tier_lane(target))
+        {
             continue;
         }
-        let supported = |plug: &&Value| {
-            let Some(hash) = plug["hash"].as_u64().and_then(|v| u32::try_from(v).ok()) else {
-                return false;
-            };
-            available.get(&hash).is_some_and(|category| {
-                allowed.contains(category) && Some(*category) == plug["category"].as_u64()
-            }) && plug["art_indices"].as_array().is_some_and(Vec::is_empty)
-        };
+        let supported = |plug: &&Value| supported_plug(plug, available, &allowed);
         let plugs = socket["choices"].as_array().context("source choices")?;
+        // Plugs Shadowkeep lacks cannot join the column by hash. The private perk step offers
+        // each one whose controllers translate as a private choice of this lane.
+        if perk_lane(target) || allowed.contains(&CATALYST_CATEGORY) {
+            let missing = missing_plugs(plugs, available);
+            if !missing.is_empty() {
+                fallbacks.push(json!({"socket":lane,"source_socket":source_index,
+                    "unsupported_plugs":missing}));
+            }
+        }
         let mut choices = Vec::new();
         if let Some(plug) = plugs
             .iter()
@@ -419,53 +595,29 @@ fn columns(
             choices.push(plug["hash"].as_u64().context("plug hash")?);
         } else if let Some(hash) = default_hash(target) {
             choices.push(hash);
+            reserved.insert(lane);
             fallbacks.push(json!({"socket":lane,"source_socket":source_index,"source_default":default_hash(socket),"retained_default":hash}));
         }
         // Preserve the entire donor column only when none of the source choices survived.
         if !plugs.iter().any(|p| supported(&p)) {
             continue;
         }
-        // The source's curated plugs, its initial plug, own entries and reusable set in that
-        // order, stay freely swappable, up to four. Every supported plug joins the roll pool after
-        // them. An export without curated positions offers its default alone, and a socket that
-        // only rolls offers its first supported plug.
-        let curated = |plug: &Value| {
-            plug["curated"]
-                .as_u64()
-                .or_else(|| (plug["default"] == true).then_some(0))
+        lead_choices(plugs, supported, &mut choices)?;
+        let listed = choices.len();
+        fill_roll_pool(
+            plugs,
+            supported,
+            &mut choices,
+            fallbacks,
+            (lane, source_index),
+        )?;
+        // A perk lane whose source socket only rolls lists one plug at most. It offers the
+        // first of its roll pool freely as well, up to four in all.
+        let reusable = if perk_lane(target) {
+            listed.max(choices.len().min(REUSABLE_CHOICES))
+        } else {
+            listed
         };
-        let mut offered = plugs
-            .iter()
-            .filter(supported)
-            .filter_map(|plug| Some((curated(plug)?, plug)))
-            .collect::<Vec<_>>();
-        offered.sort_by_key(|(position, _)| *position);
-        for (_, plug) in offered {
-            let hash = plug["hash"].as_u64().context("plug hash")?;
-            if choices.len() < REUSABLE_CHOICES && !choices.contains(&hash) {
-                choices.push(hash);
-            }
-        }
-        if choices.is_empty()
-            && let Some(plug) = plugs.iter().find(supported)
-        {
-            choices.push(plug["hash"].as_u64().context("plug hash")?);
-        }
-        let reusable = choices.len();
-        for plug in plugs.iter().filter(supported) {
-            let hash = plug["hash"].as_u64().context("plug hash")?;
-            if choices.contains(&hash) {
-                continue;
-            }
-            if choices.len() < ROLL_POOL {
-                choices.push(hash);
-            } else {
-                fallbacks.push(
-                    json!({"socket":lane,"source_socket":source_index,"omitted_plug":hash,
-                    "reason":"the socket's roll pool is full"}),
-                );
-            }
-        }
         result[lane] =
             json!({"choices":choices.iter().map(|h|format!("0x{h:08X}")).collect::<Vec<_>>()});
         if reusable < choices.len() {
@@ -480,6 +632,25 @@ fn columns(
         if used.contains(&source_index) {
             continue;
         }
+        // A source perk socket whose categories a base perk lane takes, when another source
+        // socket already has that lane: the second trait column on a base with one trait
+        // socket. It takes a new column after the base's lanes, with that lane's socket type.
+        let own = categories(socket);
+        if let Some(layout) = (0..targets.len()).find(|&lane| {
+            perk_lane(&targets[lane]) && !categories(&targets[lane]).is_disjoint(&own)
+        }) {
+            used.insert(source_index);
+            add_perk_column(
+                socket,
+                &targets[layout],
+                available,
+                source_index,
+                layout,
+                &mut result,
+                fallbacks,
+            )?;
+            continue;
+        }
         let Some(hash) = socket["choices"]
             .as_array()
             .into_iter()
@@ -489,12 +660,30 @@ fn columns(
             .and_then(|hash| u32::try_from(hash).ok())
             .filter(|hash| perks.contains(hash))
         else {
+            // A catalyst socket on a base without one: its catalyst, which Shadowkeep lacks,
+            // may still translate. The private perk step gives it a column of its own.
+            let missing = socket["choices"]
+                .as_array()
+                .map(|plugs| missing_plugs(plugs, available))
+                .unwrap_or_default();
+            if categories(socket).contains(&CATALYST_CATEGORY) && !missing.is_empty() {
+                used.insert(source_index);
+                fallbacks.push(json!({"source_socket":source_index,"unsupported_plugs":missing,
+                    "new_column":true,
+                    "reason":"no base lane shares the socket's categories, so its translated plugs take a new column"}));
+            }
             continue;
         };
-        let Some(lane) =
-            (0..targets.len()).find(|&lane| result[lane].is_null() && perk_lane(&targets[lane]))
-        else {
-            break;
+        let Some(lane) = (0..targets.len()).find(|&lane| {
+            result[lane].is_null() && !reserved.contains(&lane) && perk_lane(&targets[lane])
+        }) else {
+            // Every free perk lane waits on a source default the private perk step may
+            // translate, so the plug takes a new column after the base's lanes.
+            used.insert(source_index);
+            fallbacks.push(json!({"source_socket":source_index,"placed_plug":hash,
+                "new_column":true,
+                "reason":"no base lane shares the plug's category and none is free, so it takes a new column"}));
+            continue;
         };
         used.insert(source_index);
         result[lane] = json!({"choices":[format!("0x{hash:08X}")]});

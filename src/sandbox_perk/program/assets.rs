@@ -9,7 +9,7 @@ pub struct Asset {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub values: Vec<WeaponRuntimeValueOverride>,
+    pub values: Vec<RuntimeValueOverride>,
     /// What the graph's Status Icon shows on the HUD, in place of its stock status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hud_status: Option<HudStatus>,

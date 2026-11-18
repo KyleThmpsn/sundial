@@ -17,6 +17,8 @@ use super::layout::{ARRAY_MARKER, HEADER_SIZE, MARKER_BACK, i64_at, put, u32_at,
 use super::recipes::{Recipe, Shape};
 use super::sidecar::FieldKind;
 use std::collections::HashSet;
+mod runtime_names;
+pub use runtime_names::reserve as reserve_runtime_names;
 
 /// Rows a build inserted at the end of one stock array.
 struct Grown {

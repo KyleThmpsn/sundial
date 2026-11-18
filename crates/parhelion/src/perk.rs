@@ -35,7 +35,7 @@ pub enum Icon {
     },
     Image {
         name: String,
-        image: crate::icon_edit::ImportedIcon,
+        image: crate::icon::edit::ImportedIcon,
     },
 }
 
@@ -45,9 +45,9 @@ impl Icon {
             Self::Texture { tag } => {
                 let tag = tiger_pkg::TagHash(tag.parse_u32().map_err(|error| error.to_string())?);
                 if !sundial::package_authoring::is_valid_package_tag(tag)
-                    || !crate::package_profile::is_stock_item_definition(tag.0)
-                    || (crate::package_profile::MIN_AUTHORED_STANDALONE_PACKAGE_ID
-                        ..=crate::package_profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID)
+                    || !crate::package::profile::is_stock_item_definition(tag.0)
+                    || (crate::package::profile::MIN_AUTHORED_STANDALONE_PACKAGE_ID
+                        ..=crate::package::profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID)
                         .contains(&tag.pkg_id())
                 {
                     return Err("Perk icon must reference an installed stock texture.".into());

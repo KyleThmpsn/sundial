@@ -1,4 +1,9 @@
 //! Configured source bank export, persisted clips and the native pose decoder.
+mod marathon_animation {
+    mod character;
+    mod marker;
+    mod selection;
+}
 use anyhow::{Context, Result, ensure};
 use parhelion_import::{
     marathon,

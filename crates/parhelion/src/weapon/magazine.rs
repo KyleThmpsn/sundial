@@ -8,7 +8,9 @@
 //! The replay follows the Shadowkeep translator consumer: operations 0 to 10 of a routing entry and
 //! logic type 2, round(base * rate / reference) * bullets with 0 bullets kept as 1. Other logic
 //! types write Barrel timing inputs, so one that writes an input this count reads is refused rather
-//! than guessed. Perk modifiers apply at full weight, additions before factors.
+//! than guessed. Perk modifiers apply at full weight, additions before factors. An entity a perk
+//! attaches only through Create Entity with Dynamic Value takes its weight from a live input, as Rat
+//! Pack's does from nearby Rat Kings, and the display counts it at none.
 use super::ammo;
 use super::rig::{
     TRANSLATOR_KEY_CLASS, TRANSLATOR_KEY_HASH, TRANSLATOR_KEY_SIZE, TRANSLATOR_TABLE_CLASS,
@@ -16,13 +18,14 @@ use super::rig::{
 };
 use crate::tag_payload::{array_at, read_i32, read_u8, read_u32, read_u64};
 use crate::{AuthoringResult, error::invalid};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use sundial::package_authoring::entity::WEAPON_STAT_INPUT_DEFINITIONS;
 use sundial::package_authoring::runtime::{
-    load_weapon_runtime_graph_for_entity,
+    load_runtime_graph_for_entity,
     modifiers::{BARREL_BULLETS_PER_SHOT, BARREL_COMPONENT, MAGAZINE_COMPONENT},
 };
 use sundial::package_authoring::sandbox_perk::{
-    entity::modifiers::discover, load_sandbox_perk_runtime_action,
+    action, entity::modifiers::discover, load_sandbox_perk_runtime_action,
 };
 use sundial::package_authoring::{PackageManager, resolve_live_named_tag};
 
@@ -55,31 +58,6 @@ const OUTPUTS_PER_TRANSLATION: u32 = 0x20;
 /// The pins a translator key row holds from +0: a signed byte naming a Weapon Stats input and,
 /// at +4, the Float32 stat value that input reads for this type instead of the weapon's own.
 const PIN_SIZE: usize = 8;
-/// The investment stat each Weapon Stats input reads, by definition index. Inputs 2, 12 and 19
-/// read none. Past input 5 this follows the translator chapter's numbering, which the client's
-/// own is not established to share there.
-const INPUT_STATS: [Option<u16>; 20] = [
-    Some(14),
-    Some(24),
-    None,
-    Some(32),
-    Some(17),
-    Some(22),
-    Some(20),
-    Some(16),
-    Some(21),
-    Some(27),
-    Some(18),
-    Some(15),
-    None,
-    Some(25),
-    Some(26),
-    Some(26),
-    Some(26),
-    Some(30),
-    Some(31),
-    None,
-];
 /// Magazine input 0, capacity, and Barrel input 22, the bullets per shot the display divides by.
 const CAPACITY: (u32, u32) = (MAGAZINE_COMPONENT as u32, 0);
 const BULLETS_PER_SHOT: (u32, u32) = (BARREL_COMPONENT as u32, BARREL_BULLETS_PER_SHOT[0] as u32);
@@ -292,7 +270,7 @@ impl Magazine {
             .or_else(|| {
                 usize::try_from(translation.input)
                     .ok()
-                    .and_then(|input| INPUT_STATS.get(input).copied().flatten())
+                    .and_then(|input| WEAPON_STAT_INPUT_DEFINITIONS.get(input).copied().flatten())
                     .map(|index| stat(index) as f32)
             })
             .unwrap_or(0.0);
@@ -526,9 +504,14 @@ pub(crate) fn perk_modifiers(
         else {
             continue;
         };
-        for source in &action.graphs {
+        let weighted = dynamic_only(&action.action_payload);
+        for source in action
+            .graphs
+            .iter()
+            .filter(|source| !weighted.contains(&source.tag.0))
+        {
             let graph =
-                load_weapon_runtime_graph_for_entity(manager, 0, 0, source.tag.0, &source.payload)?;
+                load_runtime_graph_for_entity(manager, 0, 0, source.tag.0, &source.payload)?;
             for record in discover(&graph) {
                 let (Ok(component), Ok(input)) = (
                     u32::try_from(record.component_number()),
@@ -551,4 +534,24 @@ pub(crate) fn perk_modifiers(
         }
     }
     Ok(found)
+}
+
+/// Create Entity with Dynamic Value, whose value program sets the weight of the entity it attaches.
+const DYNAMIC_VALUE_EFFECT: u8 = 2;
+
+/// The entities the action attaches only through Create Entity with Dynamic Value. An action that
+/// does not decode names none, so its entities count at full weight.
+fn dynamic_only(payload: &[u8]) -> BTreeSet<u32> {
+    let Ok(decoded) = action::decode(payload) else {
+        return BTreeSet::new();
+    };
+    let effects = decoded.groups.iter().flat_map(|group| &group.effects);
+    let (dynamic, plain): (Vec<_>, Vec<_>) = effects
+        .filter_map(|effect| effect.referenced_tag.map(|tag| (tag, effect.kind)))
+        .partition(|(_, kind)| *kind == DYNAMIC_VALUE_EFFECT);
+    dynamic
+        .into_iter()
+        .map(|(tag, _)| tag)
+        .filter(|tag| !plain.iter().any(|(other, _)| other == tag))
+        .collect()
 }

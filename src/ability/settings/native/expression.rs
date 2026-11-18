@@ -15,7 +15,7 @@ const ADD: &[u8] = &[0x34, 0, 0x3C, 1, 1, 0x3E, 0];
 const MULTIPLY: &[u8] = &[0x34, 0, 0x3C, 1, 3, 0x3E, 0];
 const SUBTRACT: &[u8] = &[0x3C, 1, 0x34, 0, 2, 0x3E, 0];
 
-fn roots(graph: &WeaponRuntimeGraph) -> impl Iterator<Item = (u32, &WeaponRuntimeRoot)> {
+fn roots(graph: &RuntimeGraph) -> impl Iterator<Item = (u32, &RuntimeRoot)> {
     graph
         .resources
         .iter()
@@ -38,7 +38,7 @@ struct Contact {
     providers: Vec<Provider>,
 }
 
-fn contacts(data: &mut Data<'_>, root: &WeaponRuntimeRoot) -> Result<Vec<(bool, Program)>, String> {
+fn contacts(data: &mut Data<'_>, root: &RuntimeRoot) -> Result<Vec<(bool, Program)>, String> {
     let bytes = data.bytes;
     let definition = root.owner_offset as usize;
     let source = data.pair(definition, 0x8080_388F, 0x8080_3B73)?;
@@ -85,7 +85,7 @@ fn contacts(data: &mut Data<'_>, root: &WeaponRuntimeRoot) -> Result<Vec<(bool, 
 
 fn connect(
     manager: &PackageManager,
-    graph: &WeaponRuntimeGraph,
+    graph: &RuntimeGraph,
     entity: &[u8],
     data: &Data<'_>,
     program: &Program,
@@ -108,7 +108,7 @@ fn connect(
 
 fn setting(
     owner: u32,
-    root: &WeaponRuntimeRoot,
+    root: &RuntimeRoot,
     users: &BTreeMap<usize, BTreeSet<usize>>,
     program: &Program,
     index: usize,
@@ -120,10 +120,10 @@ fn setting(
     }
     let field = root.fields.iter().find(|field| {
         field.owner_offset as usize == offset
-            && field.source == WeaponRuntimeFieldSource::NativeDeclaration
+            && field.source == RuntimeFieldSource::NativeDeclaration
             && field.locator.type_handle.get() == 0x8080_0090
             && field.locator.byte_size == 16
-            && matches!(field.value, WeaponRuntimeValue::Vector4Float32Bits(_))
+            && matches!(field.value, RuntimeValue::Vector4Float32Bits(_))
     })?;
     Some(Setting {
         kind: Kind::Native(property),
@@ -137,10 +137,10 @@ fn setting(
 
 fn contact_settings(
     manager: &PackageManager,
-    graph: &WeaponRuntimeGraph,
+    graph: &RuntimeGraph,
     entity: &[u8],
     data: &mut Data<'_>,
-    root: &WeaponRuntimeRoot,
+    root: &RuntimeRoot,
 ) -> Result<Vec<Setting>, String> {
     let users = data.constant_users();
     let contacts = contacts(data, root)?
@@ -241,10 +241,10 @@ fn contact_settings(
 
 fn emitter_settings(
     manager: &PackageManager,
-    graph: &WeaponRuntimeGraph,
+    graph: &RuntimeGraph,
     entity: &[u8],
     data: &mut Data<'_>,
-    root: &WeaponRuntimeRoot,
+    root: &RuntimeRoot,
 ) -> Result<Vec<Setting>, String> {
     let at = root.owner_offset as usize;
     data.pair(at, 0x8080_3813, 0x8080_3810)?;
@@ -276,7 +276,7 @@ fn emitter_settings(
 
 pub(in crate::ability::settings) fn discover(
     manager: &PackageManager,
-    graph: &WeaponRuntimeGraph,
+    graph: &RuntimeGraph,
 ) -> Vec<Setting> {
     let Ok(entity) = manager.read_tag(graph.entity_tag) else {
         return Vec::new();

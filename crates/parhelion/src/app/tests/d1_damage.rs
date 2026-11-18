@@ -39,7 +39,7 @@ fn frame(
 fn select(
     ctx: &egui::Context,
     app: &mut PackageAuthoringApp,
-    element: &str,
+    damage_type: &str,
 ) -> Result<egui::FullOutput> {
     frame(ctx, app, vec![]);
     let output = frame(ctx, app, vec![]);
@@ -86,11 +86,11 @@ fn select(
             !matches!(
                 node.role(),
                 egui::accesskit::Role::Label | egui::accesskit::Role::ComboBox
-            ) && node.label().or_else(|| node.value()) == Some(element)
+            ) && node.label().or_else(|| node.value()) == Some(damage_type)
         })
         .with_context(|| {
             format!(
-                "Available {element} option on {}: {}",
+                "Available {damage_type} option on {}: {}",
                 app.recipe.name,
                 text(&output)
             )
@@ -98,8 +98,8 @@ fn select(
     let output = frame(ctx, app, vec![click(*option)]);
     let selected = serde_json::to_value(app.recipe.overrides.modern_damage_type)?;
     ensure!(
-        selected == element.to_ascii_lowercase(),
-        "Click did not select {element} on {}: {}",
+        selected == damage_type.to_ascii_lowercase(),
+        "Click did not select {damage_type} on {}: {}",
         app.recipe.name,
         text(&output)
     );
@@ -117,8 +117,8 @@ fn select(
     ))
 }
 
-/// Exclude only the element setter. Attachments, their patches and equipped stats are independent
-/// source contributions whose preservation is observable across save and reload.
+/// Exclude only the damage type setter. Attachments, their patches and equipped stats are
+/// independent source contributions whose preservation is observable across save and reload.
 fn contributions(recipe: &WeaponRecipe) -> Vec<String> {
     let mut result = Vec::new();
     for variant in &recipe.overrides.socket_plug_variants {
@@ -256,7 +256,7 @@ fn d1_damage_selector_reloads_and_stages_matching_talents() -> Result<()> {
             "Configured input does not witness its promised source shape"
         );
         let original = contributions(&source);
-        let (element, expected, mode, marker) =
+        let (damage_type, expected, mode, marker) =
             match case["shape"].as_str().context("Case shape")? {
                 "label_attachment" => ("Solar", RecipeDamageType::Solar, 1, Some(2)),
                 "damage_attachment" => ("Void", RecipeDamageType::Void, 3, Some(3)),
@@ -272,36 +272,36 @@ fn d1_damage_selector_reloads_and_stages_matching_talents() -> Result<()> {
             app.recipe.overrides.modern_damage_type.is_none(),
             "Loading a legacy recipe introduced a damage override"
         );
-        // Exercise repeated changes, including choosing the base donor's own element.
+        // Exercise repeated changes, including choosing the base donor's own damage type.
         // The mounted elemental bases can keep native type-68 sockets, which cannot carry
         // Kinetic. The configured Kinetic base witnesses that fourth mode separately.
-        for selected in ["Solar", "Void", "Arc", element] {
+        for selected in ["Solar", "Void", "Arc", damage_type] {
             select(&ctx, &mut app, selected)?;
         }
         let captured = frame(&ctx, &mut app, vec![]);
         capture::write(&ctx, &captured, &format!("d1-damage-{index}"));
         ensure!(
             app.recipe.overrides.modern_damage_type == Some(expected),
-            "Selector did not save {element}"
+            "Selector did not save {damage_type}"
         );
         let saved = output.join(format!("case-{index}.parhelion.json"));
         fs::write(&saved, app.recipe.to_json_pretty()?)?;
         let reloaded = WeaponRecipe::load_json(&saved)?;
         ensure!(
             contributions(&reloaded) == original,
-            "Element edit changed source companion behavior or stats"
+            "Damage type edit changed source companion behavior or stats"
         );
         let talent = reloaded
             .overrides
             .socket_plug_variants
             .iter()
             .find(|v| {
-                v.choice_index == 0 && v.name.as_deref() == Some(&format!("{element} Damage"))
+                v.choice_index == 0 && v.name.as_deref() == Some(&format!("{damage_type} Damage"))
             })
             .context("Matching default D1 damage talent")?;
         ensure!(
             talent.icon.is_some(),
-            "Matching D1 element artwork is absent"
+            "Matching D1 damage type artwork is absent"
         );
         if case["shape"] == "alternatives" {
             let count = source
@@ -322,7 +322,7 @@ fn d1_damage_selector_reloads_and_stages_matching_talents() -> Result<()> {
             );
         }
         receipts.push(json!({"source":path,"source_sha256":hex::encode(Sha256::digest(&bytes)),"saved":saved,
-            "item":reloaded.identity.item_hash.parse_u32()?,"socket":talent.socket_index,"name":format!("{element} Damage"),
+            "item":reloaded.identity.item_hash.parse_u32()?,"socket":talent.socket_index,"name":format!("{damage_type} Damage"),
             "mode":mode,"marker":marker,"shape":case["shape"],"donor":source.donor.item_hash.parse_u32()?,
             "templates":source.overrides.socket_plug_variants.iter().map(|v|v.source_plug_hash.parse_u32()).collect::<std::result::Result<Vec<_>,_>>()?}));
         recipes.push(reloaded);

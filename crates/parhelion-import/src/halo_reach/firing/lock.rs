@@ -19,7 +19,7 @@ use crate::tiger::reader::Reader;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use sundial::package_authoring::runtime::{
-    WeaponRuntimeField, WeaponRuntimeValue, WeaponRuntimeValueKind, WeaponRuntimeValueOverride,
+    RuntimeField, RuntimeValue, RuntimeValueKind, RuntimeValueOverride,
 };
 
 /// The Weapon Controller binding and its generated `target_tracking` field.
@@ -115,7 +115,7 @@ fn tracking(graph: &Value, recipe: &Value) -> Option<Value> {
 
 /// The donor's Weapon Controller `target_tracking` field, as runtime field discovery finds it on
 /// the donor's runtime entity.
-fn field(native: &mut Reader, donor: u32) -> Result<WeaponRuntimeField> {
+fn field(native: &mut Reader, donor: u32) -> Result<RuntimeField> {
     use sundial::package_authoring::{self as authoring, runtime};
     let manager = authoring::PackageManager::new(
         &native.manager.package_dir,
@@ -123,9 +123,9 @@ fn field(native: &mut Reader, donor: u32) -> Result<WeaponRuntimeField> {
         Some(native.manager.platform),
     )
     .map_err(anyhow::Error::msg)?;
-    let source = runtime::load_weapon_runtime_entity_for_item_with_manager(&manager, donor)
+    let source = runtime::load_runtime_entity_for_item_with_manager(&manager, donor)
         .map_err(anyhow::Error::msg)?;
-    let graph = runtime::load_weapon_runtime_graph_for_entity(
+    let graph = runtime::load_runtime_graph_for_entity(
         &manager,
         source.item_hash,
         source.pattern_global_id_hash,
@@ -153,16 +153,14 @@ fn field(native: &mut Reader, donor: u32) -> Result<WeaponRuntimeField> {
 }
 
 /// `lanes` as the value `field` stores, and the donor's own lanes.
-fn value(field: &WeaponRuntimeField, lanes: [f32; 4]) -> Result<(WeaponRuntimeValue, [f32; 4])> {
+fn value(field: &RuntimeField, lanes: [f32; 4]) -> Result<(RuntimeValue, [f32; 4])> {
     let bits = lanes.map(f32::to_bits);
     let (value, stock) = match (&field.kind, &field.value) {
-        (WeaponRuntimeValueKind::Vector4Float32, WeaponRuntimeValue::Vector4Float32Bits(stock)) => {
-            (
-                WeaponRuntimeValue::Vector4Float32Bits(bits),
-                stock.map(f32::from_bits),
-            )
-        }
-        (WeaponRuntimeValueKind::FixedBytes { size: 16 }, WeaponRuntimeValue::Bytes(stock)) => {
+        (RuntimeValueKind::Vector4Float32, RuntimeValue::Vector4Float32Bits(stock)) => (
+            RuntimeValue::Vector4Float32Bits(bits),
+            stock.map(f32::from_bits),
+        ),
+        (RuntimeValueKind::FixedBytes { size: 16 }, RuntimeValue::Bytes(stock)) => {
             let stock: [u8; 16] = stock
                 .as_slice()
                 .try_into()
@@ -171,15 +169,13 @@ fn value(field: &WeaponRuntimeField, lanes: [f32; 4]) -> Result<(WeaponRuntimeVa
                 f32::from_le_bytes(stock[lane * 4..lane * 4 + 4].try_into().unwrap_or_default())
             });
             (
-                WeaponRuntimeValue::Bytes(
-                    bits.iter().flat_map(|bits| bits.to_le_bytes()).collect(),
-                ),
+                RuntimeValue::Bytes(bits.iter().flat_map(|bits| bits.to_le_bytes()).collect()),
                 stock,
             )
         }
         _ => bail!("The donor's target_tracking field has another value kind"),
     };
-    sundial::package_authoring::runtime::encode_weapon_runtime_field_value(field, &value)
+    sundial::package_authoring::runtime::encode_runtime_field_value(field, &value)
         .map_err(anyhow::Error::msg)?;
     Ok((value, stock))
 }
@@ -244,7 +240,7 @@ fn lock_on(
         Ok(found) => found,
         Err(error) => return refuse(receipt, format!("{error:#}")),
     };
-    let entry = serde_json::to_value(WeaponRuntimeValueOverride {
+    let entry = serde_json::to_value(RuntimeValueOverride {
         locator: field.locator.clone(),
         value,
     })?;

@@ -69,7 +69,7 @@ pub(crate) fn clear() {
 /// compiles touched from the earliest `opened`. False outside a build turn, where the caller
 /// prunes at once.
 pub(crate) fn defer_prune(root: &Path, opened: SystemTime, run: fn(&Path, SystemTime)) -> bool {
-    if !crate::package_profile::holding() {
+    if !crate::package::profile::holding() {
         return false;
     }
     let mut guard = store();
@@ -162,6 +162,24 @@ impl Passes {
                 .retain(|_, kept| kept.member != member);
         }
     }
+
+    /// A whole member kept its bundle without requesting package jobs. Carry its packages into
+    /// this pass too, so a later pass that must compile it can still reuse unchanged packages.
+    pub(crate) fn replayed(&self, member: Option<Importer>) {
+        if let Some(store) = store().as_mut() {
+            let packages = &mut store.packages;
+            let keys = packages
+                .previous
+                .iter()
+                .filter_map(|(key, kept)| (kept.member == member).then_some(*key))
+                .collect::<Vec<_>>();
+            for key in keys {
+                if let Some(kept) = packages.previous.remove(&key) {
+                    packages.current.insert(key, kept);
+                }
+            }
+        }
+    }
 }
 
 impl Drop for Passes {
@@ -198,7 +216,7 @@ pub(crate) fn keep_package(key: Hash, artifact: &ExtendedOverlayArtifact) {
         store.packages.current.insert(
             key,
             Kept {
-                member: crate::package_profile::member(),
+                member: crate::package::profile::member(),
                 artifact: artifact.clone(),
             },
         );

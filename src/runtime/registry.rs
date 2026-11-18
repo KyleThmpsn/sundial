@@ -226,28 +226,21 @@ pub(super) fn runtime_type_kind(
     type_handle: u32,
     generated_kind: Option<u8>,
     registry: &RuntimeRegistry,
-) -> Result<
-    (
-        Option<WeaponRuntimeValueKind>,
-        u32,
-        Option<WeaponRuntimeFieldSource>,
-    ),
-    String,
-> {
+) -> Result<(Option<RuntimeValueKind>, u32, Option<RuntimeFieldSource>), String> {
     let builtin = match type_handle {
-        0x8080_0004 => Some(WeaponRuntimeValueKind::Boolean),
-        0x8080_0005 => Some(WeaponRuntimeValueKind::SignedInteger { bits: 8 }),
-        0x8080_0006 => Some(WeaponRuntimeValueKind::SignedInteger { bits: 16 }),
-        0x8080_0007 => Some(WeaponRuntimeValueKind::SignedInteger { bits: 32 }),
-        0x8080_0008 => Some(WeaponRuntimeValueKind::SignedInteger { bits: 64 }),
-        0x8080_0009 => Some(WeaponRuntimeValueKind::UnsignedInteger { bits: 8 }),
-        0x8080_000A => Some(WeaponRuntimeValueKind::UnsignedInteger { bits: 16 }),
-        0x8080_000B => Some(WeaponRuntimeValueKind::UnsignedInteger { bits: 32 }),
-        0x8080_000C => Some(WeaponRuntimeValueKind::UnsignedInteger { bits: 64 }),
-        0x8080_000F => Some(WeaponRuntimeValueKind::Float32),
-        0x8080_0012 => Some(WeaponRuntimeValueKind::HexIdentifier { bits: 64 }),
-        0x8080_0014 => Some(WeaponRuntimeValueKind::HexIdentifier { bits: 32 }),
-        0x8080_0090 | 0x8080_0091 => Some(WeaponRuntimeValueKind::Vector4Float32),
+        0x8080_0004 => Some(RuntimeValueKind::Boolean),
+        0x8080_0005 => Some(RuntimeValueKind::SignedInteger { bits: 8 }),
+        0x8080_0006 => Some(RuntimeValueKind::SignedInteger { bits: 16 }),
+        0x8080_0007 => Some(RuntimeValueKind::SignedInteger { bits: 32 }),
+        0x8080_0008 => Some(RuntimeValueKind::SignedInteger { bits: 64 }),
+        0x8080_0009 => Some(RuntimeValueKind::UnsignedInteger { bits: 8 }),
+        0x8080_000A => Some(RuntimeValueKind::UnsignedInteger { bits: 16 }),
+        0x8080_000B => Some(RuntimeValueKind::UnsignedInteger { bits: 32 }),
+        0x8080_000C => Some(RuntimeValueKind::UnsignedInteger { bits: 64 }),
+        0x8080_000F => Some(RuntimeValueKind::Float32),
+        0x8080_0012 => Some(RuntimeValueKind::HexIdentifier { bits: 64 }),
+        0x8080_0014 => Some(RuntimeValueKind::HexIdentifier { bits: 32 }),
+        0x8080_0090 | 0x8080_0091 => Some(RuntimeValueKind::Vector4Float32),
         _ => None,
     };
     if let Some(kind) = builtin {
@@ -272,23 +265,23 @@ pub(super) fn runtime_type_kind(
     Ok((None, size, None))
 }
 
-pub(super) fn generated_scalar_kind(kind: Option<u8>, size: u32) -> Option<WeaponRuntimeValueKind> {
+pub(super) fn generated_scalar_kind(kind: Option<u8>, size: u32) -> Option<RuntimeValueKind> {
     match (kind, size) {
-        (Some(0x01), 4) => Some(WeaponRuntimeValueKind::SignedInteger { bits: 32 }),
-        (Some(0x02), 2) => Some(WeaponRuntimeValueKind::SignedInteger { bits: 16 }),
-        (Some(0x03), 1) => Some(WeaponRuntimeValueKind::SignedInteger { bits: 8 }),
-        (Some(0x0A), 4) => Some(WeaponRuntimeValueKind::Float32),
-        (Some(0x0C), 1) => Some(WeaponRuntimeValueKind::Boolean),
-        (Some(0x13 | 0x22), 1 | 2 | 4 | 8) => Some(WeaponRuntimeValueKind::Enum {
+        (Some(0x01), 4) => Some(RuntimeValueKind::SignedInteger { bits: 32 }),
+        (Some(0x02), 2) => Some(RuntimeValueKind::SignedInteger { bits: 16 }),
+        (Some(0x03), 1) => Some(RuntimeValueKind::SignedInteger { bits: 8 }),
+        (Some(0x0A), 4) => Some(RuntimeValueKind::Float32),
+        (Some(0x0C), 1) => Some(RuntimeValueKind::Boolean),
+        (Some(0x13 | 0x22), 1 | 2 | 4 | 8) => Some(RuntimeValueKind::Enum {
             bits: (size * 8) as u8,
         }),
-        (Some(0x23), 1 | 2 | 4 | 8) => Some(WeaponRuntimeValueKind::BitFlags {
+        (Some(0x23), 1 | 2 | 4 | 8) => Some(RuntimeValueKind::BitFlags {
             bits: (size * 8) as u8,
         }),
-        (Some(0x14), 1 | 2 | 4 | 8) => Some(WeaponRuntimeValueKind::HexIdentifier {
+        (Some(0x14), 1 | 2 | 4 | 8) => Some(RuntimeValueKind::HexIdentifier {
             bits: (size * 8) as u8,
         }),
-        (Some(0x2A), 16) => Some(WeaponRuntimeValueKind::Vector4Float32),
+        (Some(0x2A), 16) => Some(RuntimeValueKind::Vector4Float32),
         _ => None,
     }
 }
@@ -313,7 +306,7 @@ pub(super) fn runtime_member_name(name_hash: u32, registry: &RuntimeRegistry) ->
 }
 
 pub(super) fn format_runtime_path(
-    path: &[WeaponRuntimePathElement],
+    path: &[RuntimePathElement],
     registry: &RuntimeRegistry,
 ) -> String {
     if path.is_empty() {

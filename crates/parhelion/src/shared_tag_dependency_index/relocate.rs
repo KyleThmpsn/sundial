@@ -14,7 +14,7 @@ fn destinations(
         let old = TagHash(old);
         let new = TagHash(new);
         for tag in [old, new] {
-            if !(0x100..=crate::package_profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID)
+            if !(0x100..=crate::package::profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID)
                 .contains(&tag.pkg_id())
                 || TagHash::new(tag.pkg_id(), tag.entry_index()) != tag
             {

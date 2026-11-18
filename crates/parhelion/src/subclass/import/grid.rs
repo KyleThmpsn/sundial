@@ -1,10 +1,15 @@
-//! Saved source subclass candidates on the native solar Warlock layout. The private Super and
-//! every source grid choice with a complete translation take their source names, text and icons.
-//! Each tree takes the Super upgrade, melee upgrade and passive choices of its source row, and the
-//! name of that row's attribute choice. A choice whose behavior does not translate leaves its
-//! native node in place, so no node presents a source choice it does not perform.
+//! Saved source subclass candidates on a native subclass layout. Every source grid choice with a
+//! complete translation takes its source name, text and icon. Each tree takes the Super upgrade,
+//! melee upgrade and passive choices of its source row, and the name of that row's attribute
+//! choice. A choice whose behavior does not translate leaves its native node in place, so no node
+//! presents a source choice it does not perform.
+//!
+//! The Super takes one of two routes. A private Super replaces the solar Warlock's and holds
+//! every source upgrade. Otherwise the base subclass keeps its own Super, and a source choice
+//! that grants Super keys is placed only where that Super is the source one's native counterpart
+//! and its bank holds the keys.
 use super::*;
-use crate::icon_edit::ImportedIcon;
+use crate::icon::edit::ImportedIcon;
 use crate::perk::Icon;
 use crate::subclass::{
     AbilityModifier, AttunementPath, EntryIcon, ModifierEffect, SubclassPathNode,
@@ -12,7 +17,7 @@ use crate::subclass::{
 use parhelion_import::d1_roi::ability::grid::Step;
 use std::collections::BTreeMap;
 use sundial::investment::{SubclassSummary, WeaponDamageType};
-use sundial::package_authoring::sandbox_perk::program::{Action, PropertyOperation};
+use sundial::package_authoring::sandbox_perk::program::{Action, PropertyOperation, Trigger};
 
 /// Trees from top to bottom, matching the source grid's rows from top to bottom.
 const PATHS: [AttunementPath; 3] = [
@@ -147,7 +152,7 @@ fn perk(steps: &[&Step], carriers: &[u16], namespace: &str) -> Result<Option<Per
         ));
     }
     let mut perk = PerkRecipe::new();
-    perk.id = digest(
+    perk.id = sha256_hex(
         &serde_json::to_vec(&json!({"source":"d1_roi","namespace":namespace,
             "steps":steps.iter().map(|step| (step.node, step.step)).collect::<Vec<_>>()}))
         .map_err(error)?,
@@ -212,12 +217,13 @@ fn gates(step: &Step) -> BTreeSet<u32> {
         .collect()
 }
 
-/// Keys a lowered step's programs apply.
-fn applied(steps: &[&Step]) -> BTreeSet<u32> {
-    steps
+/// Keys a lowered program applies.
+fn applied_keys(
+    program: &sundial::package_authoring::sandbox_perk::program::Program,
+) -> BTreeSet<u32> {
+    program
+        .actions
         .iter()
-        .flat_map(|step| &step.programs)
-        .flat_map(|program| &program.actions)
         .filter_map(|action| match action {
             Action::AbilityProperty {
                 key,
@@ -229,6 +235,15 @@ fn applied(steps: &[&Step]) -> BTreeSet<u32> {
         .collect()
 }
 
+/// Keys a lowered step's programs apply.
+fn applied(steps: &[&Step]) -> BTreeSet<u32> {
+    steps
+        .iter()
+        .flat_map(|step| &step.programs)
+        .flat_map(applied_keys)
+        .collect()
+}
+
 fn status(step: &Step, placed: &str, entries: &[u8]) -> Value {
     json!({"node":step.node,"step":step.step,"name":step.name,"placement":placed,
         "entries":entries,"hud_glyph":step.hud_glyph,"unsupported":step.unsupported,
@@ -237,12 +252,33 @@ fn status(step: &Step, placed: &str, entries: &[u8]) -> Value {
 
 /// The tree whose passive pool every placed passive and Super upgrade reuses, and its position.
 /// A same-position node in another tree can equip its own movement ability even after its perks
-/// are removed, so only this pool is qualified.
+/// are removed, so only this pool is qualified on the solar Warlock.
 const PASSIVE_SOURCE: (AttunementPath, u8) = (AttunementPath::Middle, 3);
 
-/// The native entry of the qualified passive pool.
-fn passive_source_entry() -> u8 {
-    PASSIVE_SOURCE.0.entries()[usize::from(PASSIVE_SOURCE.1)]
+/// The passive pool placed choices reuse on `donor`: the solar Warlock's qualified one when it
+/// equips no ability there either, otherwise the last path node that equips none.
+fn passive_pool(donor: &SubclassSummary) -> Result<(AttunementPath, u8), String> {
+    std::iter::once(PASSIVE_SOURCE)
+        .chain(PATHS.into_iter().flat_map(|path| {
+            (1..layout::PATH_NODES)
+                .rev()
+                .map(move |position| (path, position))
+        }))
+        .find(|(path, position)| {
+            !donor
+                .entry_rows
+                .contains_key(&path.entries()[usize::from(*position)])
+        })
+        .ok_or_else(|| "The base subclass has no passive node without an ability of its own".into())
+}
+
+/// Which Super keys a tree's Super holds for the choices that grant them.
+enum SuperKeys {
+    /// The private Super's bank holds the keys of these source nodes.
+    Private(BTreeSet<u32>),
+    /// The keys each native Super entry's bank holds, for entries equipping the source Super's
+    /// native counterpart.
+    Native(BTreeMap<u8, BTreeSet<u32>>),
 }
 
 /// The native solar graph supplies the common controller, helpers and channel bank. Source
@@ -250,14 +286,22 @@ fn passive_source_entry() -> u8 {
 /// candidate passes package loading and complete gameplay acceptance.
 pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
     let super_entry = super_entry(request)?;
-    let mut inputs = Inputs::open(request)?;
+    let mut inputs = Inputs::open(
+        request.source_packages,
+        request.native_packages,
+        request.output,
+    )?;
     let subclasses = inputs
         .catalog
-        .subclasses(crate::package_profile::is_stock_item_definition);
+        .subclasses(crate::package::profile::is_stock_item_definition);
     let (donor, base) = solar_donor(request, &subclasses)?;
     let translated = inputs.translate(request, donor, super_entry)?;
     let imported = inputs.publish_super(&translated.upgrades, translated.subclass.pattern)?;
-    let mut recipe = subclass_recipe(request, &translated)?;
+    let mut recipe = subclass_recipe(
+        request.recipe,
+        &translated.subclass,
+        translated.icon.as_deref(),
+    )?;
     let abilities = recipe
         .overrides
         .subclass_abilities
@@ -266,11 +310,148 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
         request,
         (donor, base),
         &translated,
-        &imported,
+        (&imported, entry_banks(&inputs.catalog, donor)),
         super_entry,
         abilities,
     )?;
-    inputs.publish(request, recipe, &translated, records)
+    let subclass = &translated.subclass;
+    let provenance = json!({"status":"prepared source subclass candidate","gameplay_verified":false,
+        "native_presentation":translated.presentation,
+        "translation":translated.upgrades.evidence,
+        "super_entries":[layout::SUPER,AttunementPath::Middle.entries()[0]],
+        "subclass":{"item":subclass.item,"name":subclass.name,"icon":translated.icon.is_some()},
+        "grid":records,
+        "limits":["Source grenades, movement and melee keep their native ability graphs. Their source properties and actions are translated.",
+            "Source attribute choices and stat rows have no Shadowkeep counterpart and are left out.",
+            "A choice whose behavior does not translate keeps its native node. Its reasons are recorded."]});
+    inputs.publish(request.recipe, recipe, provenance)
+}
+
+/// Places a source grid on the recipe's base subclass, which keeps its own Super graphs. The
+/// base must share a Super or a grenade with the source subclass, by native ability graph.
+pub fn prepare_native(request: &GridRequest<'_>) -> Result<Prepared, String> {
+    if request.recipe.kind != ItemKind::Subclass {
+        return Err("A subclass grid import requires a subclass recipe".into());
+    }
+    request
+        .recipe
+        .to_spec()
+        .map_err(error)?
+        .validate()
+        .map_err(error)?;
+    let mut inputs = Inputs::open(
+        request.source_packages,
+        request.native_packages,
+        request.output,
+    )?;
+    let subclasses = inputs
+        .catalog
+        .subclasses(crate::package::profile::is_stock_item_definition);
+    let base = request.recipe.donor.item_hash.parse_u32().map_err(error)?;
+    let donor = subclasses
+        .iter()
+        .find(|candidate| candidate.hash == base)
+        .ok_or("The subclass base is absent from the native stock catalog")?;
+    let subclass = inputs
+        .source
+        .subclass_choices()
+        .map_err(error)?
+        .into_iter()
+        .find(|subclass| subclass.item == request.subclass)
+        .ok_or("The source subclass is absent from the source packages")?;
+    let folder = inputs.output.join("grid");
+    fs::create_dir_all(&folder).map_err(error)?;
+    let grid = inputs
+        .source
+        .subclass_grid(&mut inputs.native, &subclass, &folder, None)
+        .map_err(error)?;
+    let icon = inputs.source.subclass_icon(subclass.item).map_err(error)?;
+    let carriers = inputs.carriers()?;
+    let supers = NativeSupers::read(&inputs.catalog, donor, &subclass, &grid)?;
+    let grenade = grid.iter().flat_map(|step| &step.equips).any(|equip| {
+        equip.native_graph.is_some()
+            && layout::GRENADES
+                .iter()
+                .any(|entry| donor.entry_entities.get(entry) == equip.native_graph.as_ref())
+    });
+    if supers.held.is_empty() && !grenade {
+        return Err("The base subclass shares no Super or grenade with the source subclass".into());
+    }
+    let mut recipe = subclass_recipe(request.recipe, &subclass, icon.as_deref())?;
+    let mut placement = Placement {
+        donor,
+        base,
+        namespace: request.recipe.namespace.as_str(),
+        carriers: &carriers,
+        grid: &grid,
+        groups: groups(&grid),
+        abilities: recipe
+            .overrides
+            .subclass_abilities
+            .get_or_insert_with(Default::default),
+        records: Vec::new(),
+        used: BTreeSet::new(),
+        pool: passive_pool(donor)?,
+        banks: entry_banks(&inputs.catalog, donor),
+    };
+    placement.native(&supers)?;
+    let records = placement.records;
+    let provenance = json!({"status":"prepared source subclass grid on a native Super",
+        "gameplay_verified":false,"native_base":donor.hash,
+        "native_supers":supers.held.keys().collect::<Vec<_>>(),
+        "subclass":{"item":subclass.item,"name":subclass.name,"icon":icon.is_some()},
+        "grid":records,
+        "limits":["The Super keeps the base subclass's native graph. A source Super without a native counterpart is not imported.",
+            "A granted Super key selects the native bank's own row, with Shadowkeep's values.",
+            "Source grenades, movement and melee keep their native ability graphs. Their source properties and actions are translated.",
+            "Source attribute choices and stat rows have no Shadowkeep counterpart and are left out.",
+            "A choice whose behavior does not translate keeps its native node. Its reasons are recorded."]});
+    inputs.publish(request.recipe, recipe, provenance)
+}
+
+/// The source Super's foundation, and the base subclass's Super entries that equip its native
+/// counterpart with the property keys each entry's bank holds.
+struct NativeSupers<'a> {
+    step: &'a Step,
+    held: BTreeMap<u8, BTreeSet<u32>>,
+}
+
+impl<'a> NativeSupers<'a> {
+    fn read(
+        catalog: &InvestmentCatalog,
+        donor: &SubclassSummary,
+        subclass: &parhelion_import::d1_roi::ability::SubclassCatalog,
+        grid: &'a [Step],
+    ) -> Result<Self, String> {
+        let equips = |step: &&Step| {
+            step.equips
+                .iter()
+                .any(|equip| equip.row == subclass.ability_row)
+        };
+        let step = grid
+            .iter()
+            .find(equips)
+            .ok_or("The source grid has no Super foundation")?;
+        let graph = step
+            .equips
+            .iter()
+            .find(|equip| equip.row == subclass.ability_row)
+            .and_then(|equip| equip.native_graph);
+        let mut held = BTreeMap::new();
+        for entry in [layout::SUPER, AttunementPath::Middle.entries()[0]] {
+            if graph.is_none() || donor.entry_entities.get(&entry).copied() != graph {
+                continue;
+            }
+            let keys = donor
+                .entry_rows
+                .get(&entry)
+                .and_then(|&row| catalog.ability_row(row))
+                .map(|row| row.keys.iter().map(|key| key.key).collect())
+                .unwrap_or_default();
+            held.insert(entry, keys);
+        }
+        Ok(Self { step, held })
+    }
 }
 
 /// The middle tree's own Super entry, once the request names a passive node of that tree on a
@@ -355,11 +536,11 @@ struct Translated {
 impl Inputs {
     /// Resolves both package trees and a new output folder before anything is written, then
     /// opens the readers and the native catalog.
-    fn open(request: &Request<'_>) -> Result<Self, String> {
-        let source_path = packages_path(request.source_packages).map_err(error)?;
-        let native_path = request.native_packages.canonicalize().map_err(error)?;
+    fn open(source: &Path, native: &Path, output: &Path) -> Result<Self, String> {
+        let source_path = packages_path(source).map_err(error)?;
+        let native_path = native.canonicalize().map_err(error)?;
         let output =
-            outside(request.output, source_path.parent().unwrap_or(&source_path)).map_err(error)?;
+            outside(output, source_path.parent().unwrap_or(&source_path)).map_err(error)?;
         outside(&output, native_path.parent().unwrap_or(&native_path)).map_err(error)?;
         if output.exists() {
             return Err("Choose a new ability import output folder".into());
@@ -506,31 +687,25 @@ impl Inputs {
     }
 
     /// Writes the prepared subclass recipe and its provenance, once it validates and both
-    /// package trees are still unchanged.
+    /// package trees are still unchanged. The route's own `provenance` gains the recipe digests
+    /// and both package identities.
     fn publish(
         &self,
-        request: &Request<'_>,
+        baseline: &WeaponRecipe,
         recipe: WeaponRecipe,
-        translated: &Translated,
-        records: Vec<Value>,
+        mut provenance: Value,
     ) -> Result<Prepared, String> {
         recipe.to_spec().map_err(error)?.validate().map_err(error)?;
         if !self.unchanged()? {
             return Err("The package inputs changed before ability candidate publication".into());
         }
         let encoded = recipe.to_json_pretty().map_err(error)?;
-        let subclass = &translated.subclass;
-        let provenance = json!({"status":"prepared source subclass candidate","gameplay_verified":false,
-            "baseline_recipe_sha256":digest(request.recipe.to_json_pretty().map_err(error)?.as_bytes()),
-            "prepared_recipe_sha256":digest(encoded.as_bytes()),"source":self.source.report(),
-            "native_stamp":self.native_stamp,"native_presentation":translated.presentation,
-            "translation":translated.upgrades.evidence,
-            "super_entries":[layout::SUPER,AttunementPath::Middle.entries()[0]],
-            "subclass":{"item":subclass.item,"name":subclass.name,"icon":translated.icon.is_some()},
-            "grid":records,
-            "limits":["Source grenades, movement and melee keep their native ability graphs. Their source properties and actions are translated.",
-                "Source attribute choices and stat rows have no Shadowkeep counterpart and are left out.",
-                "A choice whose behavior does not translate keeps its native node. Its reasons are recorded."]});
+        provenance["baseline_recipe_sha256"] = json!(sha256_hex(
+            baseline.to_json_pretty().map_err(error)?.as_bytes()
+        ));
+        provenance["prepared_recipe_sha256"] = json!(sha256_hex(encoded.as_bytes()));
+        provenance["source"] = json!(self.source.report());
+        provenance["native_stamp"] = json!(self.native_stamp);
         fs::write(
             self.output.join("provenance.json"),
             serde_json::to_vec_pretty(&provenance).map_err(error)?,
@@ -542,19 +717,22 @@ impl Inputs {
         )
         .map_err(error)?;
         Ok(Prepared {
-            baseline: request.recipe.clone(),
+            baseline: baseline.clone(),
             recipe,
             provenance,
         })
     }
 }
 
-/// The request's recipe with the source subclass's name, flavor text and icon, and only its HUD
-/// color kept among its authored entries. The source grid owns every entry, so a previous
-/// preparation's nodes cannot linger where a choice now keeps its native node.
-fn subclass_recipe(request: &Request<'_>, translated: &Translated) -> Result<WeaponRecipe, String> {
-    let subclass = &translated.subclass;
-    let mut recipe = request.recipe.clone();
+/// The recipe with the source subclass's name, flavor text and icon, and only its HUD color kept
+/// among its authored entries. The source grid owns every entry, so a previous preparation's
+/// nodes cannot linger where a choice now keeps its native node.
+fn subclass_recipe(
+    baseline: &WeaponRecipe,
+    subclass: &parhelion_import::d1_roi::ability::SubclassCatalog,
+    icon: Option<&[u8]>,
+) -> Result<WeaponRecipe, String> {
+    let mut recipe = baseline.clone();
     recipe.name = subclass.name.trim().to_owned();
     // The source subclass's description is its flavor text. Rise of Iron items have no lore tab,
     // so the item shows none, as the weapon import does.
@@ -563,7 +741,7 @@ fn subclass_recipe(request: &Request<'_>, translated: &Translated) -> Result<Wea
     }
     recipe.overrides.lore = None;
     recipe.overrides.remove_lore = true;
-    if let Some(png) = &translated.icon {
+    if let Some(png) = icon {
         recipe.overrides.icon_edit.imported_image = Some(diamond(png)?);
     }
     let hud_color = recipe
@@ -583,7 +761,7 @@ fn place(
     request: &Request<'_>,
     (donor, base): (&SubclassSummary, u32),
     translated: &Translated,
-    imported: &super::super::ImportedAbility,
+    (imported, banks): (&super::super::ImportedAbility, BTreeMap<u8, (u8, u32)>),
     super_entry: u8,
     abilities: &mut crate::subclass::SubclassAbilities,
 ) -> Result<Vec<Value>, String> {
@@ -622,6 +800,8 @@ fn place(
         abilities,
         records: Vec::new(),
         used: BTreeSet::new(),
+        pool: PASSIVE_SOURCE,
+        banks,
     };
     placement.supers(&foundation, middle_upgrade, super_entry)?;
     placement.grenades()?;
@@ -632,12 +812,14 @@ fn place(
         melee_base,
         melee_upgrades,
         columns: placement.columns(&translated.upgrades.upgrades),
-        passive_nodes: translated
-            .upgrades
-            .passives
-            .iter()
-            .map(|passive| passive.choice.node)
-            .collect(),
+        keys: SuperKeys::Private(
+            translated
+                .upgrades
+                .passives
+                .iter()
+                .map(|passive| passive.choice.node)
+                .collect(),
+        ),
         names: placement.tree_names(),
     };
     for (index, (path, upgrade)) in upgrades.into_iter().enumerate() {
@@ -657,13 +839,13 @@ struct Foundation<'b> {
 }
 
 /// What each tree reads: the middle tree's Super entry, the melee upgrades, the passive columns,
-/// the passives the private bank holds and the tree names.
+/// the Super keys each tree's Super holds and the tree names.
 struct Trees<'a> {
     super_entry: u8,
     melee_base: Option<&'a Step>,
     melee_upgrades: Vec<&'a Step>,
     columns: Vec<Vec<&'a Step>>,
-    passive_nodes: BTreeSet<u32>,
+    keys: SuperKeys,
     names: Option<Vec<String>>,
 }
 
@@ -681,11 +863,75 @@ struct Placement<'a> {
     records: Vec<Value>,
     /// The source groups already placed.
     used: BTreeSet<u32>,
+    /// The donor path node whose pool every placed passive and Super upgrade reuses.
+    pool: (AttunementPath, u8),
+    /// Each donor entry's equipped ability row and the bank that ability reads.
+    banks: BTreeMap<u8, (u8, u32)>,
+}
+
+/// Each entry of `donor` that equips an ability, with the ability's row and bank.
+fn entry_banks(catalog: &InvestmentCatalog, donor: &SubclassSummary) -> BTreeMap<u8, (u8, u32)> {
+    donor
+        .entry_rows
+        .iter()
+        .filter_map(|(&entry, &row)| Some((entry, (row, catalog.ability_row(row)?.bank?))))
+        .collect()
 }
 
 type Upgrade = parhelion_import::d1_roi::ability::upgrades::Upgrade;
 
 impl<'a> Placement<'a> {
+    /// Key records for the private bank rows `steps`' always-on programs apply. A runtime that
+    /// files a selected node's records and not its sandbox perks applies the rows through these.
+    /// Each key goes to one entry per ability row reading the row's bank: `entry` itself where
+    /// it equips one, else an entry of `path`, else the first.
+    fn key_grants(
+        &self,
+        steps: &[&Step],
+        entry: u8,
+        path: Option<AttunementPath>,
+    ) -> Vec<AbilityModifier> {
+        let rank = |candidate: u8| {
+            (
+                candidate != entry,
+                !path.is_some_and(|path| path.entries().contains(&candidate)),
+                candidate,
+            )
+        };
+        let mut grants = BTreeSet::new();
+        for program in steps.iter().flat_map(|step| &step.programs) {
+            if !matches!(program.trigger, Trigger::Always) {
+                continue;
+            }
+            let applied = applied_keys(program);
+            for row in program
+                .ability_rows
+                .iter()
+                .filter(|row| applied.contains(&row.key))
+            {
+                let mut targets = BTreeMap::<u8, u8>::new();
+                for (&candidate, &(stock_row, bank)) in &self.banks {
+                    // Only an ability or node entry can be named. The class base cannot.
+                    if bank != row.bank || crate::subclass::entry_place(candidate).is_none() {
+                        continue;
+                    }
+                    let held = targets.entry(stock_row).or_insert(candidate);
+                    if rank(candidate) < rank(*held) {
+                        *held = candidate;
+                    }
+                }
+                grants.extend(targets.into_values().map(|target| (target, row.key)));
+            }
+        }
+        grants
+            .into_iter()
+            .map(|(target, key)| AbilityModifier {
+                target,
+                effect: ModifierEffect::Key { key },
+            })
+            .collect()
+    }
+
     /// The custom perk of `steps`' lowered programs, when they have any.
     fn custom_perks(&self, steps: &[&Step]) -> Result<Vec<PerkRecipe>, String> {
         Ok(perk(steps, self.carriers, self.namespace)?
@@ -733,6 +979,11 @@ impl<'a> Placement<'a> {
                     target: entry,
                     effect: ModifierEffect::Key { key },
                 })
+                .chain(self.key_grants(
+                    &[step],
+                    entry,
+                    (entry != layout::SUPER).then_some(AttunementPath::Middle),
+                ))
                 .collect(),
             removed_perks,
             removed_modifiers,
@@ -810,6 +1061,7 @@ impl<'a> Placement<'a> {
                 icon: icon(step)?,
                 hud_artwork: hud_artwork(&[step])?,
                 custom_perks: self.custom_perks(&[step])?,
+                modifiers: self.key_grants(&[step], entry, None),
                 ..EntryEdits::default()
             };
             self.abilities.set_ability(
@@ -840,19 +1092,44 @@ impl<'a> Placement<'a> {
         };
         self.used.insert(base_movement.group);
         let row = base_movement.equips[0].row;
+        // The movement choices: upgrades to the base row, beside any choice that equips another
+        // movement ability outright.
+        let equips_only = |step: &Step| {
+            !step.equips.is_empty() && step.properties.is_empty() && step.super_keys.is_empty()
+        };
         let choices = self
             .groups
             .values()
             .find(|steps| {
-                steps.len() == layout::MOVEMENT.len()
-                    && steps.iter().all(|step| upgrades_row(step, row))
+                steps.iter().any(|step| upgrades_row(step, row))
+                    && steps
+                        .iter()
+                        .all(|step| upgrades_row(step, row) || equips_only(step))
             })
             .cloned()
             .unwrap_or_default();
+        // A group of one upgrade per entry fills the entries in source order. Otherwise an
+        // upgrade takes only the entry whose stock modifier applies its key.
+        let whole = choices.len() == layout::MOVEMENT.len()
+            && choices.iter().all(|step| upgrades_row(step, row));
         let mut entries = Vec::new();
         for (index, step) in choices.into_iter().enumerate() {
             self.used.insert(step.group);
-            let entry = self.movement_entry(step, index);
+            if equips_only(step) {
+                // The base subclass keeps its own entry for an ability the choice equips.
+                let entry = step.equips[0].native_graph.and_then(|native| {
+                    layout::MOVEMENT
+                        .iter()
+                        .copied()
+                        .find(|entry| self.donor.entry_entities.get(entry) == Some(&native))
+                });
+                self.records.push(status(step, "native", entry.as_slice()));
+                continue;
+            }
+            let Some(entry) = self.movement_entry(step, whole.then_some(index)) else {
+                self.records.push(status(step, "native", &[]));
+                continue;
+            };
             if !step.unsupported.is_empty() || !base_movement.unsupported.is_empty() {
                 self.records.push(status(step, "native", &[entry]));
                 continue;
@@ -864,6 +1141,7 @@ impl<'a> Placement<'a> {
                 icon: icon(step)?,
                 hud_artwork: hud_artwork(&[base_movement, step])?,
                 custom_perks: self.custom_perks(&[base_movement, step])?,
+                modifiers: self.key_grants(&[base_movement, step], entry, None),
                 removed_perks,
                 removed_modifiers,
                 ..EntryEdits::default()
@@ -886,8 +1164,8 @@ impl<'a> Placement<'a> {
     }
 
     /// A movement upgrade takes the entry whose stock modifier applies its key, otherwise the entry
-    /// of its source row.
-    fn movement_entry(&self, step: &Step, index: usize) -> u8 {
+    /// of its source row `index`, when its group fills every entry.
+    fn movement_entry(&self, step: &Step, index: Option<usize>) -> Option<u8> {
         layout::MOVEMENT
             .iter()
             .copied()
@@ -901,11 +1179,12 @@ impl<'a> Placement<'a> {
                             .any(|&(key, _)| step.properties.iter().any(|&(own, _)| own == key))
                     })
             })
-            .unwrap_or(layout::MOVEMENT[index])
+            .or_else(|| index.map(|index| layout::MOVEMENT[index]))
     }
 
-    /// The foundation's upgrade to the equipped melee row, and the group of one upgrade to it per
-    /// tree.
+    /// The grid's own upgrade to the equipped melee row, and the group of one melee choice per
+    /// tree. The base is a foundation, or a lone node whose foundation role is unqualified. The
+    /// choices are the group shown in the base's column, which need not all name the melee row.
     fn melee(&mut self) -> (Option<&'a Step>, Vec<&'a Step>) {
         let grid = self.grid;
         let Some(row) = grid
@@ -917,23 +1196,24 @@ impl<'a> Placement<'a> {
         else {
             return (None, Vec::new());
         };
-        let base = grid
-            .iter()
-            .find(|step| step.foundation == Some(true) && upgrades_row(step, row));
-        let upgrades = if base.is_some() {
-            self.groups
-                .values()
-                .find(|steps| {
+        let base = grid.iter().find(|step| {
+            upgrades_row(step, row)
+                && (step.foundation == Some(true)
+                    || (step.foundation.is_none()
+                        && step.column >= 0
+                        && self.groups[&step.group].len() == 1))
+        });
+        let upgrades = base
+            .and_then(|base| {
+                self.groups.values().find(|steps| {
                     steps.len() == PATHS.len()
                         && steps
                             .iter()
-                            .all(|step| step.foundation != Some(true) && upgrades_row(step, row))
+                            .all(|step| step.foundation != Some(true) && step.column == base.column)
                 })
-                .cloned()
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+            })
+            .cloned()
+            .unwrap_or_default();
         for step in &upgrades {
             self.used.insert(step.group);
         }
@@ -1041,7 +1321,7 @@ impl<'a> Placement<'a> {
         };
         let entry = path.entries()[usize::from(position)];
         if upgrade.available {
-            let (removed_perks, removed_modifiers) = removed(self.donor, passive_source_entry());
+            let (removed_perks, removed_modifiers) = removed(self.donor, self.pool_entry());
             let step = self
                 .grid
                 .iter()
@@ -1070,8 +1350,8 @@ impl<'a> Placement<'a> {
                 SubclassPathNode {
                     position,
                     source: self.donor.hash,
-                    source_path: PASSIVE_SOURCE.0,
-                    source_position: PASSIVE_SOURCE.1,
+                    source_path: self.pool.0,
+                    source_position: self.pool.1,
                     edits,
                 },
             );
@@ -1117,6 +1397,7 @@ impl<'a> Placement<'a> {
             icon: icon(step)?,
             hud_artwork: hud_artwork(&[base, step])?,
             custom_perks: self.custom_perks(&[base, step])?,
+            modifiers: self.key_grants(&[base, step], entry, Some(path)),
             removed_perks,
             removed_modifiers,
             ..EntryEdits::default()
@@ -1151,30 +1432,213 @@ impl<'a> Placement<'a> {
                 continue;
             };
             let entry = path.entries()[usize::from(position)];
-            if !step.super_keys.is_empty() && !trees.passive_nodes.contains(&step.node) {
-                return Err(format!(
-                    "{} grants Super properties the private bank does not hold",
-                    step.name
-                ));
-            }
-            if !step.unsupported.is_empty() {
-                self.records.push(status(step, "native", &[entry]));
-                continue;
-            }
-            // A gated row works only beside the key it is gated on, which the tree's melee
-            // applies.
-            let unapplied = gates(step)
-                .into_iter()
-                .filter(|gate| !melee_keys.contains(gate))
-                .collect::<Vec<_>>();
-            if !unapplied.is_empty() {
-                let mut record = status(step, "native", &[entry]);
-                record["unapplied_gates"] = json!(unapplied);
-                self.records.push(record);
+            if !self.placeable(step, entry, target, melee_keys, trees)? {
                 continue;
             }
             self.passive(step, path, position, target)?;
             self.records.push(status(step, "passive", &[entry]));
+        }
+        Ok(())
+    }
+
+    /// Whether `step` can take `entry` in a tree whose Super is `target`. A choice that cannot
+    /// leaves the native node, and its record says why.
+    fn placeable(
+        &mut self,
+        step: &Step,
+        entry: u8,
+        target: u8,
+        melee_keys: &BTreeSet<u32>,
+        trees: &Trees<'a>,
+    ) -> Result<bool, String> {
+        let unheld = match &trees.keys {
+            SuperKeys::Private(nodes) => {
+                if !step.super_keys.is_empty() && !nodes.contains(&step.node) {
+                    return Err(format!(
+                        "{} grants Super properties the private bank does not hold",
+                        step.name
+                    ));
+                }
+                Vec::new()
+            }
+            SuperKeys::Native(held) => step
+                .super_keys
+                .iter()
+                .copied()
+                .filter(|key| !held.get(&target).is_some_and(|keys| keys.contains(key)))
+                .collect(),
+        };
+        if !step.unsupported.is_empty() {
+            self.records.push(status(step, "native", &[entry]));
+            return Ok(false);
+        }
+        if !unheld.is_empty() {
+            let mut record = status(step, "native", &[entry]);
+            record["unheld_super_keys"] = json!(unheld);
+            self.records.push(record);
+            return Ok(false);
+        }
+        // A gated row works only beside the key it is gated on, which the tree's melee
+        // applies.
+        let unapplied = gates(step)
+            .into_iter()
+            .filter(|gate| !melee_keys.contains(gate))
+            .collect::<Vec<_>>();
+        if !unapplied.is_empty() {
+            let mut record = status(step, "native", &[entry]);
+            record["unapplied_gates"] = json!(unapplied);
+            self.records.push(record);
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// The native entry of the passive pool placed choices reuse.
+    fn pool_entry(&self) -> u8 {
+        self.pool.0.entries()[usize::from(self.pool.1)]
+    }
+
+    /// Places the grid around the base subclass's own Supers. Each tree takes its source row's
+    /// melee choice and passives, and its Super upgrade where that tree's Super holds the keys:
+    /// on the last node of the top and bottom trees, and with the middle tree's own Super.
+    fn native(&mut self, supers: &NativeSupers<'a>) -> Result<(), String> {
+        let entries = supers.held.keys().copied().collect::<Vec<_>>();
+        let placed = if entries.is_empty() {
+            "native"
+        } else {
+            "native_super"
+        };
+        self.records.push(status(supers.step, placed, &entries));
+        self.used.insert(supers.step.group);
+        self.grenades()?;
+        self.movement()?;
+        let (melee_base, melee_upgrades) = self.melee();
+        let mut columns = self.columns(&[]);
+        // The Super upgrades are the column whose every choice grants Super keys.
+        let upgrades = columns
+            .iter()
+            .position(|steps| steps.iter().all(|step| !step.super_keys.is_empty()))
+            .map(|index| columns.remove(index))
+            .unwrap_or_default();
+        let trees = Trees {
+            super_entry: AttunementPath::Middle.entries()[0],
+            melee_base,
+            melee_upgrades,
+            columns,
+            keys: SuperKeys::Native(supers.held.clone()),
+            names: self.tree_names(),
+        };
+        for (index, path) in PATHS.into_iter().enumerate() {
+            let layout_tree = tree(path);
+            let target = if path == AttunementPath::Middle {
+                trees.super_entry
+            } else {
+                layout::SUPER
+            };
+            let before = self.records.len();
+            let melee_keys = self.tree_melee(
+                &layout_tree,
+                path,
+                trees.melee_base,
+                trees.melee_upgrades.get(index).copied(),
+            )?;
+            if let Some(&step) = upgrades.get(index) {
+                self.native_upgrade(&layout_tree, path, step, target, &melee_keys, &trees)?;
+            }
+            self.passives(&layout_tree, path, (index, target), &melee_keys, &trees)?;
+            // A tree takes its source name once it holds a source choice.
+            let holds = self.records[before..]
+                .iter()
+                .any(|record| record["placement"] != "native");
+            if let Some(name) = trees
+                .names
+                .as_ref()
+                .and_then(|names| names.get(index))
+                .filter(|_| holds)
+            {
+                self.abilities
+                    .set_path_name(path, self.base, Some(name.clone()));
+            }
+        }
+        self.melee_base(trees.melee_base);
+        self.automatic()?;
+        self.attributes();
+        let grid = self.grid;
+        for step in grid {
+            if !self
+                .records
+                .iter()
+                .any(|record| record["node"] == step.node && record["step"] == step.step)
+            {
+                self.records.push(status(step, "left_out", &[]));
+            }
+        }
+        Ok(())
+    }
+
+    /// A Super upgrade of the native Super `target`: a node of its own in the top and bottom
+    /// trees, and part of the middle tree's own Super node, which keeps its native graph, perks
+    /// and text.
+    fn native_upgrade(
+        &mut self,
+        layout_tree: &Tree,
+        path: AttunementPath,
+        step: &Step,
+        target: u8,
+        melee_keys: &BTreeSet<u32>,
+        trees: &Trees<'a>,
+    ) -> Result<(), String> {
+        let Some(position) = layout_tree.upgrade else {
+            if !self.placeable(step, target, target, melee_keys, trees)? {
+                return Ok(());
+            }
+            let mut description = self
+                .donor
+                .entry_descriptions
+                .get(&target)
+                .cloned()
+                .unwrap_or_default();
+            if !description.trim().is_empty() {
+                description.push_str("\n\n");
+            }
+            description.push_str(&format!(
+                "{}: {}",
+                step.name.trim(),
+                step.description.trim()
+            ));
+            let edits = EntryEdits {
+                description: Some(description),
+                custom_perks: self.custom_perks(&[step])?,
+                modifiers: step
+                    .super_keys
+                    .iter()
+                    .map(|&key| AbilityModifier {
+                        target,
+                        effect: ModifierEffect::Key { key },
+                    })
+                    .chain(self.key_grants(&[step], target, Some(path)))
+                    .collect(),
+                ..EntryEdits::default()
+            };
+            self.abilities.set_path_node(
+                path,
+                self.base,
+                SubclassPathNode {
+                    position: layout::LEAD_NODE,
+                    source: self.donor.hash,
+                    source_path: path,
+                    source_position: layout::LEAD_NODE,
+                    edits,
+                },
+            );
+            self.records
+                .push(status(step, "super_upgrade_with_super", &[target]));
+            return Ok(());
+        };
+        let entry = path.entries()[usize::from(position)];
+        if self.placeable(step, entry, target, melee_keys, trees)? {
+            self.passive(step, path, position, target)?;
+            self.records.push(status(step, "super_upgrade", &[entry]));
         }
         Ok(())
     }
@@ -1187,7 +1651,7 @@ impl<'a> Placement<'a> {
         position: u8,
         target: u8,
     ) -> Result<(), String> {
-        let (removed_perks, removed_modifiers) = removed(self.donor, passive_source_entry());
+        let (removed_perks, removed_modifiers) = removed(self.donor, self.pool_entry());
         let edits = EntryEdits {
             name: Some(step.name.clone()),
             description: Some(step.description.clone()),
@@ -1200,6 +1664,7 @@ impl<'a> Placement<'a> {
                     target,
                     effect: ModifierEffect::Key { key },
                 })
+                .chain(self.key_grants(&[step], path.entries()[usize::from(position)], Some(path)))
                 .collect(),
             removed_perks,
             removed_modifiers,
@@ -1211,8 +1676,8 @@ impl<'a> Placement<'a> {
             SubclassPathNode {
                 position,
                 source: self.donor.hash,
-                source_path: PASSIVE_SOURCE.0,
-                source_position: PASSIVE_SOURCE.1,
+                source_path: self.pool.0,
+                source_position: self.pool.1,
                 edits,
             },
         );
@@ -1265,6 +1730,7 @@ impl<'a> Placement<'a> {
             }
             let edits = EntryEdits {
                 custom_perks: self.custom_perks(&[step])?,
+                modifiers: self.key_grants(&[step], layout::STAT_PASSIVES, None),
                 ..EntryEdits::default()
             };
             self.abilities.set_ability(

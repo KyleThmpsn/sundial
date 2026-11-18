@@ -43,6 +43,28 @@ pub(super) fn translate(
     write(&native_lists(source, tag, lists, native)?, graph, to)
 }
 
+/// A match-any filter of `names`, each of which Shadowkeep's registry must hold.
+pub(super) fn any(
+    names: &[u32],
+    graph: &mut Graph,
+    to: usize,
+    native: Option<&mut Reader>,
+) -> Result<()> {
+    if let Some(native) = native {
+        let registry = native.tag(NATIVE, None)?;
+        let held = held(&registry)?;
+        ensure!(
+            names.iter().all(|name| held.contains(name)),
+            "Shadowkeep lacks a label of the match-any filter"
+        );
+    }
+    write(
+        &[names.to_vec(), Vec::new(), Vec::new(), Vec::new()],
+        graph,
+        to,
+    )
+}
+
 /// D1 ability labels have only include-any and exclude-any lists. Their named
 /// entries still identify the dictionary used by the adjacent object filter.
 pub(super) fn ability(
@@ -68,6 +90,147 @@ pub(super) fn ability(
     write(&native_lists(source, tag, lists, native)?, graph, to)
 }
 
+/// Labels an effect adds to an event: a declared list at `list` and its compiled 256-bit set at
+/// `set`, with no bypass flag. The rows name their own dictionary. Every label must be an atom
+/// Shadowkeep's registry holds, since an added label nothing native declares could never be
+/// read. The native rows go to `to`, and package assembly compiles their set.
+pub(super) fn added(
+    source: &Source,
+    p: &Payload,
+    list: usize,
+    set: usize,
+    graph: &mut Graph,
+    to: usize,
+    native: Option<&mut Reader>,
+) -> Result<()> {
+    let rows = p.array(list, 24, Some(0x80800365))?;
+    let first = *rows.first().context("Source effect adds no event label")?;
+    let tag = p.u32(first + 16)?;
+    let dictionary = source.read(tag)?;
+    let atoms = dictionary
+        .array(8, 4, Some(0x80800070))?
+        .into_iter()
+        .map(|row| dictionary.u32(row))
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        !atoms.is_empty() && atoms.len() <= 256,
+        "Source label dictionary exceeds its mask width"
+    );
+    let mut mask = [0u8; 32];
+    let mut names = Vec::with_capacity(rows.len());
+    for row in rows {
+        let name = p.u32(row)?;
+        ensure!(p.u32(row + 4)? == 0, "Unknown source label record flags");
+        reference(p, row + 8, tag)?;
+        let index = atoms
+            .iter()
+            .position(|atom| *atom == name)
+            .context("Source added label is not a registered atom")?;
+        mask[index / 8] |= 1 << (index % 8);
+        names.push(name);
+    }
+    ensure!(
+        p.bytes::<32>(set)? == mask,
+        "Source added labels and their compiled set disagree"
+    );
+    if let Some(native) = native {
+        let payload = native.tag(NATIVE, None)?;
+        let held = held(&payload)?;
+        ensure!(
+            names.iter().all(|name| held.contains(name)),
+            "Source added label has no Shadowkeep counterpart"
+        );
+    }
+    let path = graph.blocks.len();
+    graph.blocks.push(Block {
+        class: 0,
+        count: None,
+        bytes: PATH.to_vec(),
+        links: BTreeMap::new(),
+    });
+    let mut bytes = vec![0; names.len() * 24];
+    let mut links = BTreeMap::new();
+    for (index, name) in names.iter().enumerate() {
+        put(&mut bytes, index * 24, &name.to_le_bytes())?;
+        put(&mut bytes, index * 24 + 16, &NATIVE.to_le_bytes())?;
+        links.insert(index * 24 + 8, path);
+    }
+    let index = graph.blocks.len();
+    graph.blocks.push(Block {
+        class: 0x808094B3,
+        count: Some(names.len()),
+        bytes,
+        links,
+    });
+    let root = &mut graph.blocks[0];
+    put(&mut root.bytes, to, &(names.len() as u64).to_le_bytes())?;
+    root.links.insert(to + 8, index);
+    Ok(())
+}
+
+/// Rise of Iron's `player_dot` label, which marks damage over time dealt by players, and the
+/// Shadowkeep labels that take its place: `burn`, `poison` and `scorch`. Shadowkeep declares no
+/// `player_dot`. Seven source damage profiles carry it and four of those also carry `burn`, so
+/// the three native labels are an adaptation of the category, not the same set of damage.
+const PLAYER_DOT: u32 = 0x59EE_13FA;
+const OVER_TIME: [u32; 3] = [0x5417_D662, 0x543B_0EA1, 0x8E21_55ED];
+
+/// An incoming-damage record's two source label filters as one native filter. The damage
+/// filter at `base` holds ability lists (match any and exclude any). A four-operation filter
+/// over the same dictionary follows at `second`, which source `76CFC0` checks against the same
+/// event labels. The native effect and event have one four-operation filter, so a single
+/// match-any ability label becomes a required label beside the second filter's lists. Two
+/// match-any lists have no single-filter form and are refused.
+pub(super) fn incoming(
+    source: &Source,
+    p: &Payload,
+    (base, second): (usize, usize),
+    graph: &mut Graph,
+    to: usize,
+    native: Option<&mut Reader>,
+) -> Result<()> {
+    let dictionary = second + 0x40;
+    let tag = p.u32(dictionary + 8)?;
+    reference(p, dictionary, tag)?;
+    let [any, _, excluded, _] = declared(
+        source,
+        p,
+        tag,
+        &[
+            (base + 0x20, base + 0x48, base + 0x8A, 0),
+            (base + 0x30, base + 0x68, base + 0x8B, 2),
+        ],
+    )?;
+    let mut lists = declared(source, p, tag, &operations(second))?;
+    if any.len() == 1 {
+        lists[1].extend(any);
+    } else if !any.is_empty() {
+        ensure!(
+            lists[0].is_empty(),
+            "Source incoming damage combines two match-any label lists"
+        );
+        lists[0] = any;
+    }
+    lists[2].extend(excluded);
+    let Some(native) = native else {
+        return write(&lists, graph, to);
+    };
+    let registry = native.tag(NATIVE, None)?;
+    let held = held(&registry)?;
+    if lists[1].contains(&PLAYER_DOT) && !held.contains(&PLAYER_DOT) {
+        ensure!(
+            lists[0].is_empty() && OVER_TIME.iter().all(|name| held.contains(name)),
+            "Source damage-over-time label has no Shadowkeep counterpart for this filter"
+        );
+        lists[1].retain(|&name| name != PLAYER_DOT);
+        lists[0] = OVER_TIME.to_vec();
+    }
+    exclusions(&mut lists, &held);
+    let lists = restrict(source, tag, lists, &registry)?
+        .context("Source label filter can never hold, since Shadowkeep lacks labels it requires")?;
+    write(&lists, graph, to)
+}
+
 /// A perk filter's lists for Shadowkeep's registry. A filter that can never hold there has no
 /// effect a translated perk could keep, so it refuses the perk.
 fn native_lists(
@@ -80,8 +243,43 @@ fn native_lists(
         return Ok(lists);
     };
     let registry = native.tag(NATIVE, None)?;
+    let mut lists = lists;
+    exclusions(&mut lists, &held(&registry)?);
     restrict(source, tag, lists, &registry)?
         .context("Source label filter can never hold, since Shadowkeep lacks labels it requires")
+}
+
+/// Source labels Shadowkeep lacks whose exclusion would widen a perk if it were dropped, each
+/// with the native labels excluded in its place. `player_dot` takes the damage-over-time labels.
+/// Atom `8AA6EBC8` is the last of the source rank block, above the major rank `A4FB017C`, and
+/// the filters that exclude it describe minor or non-boss targets, so it takes Shadowkeep's
+/// ranks above `elite`: `miniboss`, `boss` and `megaboss`. That reading follows the block order
+/// and those descriptions, not a shared asset. Match lists keep the [`restrict`] rule.
+const EXCLUDED: [(u32, &[u32]); 2] = [
+    (PLAYER_DOT, &OVER_TIME),
+    (0x8AA6_EBC8, &[0x9A3D_2CCB, 0x5CFE_4C22, 0x04F1_36E0]),
+];
+
+/// Rewrites the exclude-any list by [`EXCLUDED`], where the registry lacks the source label and
+/// holds every replacement. A replacement the list already names is not repeated.
+fn exclusions(lists: &mut [Vec<u32>; 4], held: &BTreeSet<u32>) {
+    let mut names = Vec::with_capacity(lists[2].len());
+    for &name in &lists[2] {
+        let replaced = EXCLUDED.iter().find(|(from, to)| {
+            *from == name && !held.contains(from) && to.iter().all(|to| held.contains(to))
+        });
+        match replaced {
+            Some((_, to)) => {
+                for &to in *to {
+                    if !names.contains(&to) {
+                        names.push(to);
+                    }
+                }
+            }
+            None => names.push(name),
+        }
+    }
+    lists[2] = names;
 }
 
 /// A query filter's labels as Shadowkeep objects can carry them, by the [`restrict`] rule.

@@ -56,12 +56,22 @@ fn content_graph(reader: &mut Reader, entity: &[u8], key: u32) -> Result<Option<
     if !matches!(graph, 0 | u32::MAX) {
         return Ok(Some(graph));
     }
+    barrel_graph(reader, entity)
+}
+
+fn barrel_graph(reader: &mut Reader, entity: &[u8]) -> Result<Option<u32>> {
     // Use the public Barrel slot decoder so both launch slots keep their format checks.
-    let barrels = weapon_component_bindings(
+    let barrels = match weapon_component_bindings(
         entity,
         sundial::package_authoring::entity::WEAPON_BARREL_COMPONENT_KEY,
-    )
-    .map_err(anyhow::Error::msg)?;
+    ) {
+        Ok(barrels) => barrels,
+        // A sword's runtime has a sword controller and no Barrel, so it fires no graph.
+        Err(_) if weapon_component_bindings(entity, 0xCD2B_CEAC).is_ok_and(|b| b.len() == 1) => {
+            return Ok(None);
+        }
+        Err(error) => return Err(anyhow::Error::msg(error)),
+    };
     ensure!(barrels.len() == 1, "Projectile oracle needs one Barrel");
     let owner = reader.tag(barrels[0].owner_tag, None)?;
     Ok(
@@ -70,6 +80,29 @@ fn content_graph(reader: &mut Reader, entity: &[u8], key: u32) -> Result<Option<
             .into_iter()
             .find_map(|(_, graph)| graph),
     )
+}
+
+/// The graph of one row of the base's content owner, named by its offset from the definition:
+/// the default row or a whole variant row.
+fn content_row_graph(reader: &mut Reader, entity: &[u8], offset: usize) -> Result<u32> {
+    let bindings = weapon_component_bindings(entity, 0x5F0DD954).map_err(anyhow::Error::msg)?;
+    ensure!(
+        bindings.len() == 1,
+        "Projectile oracle needs one content owner"
+    );
+    let p = reader.tag(bindings[0].owner_tag, Some(0x80809C36))?;
+    let d = p.pointer(24)?;
+    let rows = p.array(d + 0x240, 0x1C0, Some(0x80803ACF))?;
+    ensure!(
+        offset == 0x80 || rows.contains(&(d + offset)),
+        "Carrier row is not a content row of the base"
+    );
+    let graph = p.u32(d + offset + 0xF0)?;
+    if !matches!(graph, 0 | u32::MAX) {
+        return Ok(graph);
+    }
+    // A row naming no graph fires what the Barrel's launch slots name.
+    barrel_graph(reader, entity)?.context("Carrier row names no projectile graph")
 }
 
 fn movement(source: &Source, graph: u32) -> Result<(u32, Payload)> {
@@ -521,12 +554,12 @@ pub(super) fn check(
         Some(staged.manager.platform),
     )
     .map_err(anyhow::Error::msg)?;
-    let donor = runtime::load_weapon_runtime_entity_for_item_with_manager(
+    let donor = runtime::load_runtime_entity_for_item_with_manager(
         &stock_manager,
         number(&receipt["donor"])?,
     )
     .map_err(anyhow::Error::msg)?;
-    let authored = runtime::load_weapon_runtime_entity_for_item_with_manager(
+    let authored = runtime::load_runtime_entity_for_item_with_manager(
         &staged_manager,
         number(&receipt["item"])?,
     )
@@ -587,8 +620,22 @@ pub(super) fn check(
         );
     }
     let (source_owner, from) = movement(source, source_graph)?;
+    let own = content_graph(stock, &donor.payload, key)?.context("Retained native selection")?;
+    // A carrier other than the base's own selection is another row of the same content owner.
     let carrier =
-        content_graph(stock, &donor.payload, key)?.context("Retained native selection")?;
+        match receipt["graph"]["firing_translation"]["projectile"]["native_carrier_row"].as_u64() {
+            Some(offset) => {
+                let graph = content_row_graph(stock, &donor.payload, usize::try_from(offset)?)?;
+                ensure!(graph != own, "Carrier row repeats the base's own selection");
+                graph
+            }
+            None => own,
+        };
+    ensure!(
+        receipt["graph"]["firing_translation"]["projectile"]["native_graph"].as_u64()
+            == Some(u64::from(carrier)),
+        "Reported carrier is not the graph its content row names"
+    );
     let emitted = actual.context("Staged firing graph is missing")?;
     ensure!(
         emitted != carrier,
@@ -843,6 +890,33 @@ pub(super) fn check(
     )
 }
 
+/// The bodies of a profile's push and `80802B30` responses, by response position. Both classes
+/// have one layout in both builds: Rise of Iron `808023B0` and `80802B30` at root `+28`,
+/// Shadowkeep `80804B57` and `80804B56` at root `+78`.
+fn response_bodies(p: &Payload, old: bool) -> Result<BTreeMap<usize, Vec<u8>>> {
+    let root = p.pointer(24)?;
+    let mut bodies = BTreeMap::new();
+    for (position, row) in p
+        .array(root + if old { 0x28 } else { 0x78 }, 8, None)?
+        .into_iter()
+        .enumerate()
+    {
+        let at = p.pointer(row)?;
+        let size = match (old, p.u32(at - 4)?) {
+            (true, 0x808023B0) | (false, 0x80804B57) => 40,
+            (true, 0x80802B30) | (false, 0x80804B56) => 12,
+            _ => continue,
+        };
+        bodies.insert(
+            position,
+            p.0.get(at..at + size)
+                .context("Profile response body is truncated")?
+                .to_vec(),
+        );
+    }
+    Ok(bodies)
+}
+
 fn check_profiles(
     source: &Source,
     (stock, staged): (&mut Reader, &mut Reader),
@@ -859,6 +933,8 @@ fn check_profiles(
         "Staged profiles do not pair with the source's"
     );
     let mut private_profiles = Vec::new();
+    // Stock profiles kept although their response bodies differ from the source's.
+    let mut retained = Vec::new();
     for (&from_profile, &staged_profile) in source_profiles.iter().zip(&staged_profiles) {
         if matches!(from_profile, 0 | u32::MAX) {
             ensure!(
@@ -880,10 +956,27 @@ fn check_profiles(
             categories(&from, true)? == categories(&to, false)?,
             "Staged profile {staged_profile:08X} differs from the source categories"
         );
-        if !carrier_profiles.contains(&staged_profile) {
-            private_profiles.push(
-                json!({"source":from_profile,"staged":staged_profile,"damage_type":actual[12]}),
+        // A private copy carries the source's push and `80802B30` response bodies. A stock
+        // profile is used as it is only where its bodies already equal the source's.
+        let expected = response_bodies(&from, true)?;
+        let staged_bodies = response_bodies(&to, false)?;
+        let private = !carrier_profiles.contains(&staged_profile);
+        for (position, body) in &expected {
+            ensure!(
+                staged_bodies.get(position) == Some(body) || !private,
+                "Private profile {staged_profile:08X} response {position} differs from the source body"
             );
+        }
+        if private {
+            private_profiles.push(
+                json!({"source":from_profile,"staged":staged_profile,"damage_type":actual[12],
+                "response_bodies":expected.len()}),
+            );
+        } else if expected
+            .iter()
+            .any(|(position, body)| staged_bodies.get(position) != Some(body))
+        {
+            retained.push(json!({"source":from_profile,"stock":staged_profile}));
         }
     }
     for &profile in &carrier_profiles {
@@ -898,5 +991,8 @@ fn check_profiles(
         !required || !private_profiles.is_empty(),
         "Required private projectile profile was not staged"
     );
+    if !retained.is_empty() {
+        private_profiles.push(json!({"stock_bodies_retained":retained}));
+    }
     Ok(private_profiles)
 }

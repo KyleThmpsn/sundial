@@ -391,8 +391,8 @@ pub(crate) fn prepare_in(
     let damage = row["damage"]
         .as_str()
         .filter(|v| ["kinetic", "arc", "solar", "void"].contains(v));
-    // Unsupported source elements retain the native gameplay donor. Their
-    // original element remains in the source plan and extraction metadata.
+    // Unsupported source damage types retain the native gameplay donor. Their
+    // original damage type remains in the source plan and extraction metadata.
     let mut recipe = json!({"schema":1,"collection_placement":"sunrise_badge","namespace":namespace,"donor":{"item_hash":format!("0x{donor:08X}"),"expected_name":row["native_donor"]},"identity":id,"name":row["name"],"flavor":source["flavor"].as_str().unwrap_or(""),"source":"Source: Pulled through the timeline.","overrides":{"icon_edit":{"imported_image":{"png_base64":icon}},"modern_damage_type":damage}});
     recipe["overrides"]["hud_icon"] = json!({"png_base64":hud});
     if let Some(lore) = source["lore"]["text"].as_str() {
@@ -715,6 +715,14 @@ pub(crate) fn donors_with_reader(
             }
             let rarity = r.tag(item, Some(0x80807BEA))?.u8(0xBA)?;
             let exotic = rarity == 5;
+            // A base whose lanes cannot seat every source socket loses those columns.
+            let unplaced = match &gameplay {
+                Some(gameplay) => Some(super::gameplay::unplaced_sockets(
+                    gameplay,
+                    &crate::tiger::shadowkeep::sockets(r, hash)?,
+                )),
+                None => None,
+            };
             let report = native_rig(
                 r,
                 item,
@@ -737,7 +745,7 @@ pub(crate) fn donors_with_reader(
                 ) {
                     Ok(mapping) => {
                         matches.push(
-                            json!({"name":row["name"],"hash":hash,"exotic":exotic,"rarity":rarity,"bucket":row["bucket_hash"],"content_key":report["content_key"],"collection_backed":row["collection_backed"],"unrelated_collection_condition":row["unrelated_collection_condition"],"rig":config,"mapping":mapping}),
+                            json!({"name":row["name"],"hash":hash,"exotic":exotic,"rarity":rarity,"bucket":row["bucket_hash"],"content_key":report["content_key"],"collection_backed":row["collection_backed"],"unrelated_collection_condition":row["unrelated_collection_condition"],"unplaced_sockets":unplaced,"rig":config,"mapping":mapping}),
                         );
                         eprintln!("Matched native rig {}", row["name"]);
                     }
@@ -755,7 +763,7 @@ pub(crate) fn donors_with_reader(
                             !fp && from["owner"] == format!("{owner:08X}")
                         }) =>
                     {
-                        matches.push(json!({"name":row["name"],"hash":hash,"exotic":exotic,"rarity":rarity,"bucket":row["bucket_hash"],"content_key":report["content_key"],"collection_backed":row["collection_backed"],"unrelated_collection_condition":row["unrelated_collection_condition"],"mapping":{"source_owned":true,"native_bone_count":from["bones"].as_array().context("source bones")?.len()}}));
+                        matches.push(json!({"name":row["name"],"hash":hash,"exotic":exotic,"rarity":rarity,"bucket":row["bucket_hash"],"content_key":report["content_key"],"collection_backed":row["collection_backed"],"unrelated_collection_condition":row["unrelated_collection_condition"],"unplaced_sockets":unplaced,"mapping":{"source_owned":true,"native_bone_count":from["bones"].as_array().context("source bones")?.len()}}));
                     }
                     Ok(_) => {
                         reasons.push("source geometry does not select the equipment rig".into())

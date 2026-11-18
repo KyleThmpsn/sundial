@@ -204,6 +204,14 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
             Field::new("Operation", 8, Byte),
         ],
     },
+    // No stock action uses kind 9. Its callback reads the signed slot byte and the seconds.
+    Layout {
+        kind: 9,
+        fields: &[
+            Field::new("Ability Slot", 2, Byte),
+            Field::new("Duration", 4, FieldFormat::Seconds),
+        ],
+    },
     Layout {
         kind: 11,
         fields: HOST_NUMERIC_MODIFIERS,
@@ -243,6 +251,14 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
             Field::new("Value", 4, Byte),
         ],
     },
+    // Kind 23 shares kind 22's callbacks and adds its byte, read as signed, to the current value.
+    Layout {
+        kind: 23,
+        fields: &[
+            Field::new("Slot Mask", 2, Mask8),
+            Field::new("Amount", 4, Byte),
+        ],
+    },
     Layout {
         kind: 24,
         fields: NONE,
@@ -270,6 +286,11 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
         kind: 30,
         fields: OPERATION,
     },
+    // Kinds 31 and 39 have no stock action. Each callback reads the one value at +4.
+    Layout {
+        kind: 31,
+        fields: &[Field::new("Minimum Value", 4, Float)],
+    },
     Layout {
         kind: 35,
         fields: &[
@@ -280,11 +301,15 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
         ],
     },
     Layout {
+        kind: 39,
+        fields: &[Field::new("State Key", 4, Key)],
+    },
+    Layout {
         kind: 41,
         fields: &[
-            Field::new("Target Selector", 2, Byte),
+            Field::new("Current Weapon", 2, Flag),
             Field::new("Slot Mask", 3, Mask8),
-            Field::new("Property Key", 4, Key),
+            Field::new("Weapon Key", 4, Key),
         ],
     },
     Layout {
@@ -294,6 +319,15 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
     Layout {
         kind: 43,
         fields: PROPERTY_KEY,
+    },
+    // No stock action uses the kind. The callback reads the two times and nothing else, and
+    // the only authored values known are Rise of Iron's 30 and 3 seconds.
+    Layout {
+        kind: 44,
+        fields: &[
+            Field::new("Duration", 4, FieldFormat::Seconds),
+            Field::new("Repeat Ends It After", 8, FieldFormat::Seconds),
+        ],
     },
     Layout {
         kind: 47,
@@ -305,6 +339,11 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
             Field::new("Target Selector", 2, Byte),
             Field::new("Binding Key", 4, Key),
         ],
+    },
+    // No stock action uses kind 50. Its callback passes the name at +4 to the action state.
+    Layout {
+        kind: 50,
+        fields: PROPERTY_KEY,
     },
     // Kind 51 appends byte +2 to a weapon list rather than choosing an operation.
     Layout {
@@ -424,6 +463,12 @@ pub const CONDITION_LAYOUTS: &[Layout] = &[
             Field::new("Minimum Distance", 0x0C, Float),
         ],
     },
+    // No stock action uses kind 39. Its checker compares the value at +8 with the event's
+    // integer, and the class declares that value as a name.
+    Layout {
+        kind: 39,
+        fields: EVENT_KEY,
+    },
     Layout {
         kind: 42,
         fields: EVENT_BYTE,
@@ -536,11 +581,25 @@ pub fn stock_defaults(condition: bool, kind: u8) -> &'static [(usize, u8)] {
             // Kind 35: the interface four of five stock uses select with the full auto key, the
             // only key any stock use writes. Zero selects an interface no stock perk overrides.
             35 => &[(0x03, 0x0E)],
-            // Kind 41: the owner and slot selectors every Sword Guard perk carries.
+            // Kind 41: retained, on the weapon in hand and no slot, as every Sword Guard perk
+            // stores it.
             41 => &[(0x01, 0x01), (0x02, 0x01)],
             // Kind 42: all 147 stock counter setters store 1, which sets the counter to the
             // node's Counter Value. A zero-filled node would use a mode no stock perk does.
             42 => &[(0x02, 0x01)],
+            // Kind 44: 30 seconds on the owner's team and a 3 second repeat window, the values
+            // of the one Rise of Iron talent that uses the routine. A zero duration would end
+            // in the tick it starts.
+            44 => &[
+                (0x04, 0x00),
+                (0x05, 0x00),
+                (0x06, 0xF0),
+                (0x07, 0x41),
+                (0x08, 0x00),
+                (0x09, 0x00),
+                (0x0A, 0x40),
+                (0x0B, 0x40),
+            ],
             // Kind 49: the target selector both stock nodes carry.
             49 => &[(0x02, 0x03)],
             // Kind 52: the stock selector, and an amount of 1 rather than a silent zero.

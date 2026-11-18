@@ -19,7 +19,7 @@ fn consumable_triumph_claims_wait_for_confirmation_and_are_undoable() {
     let path = directory.0.join("settings.json");
     let settings = json!({"version":18});
     std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
-    crate::persistence::sqlite_account::tests::create_fixture(
+    crate::persistence::sunrise_account::tests::create_fixture(
         &directory.0.join("data/investment.sqlite3"),
         3,
     );
@@ -101,13 +101,13 @@ fn consumable_triumph_claims_wait_for_confirmation_and_are_undoable() {
     let mut repeat = workspace.progression_view(0);
     edit::apply_record(&mut repeat, &catalog, &record, true).unwrap();
     assert!(repeat.get("_progression_consumables").is_none());
-    crate::persistence::sqlite_account::tests::save_fixture_document(
+    crate::persistence::sunrise_account::tests::save_fixture_document(
         workspace.native_account_mut().unwrap(),
         &directory.0.join("claimed.sqlite3"),
     );
     let mut undo = before;
     undo.rebase_account_revision_from(&workspace);
-    crate::persistence::sqlite_account::tests::save_fixture_document(
+    crate::persistence::sunrise_account::tests::save_fixture_document(
         undo.native_account_mut().unwrap(),
         &directory.0.join("undo.sqlite3"),
     );
@@ -262,7 +262,7 @@ fn save_record_workspace(
         workspace.save_dawn().unwrap();
     } else if native {
         assert_eq!(workspace.json(), json);
-        crate::persistence::sqlite_account::tests::save_fixture_document(
+        crate::persistence::sunrise_account::tests::save_fixture_document(
             workspace.native_account_mut().unwrap(),
             &directory.join(format!("backup-{step}.sqlite3")),
         );
@@ -280,7 +280,7 @@ fn assert_runtime_round_trip(native: bool, dawn: bool, interval: bool) {
     let json = json!({"version":if dawn {6} else if native {18}else{8},"future":true,"state":{"characters":[]}});
     std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
     if native {
-        crate::persistence::sqlite_account::tests::create_fixture(
+        crate::persistence::sunrise_account::tests::create_fixture(
             &directory.0.join("data/investment.sqlite3"),
             3,
         );
@@ -357,7 +357,7 @@ fn rewards_are_queued_once_with_claims_and_undo_restores_both() {
     let settings = json!({"version":18,"future":true});
     std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
     let dbpath = directory.0.join("data/investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&dbpath, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&dbpath, 3);
     let mut workspace = WorkspaceDocument::load(settings.clone(), &path, false);
     let before = workspace.clone();
     let record = &catalog.records().unwrap()[0];
@@ -371,7 +371,7 @@ fn rewards_are_queued_once_with_claims_and_undo_restores_both() {
         assert_eq!(rewards[0].quantity, 3);
         assert_eq!(rewards[0].character_slot, 0);
     }
-    crate::persistence::sqlite_account::tests::save_fixture_document(
+    crate::persistence::sunrise_account::tests::save_fixture_document(
         workspace.native_account_mut().unwrap(),
         &directory.0.join("claimed.sqlite3"),
     );
@@ -388,7 +388,7 @@ fn rewards_are_queued_once_with_claims_and_undo_restores_both() {
     // History restores the full account document, including the delivery queue.
     let mut undo = before;
     undo.rebase_account_revision_from(&workspace);
-    crate::persistence::sqlite_account::tests::save_fixture_document(
+    crate::persistence::sunrise_account::tests::save_fixture_document(
         undo.native_account_mut().unwrap(),
         &directory.0.join("undo.sqlite3"),
     );

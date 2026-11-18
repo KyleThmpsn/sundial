@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn account_resource_sets_select_v2_or_v3_and_require_starter_defaults() {
     for version in [2, 3] {
-        let base = crate::persistence::sqlite_account::tests::default_resources();
-        let v3 = crate::persistence::sqlite_account::tests::v3_resources();
+        let base = crate::persistence::sunrise_account::tests::default_resources();
+        let v3 = crate::persistence::sunrise_account::tests::v3_resources();
         let selected = if version == 3 { &v3 } else { &base };
         let resources = std::collections::BTreeMap::from([
             (106, selected.schema.as_str()),
@@ -22,11 +22,11 @@ fn account_resource_sets_select_v2_or_v3_and_require_starter_defaults() {
         assert_eq!(requested.contains(&111), version == 3);
         let dir = crate::test_support::TestDirectory::new("resource-defaults");
         let path = dir.0.join("investment.sqlite3");
-        crate::persistence::sqlite_account::tests::versions::fixture(
+        crate::persistence::sunrise_account::tests::versions::fixture(
             &path,
             if version == 3 { "v3-fresh" } else { "v2" },
         );
-        crate::persistence::sqlite_account::ResetPlan::prepare(&path, &defaults)
+        crate::persistence::sunrise_account::ResetPlan::prepare(&path, &defaults)
             .unwrap()
             .apply()
             .unwrap();

@@ -1,3 +1,4 @@
+//! The Parhelion workbench window: recipe drafts, selection and the background jobs of its pages.
 mod account_resync;
 mod activity_log;
 #[cfg(feature = "d2-model-importer")]
@@ -18,6 +19,8 @@ use activity_log::*;
 use events::*;
 use fields::*;
 use icon_preview::*;
+#[cfg(feature = "d2-model-importer")]
+pub use importer::save_reimported;
 use runtime_components::*;
 use technical_features::*;
 pub use window::Parhelion;
@@ -59,9 +62,9 @@ use sundial::package_authoring::{
     },
     open_directory, open_shadowkeep_package_manager, resolve_live_named_tag,
     runtime::{
-        WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource,
-        WeaponRuntimeGraph, WeaponRuntimeValue, WeaponRuntimeValueKind, WeaponRuntimeValueOverride,
-        encode_weapon_runtime_value, load_weapon_runtime_graph_for_entity,
+        RuntimeField, RuntimeFieldLocator, RuntimeFieldSource, RuntimeGraph, RuntimeValue,
+        RuntimeValueKind, RuntimeValueOverride, encode_runtime_value,
+        load_runtime_graph_for_entity,
     },
     sandbox_perk::load_sandbox_perk_runtime_action,
 };
@@ -69,7 +72,7 @@ use tiger_pkg::TagHash;
 
 use crate::capabilities::{AuthoringDiagnosticCode, AuthoringField};
 use crate::capabilities::{variable_damage_resting_type, variable_damage_supported};
-use crate::icon_edit::{IconLayers, WeaponIconEditor, WeaponIconEditorAction};
+use crate::icon::edit::{IconLayers, WeaponIconEditor, WeaponIconEditorAction};
 use crate::install::{
     AccountResyncReport, InstallReport, InstallRequest, MAX_PACKAGE_BACKUP_RETENTION,
     install_staged_packages_with_progress,
@@ -83,12 +86,12 @@ use crate::workflow::{
 };
 use crate::{
     CombatProfileAction, HexHash, ItemKind, RecipeAmmoType, RecipeLibrary, RecipeLibraryEntry,
-    RecipeRarity, RecipeRawPayloadTarget, SupportedPlugSet, WeaponArtArrangementRecipe,
-    WeaponCloneIdentity, WeaponDonorReference, WeaponDyeReferenceRecipe, WeaponLocaleTextRecipe,
-    WeaponNumericInstructionRecipe, WeaponRawPayloadPatchRecipe, WeaponRecipe,
-    WeaponRecipeOverrides, WeaponRuntimeResourcePatchRecipe, WeaponSandboxPerkRuntimeRecipe,
-    WeaponSocketColumnRecipe, WeaponSocketPlugVariantRecipe, WeaponStatOverride,
-    apply_combat_profile_action, authored_inventory_slot,
+    RecipeRarity, RecipeRawPayloadTarget, RuntimeResourcePatchRecipe, SupportedPlugSet,
+    WeaponArtArrangementRecipe, WeaponCloneIdentity, WeaponDonorReference,
+    WeaponDyeReferenceRecipe, WeaponLocaleTextRecipe, WeaponNumericInstructionRecipe,
+    WeaponRawPayloadPatchRecipe, WeaponRecipe, WeaponRecipeOverrides,
+    WeaponSandboxPerkRuntimeRecipe, WeaponSocketColumnRecipe, WeaponSocketPlugVariantRecipe,
+    WeaponStatOverride, apply_combat_profile_action, authored_inventory_slot,
     presentation_donor_candidate_is_compatible, recipe_combat_profile_action,
     reconcile_presentation_donor, selected_presentation_donor_is_compatible,
     weapon_authoring_capabilities,
@@ -128,6 +131,12 @@ struct PackageAuthoringApp {
     /// The items the installation carries, for the recipe lists' Installed marks.
     installed: installed::Installed,
     build_selection_query: String,
+    #[cfg(feature = "dawn")]
+    dawn_bundle: dawn_bundle::State,
+    /// The names of the saved build lists, read when Items in This Build opens.
+    build_lists: Vec<String>,
+    /// The name typed for a build list about to be saved.
+    build_list_name: String,
     recipe_library: Option<RecipeLibrary>,
     /// The library's first read, while its worker runs. The library stays unset until it lands.
     library_load: Option<Receiver<document::LibraryLoad>>,
@@ -226,7 +235,7 @@ struct PackageAuthoringApp {
     runtime_bindings_open: bool,
     runtime_donors: runtime_donors::Browser,
     runtime_dependencies: runtime_dependencies::Browser,
-    runtime_graph: Option<(RuntimeGraphKey, Arc<WeaponRuntimeGraph>)>,
+    runtime_graph: Option<(RuntimeGraphKey, Arc<RuntimeGraph>)>,
     /// The appearance whose rig and animations the loaded graph carries, when it carries one.
     runtime_rig_appearance: Option<u32>,
     /// The rendered runtime-registry section and the (graph, field choice) it was built for.
@@ -244,7 +253,7 @@ struct PackageAuthoringApp {
     runtime_graph_job: Option<jobs::RuntimeGraphJob>,
     runtime_graph_target: Option<RuntimeGraphKey>,
     runtime_value_query: String,
-    runtime_value_text: BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
+    runtime_value_text: BTreeMap<(RuntimeFieldLocator, u8), String>,
     /// Per-field facts and the filtered list for the graph the Runtime Values list last drew.
     runtime_values_cache: Option<RuntimeValuesCache>,
     show_technical_runtime_values: bool,
@@ -264,7 +273,7 @@ struct PackageAuthoringApp {
     socket_view: socket_editor::SocketView,
     perk_request: Option<custom_perks::workbench::Request>,
     icon_editor: Option<WeaponIconEditor>,
-    hud_icon_editor: crate::hud_icon::ui::Editor,
+    hud_icon_editor: crate::icon::hud::ui::Editor,
     presentation_editor: crate::presentation::ui::Editor,
     authored_icon_preview: Option<AuthoredIconPreview>,
     /// The layers the authored icon preview composes, and the preview they were read for.
@@ -346,6 +355,10 @@ impl Default for PackageAuthoringApp {
             build_check: build_check::Check::default(),
             installed: installed::Installed::default(),
             build_selection_query: String::new(),
+            #[cfg(feature = "dawn")]
+            dawn_bundle: dawn_bundle::State::default(),
+            build_lists: Vec::new(),
+            build_list_name: String::new(),
             recipe_library,
             library_load: None,
             recipe_entries,
@@ -454,7 +467,7 @@ impl Default for PackageAuthoringApp {
             socket_view: socket_editor::SocketView::default(),
             perk_request: None,
             icon_editor: None,
-            hud_icon_editor: crate::hud_icon::ui::Editor::default(),
+            hud_icon_editor: crate::icon::hud::ui::Editor::default(),
             presentation_editor: crate::presentation::ui::Editor::default(),
             authored_icon_preview: None,
             authored_icon_layers: None,
@@ -499,6 +512,8 @@ impl PackageAuthoringApp {
         let ctx = &ctx;
         self.apply_preview_preferences(ctx);
         self.poll_build();
+        #[cfg(feature = "dawn")]
+        self.poll_dawn_bundle(ctx);
         self.poll_build_check();
         self.poll_install();
         self.poll_account_resync();
@@ -746,7 +761,7 @@ impl PackageAuthoringApp {
         self.perk_workbench.invalidate();
         self.technical_markers = None;
         self.technical_marker_revision = self.technical_marker_revision.wrapping_add(1);
-        self.hud_icon_editor = crate::hud_icon::ui::Editor::default();
+        self.hud_icon_editor = crate::icon::hud::ui::Editor::default();
         self.presentation_editor.reset();
         self.library_icons = library_view::LibraryIcons::default();
         self.dye_colors = donor_view::DyeColors::default();
@@ -805,7 +820,7 @@ impl PackageAuthoringApp {
 
     fn clear_presentation_picker_queries(&mut self) {
         self.animation_query.clear();
-        self.hud_icon_editor = crate::hud_icon::ui::Editor::default();
+        self.hud_icon_editor = crate::icon::hud::ui::Editor::default();
         self.presentation_editor.reset();
         self.icon_donor_query.clear();
         self.emblem_page.reset();
@@ -934,6 +949,10 @@ mod custom_perks;
 pub(crate) use custom_perks::workbench::tests::capture;
 #[cfg(test)]
 pub(crate) use custom_perks::workbench::{WeaponProperties, WeaponPropertyPart, weapon_properties};
+#[cfg(feature = "dawn")]
+#[rustfmt::skip]
+#[path = "../../parhelion-dawn/app/dawn_bundle.rs"]
+mod dawn_bundle;
 mod document;
 mod donor_view;
 mod editor_view;

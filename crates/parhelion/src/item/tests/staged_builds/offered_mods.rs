@@ -62,7 +62,7 @@ pub(super) fn plug_sets(
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_offered_mod_joins_every_plug_set_that_offers_its_type_plug() {
     let packages = crate::test_support::stock_packages();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
@@ -192,7 +192,7 @@ fn real_offered_mod_joins_every_plug_set_that_offers_its_type_plug() {
 )]
 fn real_mod_item_is_offered_everywhere_without_a_host() {
     let packages = crate::test_support::stock_packages();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();

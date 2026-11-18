@@ -4,11 +4,13 @@ use crate::{
     tiger::payload::Payload,
 };
 use anyhow::{Result, ensure};
+mod auxiliary;
 mod curve;
 mod envelope;
 mod local;
 pub mod lowering;
 mod translation;
+pub use auxiliary::{constraint_transforms, constraint_weights};
 pub use envelope::grow as grow_static_envelope;
 pub use translation::translate;
 
@@ -44,7 +46,11 @@ fn read(
         );
         return Ok(channels);
     }
-    let base = p.pointer(pointer)?;
+    read_codec(p, p.pointer(pointer)?, frames, &mut channels)?;
+    Ok(channels)
+}
+
+fn read_codec(p: &Payload, base: usize, frames: usize, channels: &mut [Channel; 3]) -> Result<()> {
     ensure!(base >= 4, "Native clip codec lacks its class header");
     let codec = p.u16(base)?;
     ensure!(
@@ -65,13 +71,13 @@ fn read(
         );
     }
     if codec == 0 {
-        read_raw(p, base, frames, &mut channels)?;
+        read_raw(p, base, frames, channels)?;
     } else if codec == 1 {
-        read_curve(p, base, frames, &mut channels)?;
+        read_curve(p, base, frames, channels)?;
     } else {
-        read_packed(p, base, codec, frames, &mut channels)?;
+        read_packed(p, base, codec, frames, channels)?;
     }
-    Ok(channels)
+    Ok(())
 }
 
 fn read_curve(p: &Payload, base: usize, frames: usize, channels: &mut [Channel; 3]) -> Result<()> {

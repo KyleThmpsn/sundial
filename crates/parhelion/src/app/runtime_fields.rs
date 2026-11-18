@@ -1,6 +1,6 @@
 //! Focused runtime fields controls; recipe mutation occurs on user actions.
 use super::*;
-use sundial::package_authoring::runtime::{WeaponRuntimeOwner, WeaponRuntimeRoot};
+use sundial::package_authoring::runtime::{RuntimeOwner, RuntimeRoot};
 
 mod panel;
 #[cfg(test)]
@@ -10,9 +10,9 @@ pub(super) use panel::{ValuePanel, draw_page_value_panel, draw_value_panel};
 
 pub(super) fn draw_runtime_value_override_field(
     ui: &mut egui::Ui,
-    field: &WeaponRuntimeField,
-    overrides: &mut Vec<WeaponRuntimeValueOverride>,
-    text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
+    field: &RuntimeField,
+    overrides: &mut Vec<RuntimeValueOverride>,
+    text_state: &mut BTreeMap<(RuntimeFieldLocator, u8), String>,
 ) {
     let override_index = overrides
         .iter()
@@ -38,7 +38,7 @@ pub(super) fn draw_runtime_value_override_field(
         || field.value.clone(),
         |index| overrides[index].value.clone(),
     );
-    let compatible = encode_weapon_runtime_value(&field.kind, &current_value).is_ok();
+    let compatible = encode_runtime_value(&field.kind, &current_value).is_ok();
     let shown_value = if compatible {
         current_value
     } else {
@@ -52,7 +52,7 @@ pub(super) fn draw_runtime_value_override_field(
             .any(|(locator, _)| locator == &field.locator);
     let complex = matches!(
         field.kind,
-        WeaponRuntimeValueKind::Vector4Float32 | WeaponRuntimeValueKind::FixedBytes { .. }
+        RuntimeValueKind::Vector4Float32 | RuntimeValueKind::FixedBytes { .. }
     );
     match RuntimeEditorLayout::choose(ui.available_width(), complex) {
         RuntimeEditorLayout::Inline => {
@@ -110,7 +110,7 @@ pub(super) fn draw_runtime_value_override_field(
         if let Some(index) = override_index {
             overrides[index].value = value;
         } else {
-            overrides.push(WeaponRuntimeValueOverride {
+            overrides.push(RuntimeValueOverride {
                 locator: field.locator.clone(),
                 value,
             });
@@ -122,13 +122,13 @@ pub(super) use sundial::package_authoring::runtime::presentation::kind_label as 
 
 pub(super) fn draw_runtime_value_editor(
     ui: &mut egui::Ui,
-    locator: &WeaponRuntimeFieldLocator,
-    kind: &WeaponRuntimeValueKind,
-    current: &WeaponRuntimeValue,
-    text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
-) -> Option<WeaponRuntimeValue> {
+    locator: &RuntimeFieldLocator,
+    kind: &RuntimeValueKind,
+    current: &RuntimeValue,
+    text_state: &mut BTreeMap<(RuntimeFieldLocator, u8), String>,
+) -> Option<RuntimeValue> {
     let value_id = ui.id().with(("runtime-editor-current-value", locator));
-    let previous = ui.data(|data| data.get_temp::<WeaponRuntimeValue>(value_id));
+    let previous = ui.data(|data| data.get_temp::<RuntimeValue>(value_id));
     if previous.as_ref().is_some_and(|value| value != current) {
         // An external edit must replace old display text. An unfinished draft is
         // preserved while its underlying value remains unchanged.
@@ -145,12 +145,12 @@ pub(super) fn draw_runtime_value_editor(
 /// property named by the component it changes.
 pub(super) fn draw_runtime_value_editor_with(
     ui: &mut egui::Ui,
-    locator: &WeaponRuntimeFieldLocator,
-    kind: &WeaponRuntimeValueKind,
-    current: &WeaponRuntimeValue,
-    text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
+    locator: &RuntimeFieldLocator,
+    kind: &RuntimeValueKind,
+    current: &RuntimeValue,
+    text_state: &mut BTreeMap<(RuntimeFieldLocator, u8), String>,
     choices: Option<&'static [(i64, &'static str)]>,
-) -> Option<WeaponRuntimeValue> {
+) -> Option<RuntimeValue> {
     if choices.is_none() {
         return draw_runtime_value_editor(ui, locator, kind, current, text_state);
     }
@@ -159,12 +159,12 @@ pub(super) fn draw_runtime_value_editor_with(
 
 fn draw_runtime_value_editor_contents(
     ui: &mut egui::Ui,
-    locator: &WeaponRuntimeFieldLocator,
-    kind: &WeaponRuntimeValueKind,
-    current: &WeaponRuntimeValue,
-    text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
+    locator: &RuntimeFieldLocator,
+    kind: &RuntimeValueKind,
+    current: &RuntimeValue,
+    text_state: &mut BTreeMap<(RuntimeFieldLocator, u8), String>,
     choices: Option<&'static [(i64, &'static str)]>,
-) -> Option<WeaponRuntimeValue> {
+) -> Option<RuntimeValue> {
     let meaning = sundial::package_authoring::runtime::modifiers::field_meaning(
         locator.type_handle.get(),
         locator.value_offset,
@@ -182,8 +182,8 @@ fn draw_runtime_value_editor_contents(
     });
     if let Some(choices) = choices {
         let number = match current {
-            WeaponRuntimeValue::Signed(value) => Some(*value),
-            WeaponRuntimeValue::Unsigned(value) => i64::try_from(*value).ok(),
+            RuntimeValue::Signed(value) => Some(*value),
+            RuntimeValue::Unsigned(value) => i64::try_from(*value).ok(),
             _ => None,
         };
         if let Some(number) = number {
@@ -215,22 +215,19 @@ fn draw_runtime_value_editor_contents(
                 .response
                 .on_hover_text(help);
             return (selected != number).then_some(match current {
-                WeaponRuntimeValue::Signed(_) => WeaponRuntimeValue::Signed(selected),
-                _ => WeaponRuntimeValue::Unsigned(selected as u64),
+                RuntimeValue::Signed(_) => RuntimeValue::Signed(selected),
+                _ => RuntimeValue::Unsigned(selected as u64),
             });
         }
     }
     match (kind, current) {
-        (WeaponRuntimeValueKind::Boolean, WeaponRuntimeValue::Boolean(current)) => {
+        (RuntimeValueKind::Boolean, RuntimeValue::Boolean(current)) => {
             let mut value = *current;
             ui.checkbox(&mut value, "")
                 .changed()
-                .then_some(WeaponRuntimeValue::Boolean(value))
+                .then_some(RuntimeValue::Boolean(value))
         }
-        (
-            WeaponRuntimeValueKind::SignedInteger { bits: 64 },
-            WeaponRuntimeValue::Signed(current),
-        ) => {
+        (RuntimeValueKind::SignedInteger { bits: 64 }, RuntimeValue::Signed(current)) => {
             let key = (locator.clone(), 0);
             let mut text = box_text(text_state, &key, || current.to_string());
             let response = ui.add(
@@ -250,9 +247,9 @@ fn draw_runtime_value_editor_contents(
                 .changed()
                 .then_some(parsed)
                 .flatten()
-                .map(WeaponRuntimeValue::Signed)
+                .map(RuntimeValue::Signed)
         }
-        (WeaponRuntimeValueKind::SignedInteger { .. }, WeaponRuntimeValue::Signed(current)) => {
+        (RuntimeValueKind::SignedInteger { .. }, RuntimeValue::Signed(current)) => {
             let mut value = *current;
             let (minimum, maximum) = kind.signed_range().unwrap_or((i64::MIN, i64::MAX));
             ui.add(
@@ -261,13 +258,13 @@ fn draw_runtime_value_editor_contents(
                     .speed(1),
             )
             .changed()
-            .then_some(WeaponRuntimeValue::Signed(value))
+            .then_some(RuntimeValue::Signed(value))
         }
         (
-            WeaponRuntimeValueKind::UnsignedInteger { bits: 64 }
-            | WeaponRuntimeValueKind::Enum { bits: 64 }
-            | WeaponRuntimeValueKind::BitFlags { bits: 64 },
-            WeaponRuntimeValue::Unsigned(current),
+            RuntimeValueKind::UnsignedInteger { bits: 64 }
+            | RuntimeValueKind::Enum { bits: 64 }
+            | RuntimeValueKind::BitFlags { bits: 64 },
+            RuntimeValue::Unsigned(current),
         ) => {
             let key = (locator.clone(), 0);
             let mut text = box_text(text_state, &key, || current.to_string());
@@ -289,9 +286,9 @@ fn draw_runtime_value_editor_contents(
                 .changed()
                 .then_some(parsed)
                 .flatten()
-                .map(WeaponRuntimeValue::Unsigned)
+                .map(RuntimeValue::Unsigned)
         }
-        (WeaponRuntimeValueKind::BitFlags { .. }, WeaponRuntimeValue::Unsigned(current)) => {
+        (RuntimeValueKind::BitFlags { .. }, RuntimeValue::Unsigned(current)) => {
             // A flag word reads in hex, as its bits are written, so one control carries it
             // instead of a count beside its hex reading.
             let mut value = *current;
@@ -308,11 +305,11 @@ fn draw_runtime_value_editor_contents(
                         }),
                 )
                 .changed();
-            changed.then_some(WeaponRuntimeValue::Unsigned(value))
+            changed.then_some(RuntimeValue::Unsigned(value))
         }
         (
-            WeaponRuntimeValueKind::UnsignedInteger { .. } | WeaponRuntimeValueKind::Enum { .. },
-            WeaponRuntimeValue::Unsigned(current),
+            RuntimeValueKind::UnsignedInteger { .. } | RuntimeValueKind::Enum { .. },
+            RuntimeValue::Unsigned(current),
         ) => {
             let mut value = *current;
             let maximum = kind.unsigned_maximum().unwrap_or(u64::MAX);
@@ -320,9 +317,9 @@ fn draw_runtime_value_editor_contents(
                 .add(egui::DragValue::new(&mut value).range(0..=maximum).speed(1))
                 .changed();
             ui.monospace(format!("0x{value:X}"));
-            changed.then_some(WeaponRuntimeValue::Unsigned(value))
+            changed.then_some(RuntimeValue::Unsigned(value))
         }
-        (WeaponRuntimeValueKind::HexIdentifier { bits }, WeaponRuntimeValue::Unsigned(current)) => {
+        (RuntimeValueKind::HexIdentifier { bits }, RuntimeValue::Unsigned(current)) => {
             let width = usize::from(*bits / 4);
             let key = (locator.clone(), 0);
             let mut text = box_text(text_state, &key, || format!("0x{current:0width$X}"));
@@ -344,12 +341,12 @@ fn draw_runtime_value_editor_contents(
                 .changed()
                 .then_some(parsed)
                 .flatten()
-                .map(WeaponRuntimeValue::Unsigned)
+                .map(RuntimeValue::Unsigned)
         }
-        (WeaponRuntimeValueKind::Float64, WeaponRuntimeValue::Float64Bits(current)) => {
+        (RuntimeValueKind::Float64, RuntimeValue::Float64Bits(current)) => {
             draw_runtime_double(ui, locator, *current, text_state)
         }
-        (WeaponRuntimeValueKind::Float32, WeaponRuntimeValue::Float32Bits(current)) => {
+        (RuntimeValueKind::Float32, RuntimeValue::Float32Bits(current)) => {
             let edited_bits = draw_runtime_float_decimal(ui, *current);
             let key = (locator.clone(), 0);
             let mut text = box_text(text_state, &key, || format!("0x{current:08X}"));
@@ -372,14 +369,9 @@ fn draw_runtime_value_editor_contents(
                 );
             }
             let raw_bits = response.changed().then_some(parsed).flatten();
-            raw_bits
-                .or(edited_bits)
-                .map(WeaponRuntimeValue::Float32Bits)
+            raw_bits.or(edited_bits).map(RuntimeValue::Float32Bits)
         }
-        (
-            WeaponRuntimeValueKind::Vector4Float32,
-            WeaponRuntimeValue::Vector4Float32Bits(current),
-        ) => {
+        (RuntimeValueKind::Vector4Float32, RuntimeValue::Vector4Float32Bits(current)) => {
             let mut bits = *current;
             let mut changed = false;
             let mut invalid_bits = false;
@@ -426,9 +418,9 @@ fn draw_runtime_value_editor_contents(
                     "Invalid vector bits. Invalid components were not applied.",
                 );
             }
-            changed.then_some(WeaponRuntimeValue::Vector4Float32Bits(bits))
+            changed.then_some(RuntimeValue::Vector4Float32Bits(bits))
         }
-        (WeaponRuntimeValueKind::FixedBytes { size }, WeaponRuntimeValue::Bytes(current)) => {
+        (RuntimeValueKind::FixedBytes { size }, RuntimeValue::Bytes(current)) => {
             let key = (locator.clone(), 0);
             let mut text = box_text(text_state, &key, || format_runtime_bytes(current));
             let response = ui.add(
@@ -449,7 +441,7 @@ fn draw_runtime_value_editor_contents(
                 .changed()
                 .then_some(parsed)
                 .flatten()
-                .map(WeaponRuntimeValue::Bytes)
+                .map(RuntimeValue::Bytes)
         }
         _ => {
             ui.colored_label(ui.visuals().error_fg_color, "Type mismatch.");
@@ -461,8 +453,8 @@ fn draw_runtime_value_editor_contents(
 /// What a field's text box shows: the text typed into it, else `shown`. Drawing stores nothing,
 /// so only typing marks a field as changed and offers its reset.
 fn box_text(
-    text_state: &BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
-    key: &(WeaponRuntimeFieldLocator, u8),
+    text_state: &BTreeMap<(RuntimeFieldLocator, u8), String>,
+    key: &(RuntimeFieldLocator, u8),
     shown: impl FnOnce() -> String,
 ) -> String {
     text_state.get(key).cloned().unwrap_or_else(shown)
@@ -470,8 +462,8 @@ fn box_text(
 
 /// Keeps what was typed into a field's text box, invalid text included, until it is reset.
 fn keep_typed(
-    text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
-    key: &(WeaponRuntimeFieldLocator, u8),
+    text_state: &mut BTreeMap<(RuntimeFieldLocator, u8), String>,
+    key: &(RuntimeFieldLocator, u8),
     text: &str,
     response: &egui::Response,
 ) {
@@ -498,18 +490,18 @@ fn draw_runtime_float_decimal(ui: &mut egui::Ui, bits: u32) -> Option<u32> {
     (response.changed() && value.to_bits() != bits).then_some(value.to_bits())
 }
 
-pub(super) fn runtime_field_is_editable(field: &WeaponRuntimeField) -> bool {
+pub(super) fn runtime_field_is_editable(field: &RuntimeField) -> bool {
     field.locator.is_buildable()
-        && encode_weapon_runtime_value(&field.kind, &field.value)
+        && encode_runtime_value(&field.kind, &field.value)
             .is_ok_and(|bytes| bytes.len() == field.locator.byte_size as usize)
 }
 
 fn draw_runtime_double(
     ui: &mut egui::Ui,
-    locator: &WeaponRuntimeFieldLocator,
+    locator: &RuntimeFieldLocator,
     current: u64,
-    text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
-) -> Option<WeaponRuntimeValue> {
+    text_state: &mut BTreeMap<(RuntimeFieldLocator, u8), String>,
+) -> Option<RuntimeValue> {
     let mut value = f64::from_bits(current);
     let edited = if value.is_finite() {
         ui.add(
@@ -544,16 +536,16 @@ fn draw_runtime_double(
         );
     }
     if response.changed() {
-        parsed.map(WeaponRuntimeValue::Float64Bits)
+        parsed.map(RuntimeValue::Float64Bits)
     } else if edited && value.is_finite() {
-        Some(WeaponRuntimeValue::Float64Bits(value.to_bits()))
+        Some(RuntimeValue::Float64Bits(value.to_bits()))
     } else {
         None
     }
 }
 
 pub(super) fn runtime_field_is_in_editor_scope(
-    source: WeaponRuntimeFieldSource,
+    source: RuntimeFieldSource,
     buildable: bool,
     customized: bool,
     show_experimental_options: bool,
@@ -565,14 +557,14 @@ pub(super) fn runtime_field_is_in_editor_scope(
     if !buildable {
         return false;
     }
-    source != WeaponRuntimeFieldSource::OpaqueNativeType
+    source != RuntimeFieldSource::OpaqueNativeType
         || (show_experimental_options && show_all_native_values)
 }
 
 pub(super) fn private_perk_runtime_field_is_visible(
-    field: &WeaponRuntimeField,
+    field: &RuntimeField,
     query: &str,
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
     show_all_native_values: bool,
     occurrences: usize,
 ) -> bool {
@@ -661,8 +653,8 @@ fn normalized_hex_bytes(value: &str) -> String {
 /// What the Runtime Values list reads about every field of one graph, worked out once per graph
 /// rather than once per frame, and the list it last filtered.
 pub(super) struct RuntimeValuesCache {
-    graph: std::sync::Weak<WeaponRuntimeGraph>,
-    /// Per field, in `WeaponRuntimeGraph::fields` order.
+    graph: std::sync::Weak<RuntimeGraph>,
+    /// Per field, in `RuntimeGraph::fields` order.
     editable: Vec<bool>,
     /// Per field, the lowercase texts a query is matched against, joined by NUL.
     search: Vec<String>,
@@ -677,7 +669,7 @@ pub(super) struct RuntimeValuesKey {
     pub(super) query: String,
     pub(super) show_experimental_options: bool,
     pub(super) show_all_native_values: bool,
-    pub(super) customized: Vec<WeaponRuntimeFieldLocator>,
+    pub(super) customized: Vec<RuntimeFieldLocator>,
 }
 
 /// The fields a filter leaves visible, as positions in the graph.
@@ -702,7 +694,7 @@ pub(super) struct RuntimeValuesGroup {
 }
 
 impl RuntimeValuesCache {
-    pub(super) fn new(graph: &Arc<WeaponRuntimeGraph>) -> Self {
+    pub(super) fn new(graph: &Arc<RuntimeGraph>) -> Self {
         let mut editable = Vec::new();
         let mut search = Vec::new();
         let mut resolved = 0;
@@ -710,7 +702,7 @@ impl RuntimeValuesCache {
         for field in graph.fields() {
             let is_editable = runtime_field_is_editable(field);
             if is_editable {
-                if field.source == WeaponRuntimeFieldSource::OpaqueNativeType {
+                if field.source == RuntimeFieldSource::OpaqueNativeType {
                     technical += 1;
                 } else {
                     resolved += 1;
@@ -730,14 +722,14 @@ impl RuntimeValuesCache {
     }
 
     /// The held graph keeps its allocation, so another graph cannot take its address.
-    pub(super) fn is_for(&self, graph: &Arc<WeaponRuntimeGraph>) -> bool {
+    pub(super) fn is_for(&self, graph: &Arc<RuntimeGraph>) -> bool {
         std::ptr::eq(self.graph.as_ptr(), Arc::as_ptr(graph))
     }
 
     /// The filtered list for `key`, rebuilt only when the key changes.
     pub(super) fn view(
         &mut self,
-        graph: &WeaponRuntimeGraph,
+        graph: &RuntimeGraph,
         key: RuntimeValuesKey,
     ) -> &RuntimeValuesView {
         if self.view.as_ref().is_none_or(|(cached, _)| *cached != key) {
@@ -747,7 +739,7 @@ impl RuntimeValuesCache {
         &self.view.as_ref().expect("the view was just built").1
     }
 
-    fn filter(&self, graph: &WeaponRuntimeGraph, key: &RuntimeValuesKey) -> RuntimeValuesView {
+    fn filter(&self, graph: &RuntimeGraph, key: &RuntimeValuesKey) -> RuntimeValuesView {
         let live = graph
             .fields()
             .map(|field| &field.locator)
@@ -806,15 +798,15 @@ impl RuntimeValuesCache {
 struct RuntimeValuesFilter<'a> {
     cache: &'a RuntimeValuesCache,
     key: &'a RuntimeValuesKey,
-    customized: BTreeSet<&'a WeaponRuntimeFieldLocator>,
+    customized: BTreeSet<&'a RuntimeFieldLocator>,
 }
 
 impl RuntimeValuesFilter<'_> {
-    /// `position` is the first field's position in `WeaponRuntimeGraph::fields`, and advances
+    /// `position` is the first field's position in `RuntimeGraph::fields`, and advances
     /// past every field of `roots`.
     fn group<'r>(
         &self,
-        roots: impl Iterator<Item = &'r WeaponRuntimeRoot>,
+        roots: impl Iterator<Item = &'r RuntimeRoot>,
         position: &mut usize,
         group_matches: bool,
     ) -> RuntimeValuesGroup {
@@ -835,7 +827,7 @@ impl RuntimeValuesFilter<'_> {
         group
     }
 
-    fn visible(&self, position: usize, field: &WeaponRuntimeField, group_matches: bool) -> bool {
+    fn visible(&self, position: usize, field: &RuntimeField, group_matches: bool) -> bool {
         let in_scope = self.customized.contains(&field.locator)
             || runtime_field_is_in_editor_scope(
                 field.source,
@@ -858,10 +850,7 @@ impl RuntimeValuesFilter<'_> {
 }
 
 /// The label an owner's values are listed under.
-pub(super) fn runtime_owner_label(
-    graph: &WeaponRuntimeGraph,
-    owner: &WeaponRuntimeOwner,
-) -> String {
+pub(super) fn runtime_owner_label(graph: &RuntimeGraph, owner: &RuntimeOwner) -> String {
     graph
         .bindings
         .iter()
@@ -873,7 +862,7 @@ pub(super) fn runtime_owner_label(
 }
 
 /// Every text `runtime_field_matches_query` searches, so one `contains` stands in for it.
-fn runtime_field_search_text(field: &WeaponRuntimeField) -> String {
+fn runtime_field_search_text(field: &RuntimeField) -> String {
     let mut parts = vec![
         field.name.to_ascii_lowercase(),
         field.path_label.to_ascii_lowercase(),
@@ -890,7 +879,7 @@ fn runtime_field_search_text(field: &WeaponRuntimeField) -> String {
     parts.join("\0")
 }
 
-fn runtime_field_matches_query(field: &WeaponRuntimeField, query: &str) -> bool {
+fn runtime_field_matches_query(field: &RuntimeField, query: &str) -> bool {
     field.name.to_ascii_lowercase().contains(query)
         || field.path_label.to_ascii_lowercase().contains(query)
         || runtime_value_kind_label(&field.kind)

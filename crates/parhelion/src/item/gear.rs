@@ -11,6 +11,7 @@
 use super::resolve::ResolvedWeapon;
 use super::sources::ProjectSources;
 use super::*;
+pub(super) mod artifact;
 mod collections;
 pub(super) mod runtime;
 
@@ -103,11 +104,10 @@ fn unsupported_setting(spec: &WeaponCloneSpec) -> Option<&'static str> {
             "an ammo HUD icon",
         ),
         (
-            overrides
-                .base_sandbox_perks
-                .as_ref()
-                .is_some_and(|perks| spec.kind != ItemKind::Armor || !perks.is_empty()),
-            "base perks other than clearing armor's inherited perks",
+            overrides.base_sandbox_perks.as_ref().is_some_and(|perks| {
+                !matches!(spec.kind, ItemKind::Armor | ItemKind::Artifact) || !perks.is_empty()
+            }),
+            "base perks other than clearing inherited equipped perks",
         ),
         (overrides.trait_indices.is_some(), "item traits"),
         (overrides.max_stack_size.is_some(), "a stack size"),
@@ -616,8 +616,8 @@ pub(super) fn resolve(
     let Base {
         donor,
         collectible_index: donor_collectible_index,
-        definition,
-        strings,
+        mut definition,
+        mut strings,
     } = base;
     let expanded = crate::vehicle::perks::expand(
         &sources.manager,
@@ -628,6 +628,7 @@ pub(super) fn resolve(
         &sources.stock_item_rows_by_hash,
     )?;
     let spec = expanded.as_ref().unwrap_or(spec);
+    artifact::prepare(sources, &mut definition, &mut strings, spec)?;
     let (bucket, _) = native_slot(&definition, spec.kind)?;
     let base_rarity = rarity(&definition)?;
     // Ordinary armor keeps its base's placement, which Exotic decides. Imported items select a
@@ -654,6 +655,7 @@ pub(super) fn resolve(
     }
     let base_collectible_index = match donor_collectible_index {
         Some(index) => index,
+        None if spec.kind == ItemKind::Artifact => artifact::collectible(sources)?,
         None => stand_in_collectible(sources, &strings)?.ok_or_else(|| {
             invalid(
                 "Neither this base item nor another version of it is in Collections. Choose a base from Collections.",
@@ -720,6 +722,20 @@ pub(super) fn resolve(
         .as_ref()
         .map(|reference| resolve_icon_donor(sources, reference))
         .transpose()?;
+    // An imported artifact's backdrop needs an icon lane with a large texture, which its
+    // base's icon lacks, so its icon is painted over a stock lane that has one.
+    let icon_donor = match icon_donor {
+        None if artifact::imported_artifact(spec)
+            && spec.overrides.icon_edit.backdrop_image.is_some() =>
+        {
+            Some(artifact::backdrop_icon(
+                sources,
+                donor.item_index,
+                donor_icon_container,
+            )?)
+        }
+        other => other,
+    };
     let nameplate = spec
         .overrides
         .nameplate
@@ -1104,12 +1120,19 @@ pub(super) fn apply_presentation(
     let spec = &donor.weapon;
     let identity = spec.identity;
     let slot = native_slot(definition, spec.kind)?;
+    // An imported artifact deliberately leaves its template's Ghost classification, so the
+    // guard below compares against the classification that step chose.
+    artifact::presentation(strings, spec)?;
     let classification = client_classification(strings)?;
     if let Some(authored) = spec.overrides.rarity {
         set_rarity(definition, spec.kind, authored)?;
     }
     if let Some(selected) = spec.overrides.armor_class {
-        super::armor::apply_class(definition, selected)?;
+        if spec.kind == ItemKind::Artifact {
+            artifact::apply_class(definition, selected)?;
+        } else {
+            super::armor::apply_class(definition, selected)?;
+        }
     }
     // Custom dyes replace the rows they edit, so their rows win over the recipe's own.
     if let Some(arrays) = donor.dye_rows().or(spec.overrides.render_dye_rows.as_ref()) {
@@ -1123,28 +1146,28 @@ pub(super) fn apply_presentation(
     write_localized_reference(
         strings,
         ITEM_NAME_REFERENCE_OFFSET,
-        crate::package_profile::localization_table() as u32,
+        crate::package::profile::localization_table() as u32,
         identity.name_hash,
     )?;
     if spec.effective_type_name().is_some() {
         write_localized_reference(
             strings,
             ITEM_TYPE_REFERENCE_OFFSET,
-            crate::package_profile::localization_table() as u32,
+            crate::package::profile::localization_table() as u32,
             identity.type_hash,
         )?;
     }
     write_localized_reference(
         strings,
         ITEM_DESCRIPTION_REFERENCE_OFFSET,
-        crate::package_profile::localization_table() as u32,
+        crate::package::profile::localization_table() as u32,
         identity.flavor_hash,
     )?;
     if spec.text.inventory_hint.is_some() {
         write_localized_reference(
             strings,
             ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET,
-            crate::package_profile::localization_table() as u32,
+            crate::package::profile::localization_table() as u32,
             identity.inventory_hint_hash,
         )?;
     } else {
@@ -1223,12 +1246,15 @@ pub(super) fn validate_payloads(
         ));
     }
     if let Some(selected) = spec.overrides.armor_class {
-        let actual =
+        let actual = if spec.kind == ItemKind::Artifact {
+            artifact::class(definition)?
+        } else {
             sundial::package_authoring::investment_schema::armor_equipment_class(definition)
-                .map_err(validation)?;
+                .map_err(validation)?
+        };
         if actual != selected.native_class() {
             return Err(validation(
-                "Authored armor did not retain its selected equip class",
+                "Authored gear did not retain its selected equip class",
             ));
         }
     }
@@ -1241,7 +1267,7 @@ pub(super) fn validate_payloads(
         && matching_u32_offsets(definition, spec.identity.item_hash) == identity_offsets
         && matching_u32_offsets(strings, spec.donor_item_hash).is_empty()
         && read_u32(strings, ITEM_NAME_REFERENCE_OFFSET)?
-            == crate::package_profile::localization_table() as u32
+            == crate::package::profile::localization_table() as u32
         && read_u32(strings, ITEM_NAME_REFERENCE_OFFSET + 4)? == spec.identity.name_hash
         && read_u32(strings, ITEM_DESCRIPTION_REFERENCE_OFFSET + 4)? == spec.identity.flavor_hash
         && spec.effective_type_name().is_none_or(|_| {

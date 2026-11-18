@@ -40,14 +40,14 @@ fn decode_settings_defaults(encoded: &str) -> Result<Value, String> {
 
 pub(in crate::app) fn load_installed_account_defaults(
     install_path: &Path,
-) -> Result<crate::persistence::sqlite_account::AccountDefaults, String> {
+) -> Result<crate::persistence::sunrise_account::AccountDefaults, String> {
     with_installed_resources(install_path, |read| decode_account_defaults(read))
 }
 
 fn decode_account_defaults(
     read: &mut dyn FnMut(u32, &str) -> Result<String, String>,
-) -> Result<crate::persistence::sqlite_account::AccountDefaults, String> {
-    use crate::persistence::sqlite_account::Schema;
+) -> Result<crate::persistence::sunrise_account::AccountDefaults, String> {
+    use crate::persistence::sunrise_account::Schema;
     let schema = read(106, "investment schema")?;
     let version = Schema::from_sql(&schema).map_err(|error| error.to_string())?;
     let rows = read(107, "default investment data")?;
@@ -58,7 +58,7 @@ fn decode_account_defaults(
     } else {
         None
     };
-    Ok(crate::persistence::sqlite_account::AccountDefaults {
+    Ok(crate::persistence::sunrise_account::AccountDefaults {
         schema,
         rows,
         settings_schema,

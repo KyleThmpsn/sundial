@@ -4,8 +4,8 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use super::*;
-use crate::icon_edit::ImportedIcon;
-use crate::shader_icon::{IconSurface, TRIANGLES, classic};
+use crate::icon::edit::ImportedIcon;
+use crate::icon::shader::{IconSurface, TRIANGLES, classic};
 
 /// The dye and gear type of each channel's weapon row, whose dyes the stock icons show, or of the
 /// armor row when the shader has no weapon row.

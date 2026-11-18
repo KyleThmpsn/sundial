@@ -8,6 +8,7 @@ const fn item_phrase(kind: ItemKind) -> &'static str {
     match kind {
         ItemKind::Weapon => "a weapon",
         ItemKind::Armor => "an armor piece",
+        ItemKind::Artifact => "an artifact",
         ItemKind::Sparrow => "a Sparrow",
         ItemKind::Ship => "a ship",
         ItemKind::GhostShell => "a Ghost Shell",

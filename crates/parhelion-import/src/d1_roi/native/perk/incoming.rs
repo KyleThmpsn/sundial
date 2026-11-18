@@ -15,13 +15,14 @@ pub(super) fn read(
         "Source incoming damage has unqualified lifecycle, recipient or stat input"
     );
     let _ = p.f32(at + 12)?;
-    // The native callback admits damage and ability filters. A separate D1 object
-    // filter cannot be dropped. The bounded route accepts only its empty form.
+    // The native callback has damage types and one label filter. A source record can hold a
+    // second label filter at `+A0`, with its masks at `+F0` and empty flags at `+170`.
+    let second = p.bytes::<0x40>(at + 0xA0)? != [0; 0x40];
     ensure!(
         p.bytes::<4>(at + 0x9C)? == [0; 4]
-            && p.bytes::<0x40>(at + 0xA0)? == [0; 0x40]
-            && p.bytes::<0x80>(at + 0xF0)? == [0; 0x80]
-            && p.bytes::<4>(at + 0x170)? == [1; 4]
+            && (second
+                || (p.bytes::<0x80>(at + 0xF0)? == [0; 0x80]
+                    && p.bytes::<4>(at + 0x170)? == [1; 4]))
             && p.u32(at + 0x174)? == 0
             && p.u64(at + 0x178)? == 0x808026E4
             && p.u64(at + 0x188)? == at as u64
@@ -41,7 +42,19 @@ pub(super) fn read(
             links: BTreeMap::new(),
         }],
     };
-    filter::damage(source, p, at + 16, at + 0xE0, &mut graph, 16, native)?;
+    if second {
+        filter::types(p, at + 16, &mut graph, 16)?;
+        label::incoming(
+            source,
+            p,
+            (at + 16, at + 0xA0),
+            &mut graph,
+            16 + 0x20,
+            native,
+        )?;
+    } else {
+        filter::damage(source, p, at + 16, at + 0xE0, &mut graph, 16, native)?;
+    }
     // The ordinary private-action relocation writes the new owner and node offset.
     graph
         .validate_node(NodeKind::Effect(33))

@@ -160,7 +160,7 @@ fn child(
     tag: u32,
     delay: &[u8; 64],
 ) -> Result<Option<(String, Value)>> {
-    let mut bundle = super::secondary::Bundle::read(native, tag)?;
+    let mut bundle = super::bundle::Bundle::read(native, tag)?;
     let mut removed = Vec::new();
     for (&owner, payload) in &mut bundle.owners {
         let (_, allocation) = bundle.allocations.get_mut(&owner).unwrap();

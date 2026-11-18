@@ -146,6 +146,20 @@ pub(crate) fn item_tag(r: &mut Reader, hash: u32) -> Result<u32> {
 /// offer, and the curated fallback a randomized socket falls back to. The report is also written
 /// to `native-sockets.json` in the reader's output.
 pub fn sockets(r: &mut Reader, hash: u32) -> Result<Value> {
+    let report = socket_report(r, hash)?;
+    write_json(&r.output.join("native-sockets.json"), &report)?;
+    if report["sockets"]
+        .as_array()
+        .is_some_and(|sockets| !sockets.is_empty())
+    {
+        r.finish()?;
+    }
+    Ok(report)
+}
+
+/// The report `sockets` writes, read without recording it, for a search across weapons that
+/// must not replace the recorded report of the weapon being converted.
+pub(crate) fn socket_report(r: &mut Reader, hash: u32) -> Result<Value> {
     let tag = r
         .manager
         .lookup
@@ -167,9 +181,7 @@ pub fn sockets(r: &mut Reader, hash: u32) -> Result<Value> {
         .context("native item")?;
     let item = r.tag(items.u32(row + 16)?, Some(0x80807BEA))?;
     if item.u64(0x68)? == 0 {
-        let report = json!({"weapon":hash,"sockets":[]});
-        write_json(&r.output.join("native-sockets.json"), &report)?;
-        return Ok(report);
+        return Ok(json!({"weapon":hash,"sockets":[]}));
     }
     let mut sockets = vec![];
     for (index, row) in item
@@ -229,12 +241,14 @@ pub fn sockets(r: &mut Reader, hash: u32) -> Result<Value> {
         } else {
             None
         };
-        sockets.push(json!({"index":index,"socket_type":item.u16(row)?,"choices":plugs,"curated_fallback":curated_fallback}));
+        // The stock plug sets the socket names, which another item's socket can name too.
+        let set = |offset: usize| -> Result<Option<u16>> {
+            let index = item.u16(row + offset)?;
+            Ok((index != u16::MAX).then_some(index))
+        };
+        sockets.push(json!({"index":index,"socket_type":item.u16(row)?,"choices":plugs,"curated_fallback":curated_fallback,"reusable_set":set(0x0C)?,"randomized_set":set(0x20)?}));
     }
-    let report = json!({"weapon":hash,"sockets":sockets});
-    write_json(&r.output.join("native-sockets.json"), &report)?;
-    r.finish()?;
-    Ok(report)
+    Ok(json!({"weapon":hash,"sockets":sockets}))
 }
 
 /// A native plug item's category, when its definition names exactly one.
@@ -474,11 +488,10 @@ pub(crate) fn translator_routes(r: &mut Reader, item: u32) -> Result<BTreeSet<(u
         Some(r.manager.platform),
     )
     .map_err(anyhow::Error::msg)?;
-    let runtime =
-        sundial::package_authoring::runtime::load_weapon_runtime_entity_for_item_with_manager(
-            &manager, item,
-        )
-        .map_err(anyhow::Error::msg)?;
+    let runtime = sundial::package_authoring::runtime::load_runtime_entity_for_item_with_manager(
+        &manager, item,
+    )
+    .map_err(anyhow::Error::msg)?;
     let bindings = sundial::package_authoring::entity::weapon_component_bindings(
         &runtime.payload,
         0x2F98_1564,

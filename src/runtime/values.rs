@@ -1,38 +1,31 @@
 use super::*;
 
 /// Encodes a value only when it matches the reflected field type and native width.
-pub fn encode_weapon_runtime_value(
-    kind: &WeaponRuntimeValueKind,
-    value: &WeaponRuntimeValue,
+pub fn encode_runtime_value(
+    kind: &RuntimeValueKind,
+    value: &RuntimeValue,
 ) -> Result<Vec<u8>, String> {
     let encoded = match (kind, value) {
-        (WeaponRuntimeValueKind::Boolean, WeaponRuntimeValue::Boolean(value)) => {
+        (RuntimeValueKind::Boolean, RuntimeValue::Boolean(value)) => {
             vec![u8::from(*value)]
         }
-        (WeaponRuntimeValueKind::SignedInteger { bits }, WeaponRuntimeValue::Signed(value)) => {
+        (RuntimeValueKind::SignedInteger { bits }, RuntimeValue::Signed(value)) => {
             encode_signed(*bits, *value)?
         }
         (
-            WeaponRuntimeValueKind::UnsignedInteger { bits }
-            | WeaponRuntimeValueKind::Enum { bits }
-            | WeaponRuntimeValueKind::BitFlags { bits }
-            | WeaponRuntimeValueKind::HexIdentifier { bits },
-            WeaponRuntimeValue::Unsigned(value),
+            RuntimeValueKind::UnsignedInteger { bits }
+            | RuntimeValueKind::Enum { bits }
+            | RuntimeValueKind::BitFlags { bits }
+            | RuntimeValueKind::HexIdentifier { bits },
+            RuntimeValue::Unsigned(value),
         ) => encode_unsigned(*bits, *value)?,
-        (WeaponRuntimeValueKind::Float32, WeaponRuntimeValue::Float32Bits(bits)) => {
-            bits.to_le_bytes().to_vec()
-        }
-        (WeaponRuntimeValueKind::Float64, WeaponRuntimeValue::Float64Bits(bits)) => {
-            bits.to_le_bytes().to_vec()
-        }
-        (
-            WeaponRuntimeValueKind::Vector4Float32,
-            WeaponRuntimeValue::Vector4Float32Bits(values),
-        ) => values
+        (RuntimeValueKind::Float32, RuntimeValue::Float32Bits(bits)) => bits.to_le_bytes().to_vec(),
+        (RuntimeValueKind::Float64, RuntimeValue::Float64Bits(bits)) => bits.to_le_bytes().to_vec(),
+        (RuntimeValueKind::Vector4Float32, RuntimeValue::Vector4Float32Bits(values)) => values
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect(),
-        (WeaponRuntimeValueKind::FixedBytes { size }, WeaponRuntimeValue::Bytes(bytes)) => {
+        (RuntimeValueKind::FixedBytes { size }, RuntimeValue::Bytes(bytes)) => {
             if bytes.len() != *size as usize {
                 return Err(format!(
                     "Runtime byte value has {} bytes, expected {size}",
@@ -52,35 +45,35 @@ pub fn encode_weapon_runtime_value(
 pub(super) fn decode_runtime_value(
     data: &[u8],
     offset: usize,
-    kind: &WeaponRuntimeValueKind,
-) -> Result<WeaponRuntimeValue, String> {
+    kind: &RuntimeValueKind,
+) -> Result<RuntimeValue, String> {
     let bytes = data
         .get(offset..offset + kind.byte_size() as usize)
         .ok_or("Runtime field value extends beyond its owner payload")?;
     match kind {
-        WeaponRuntimeValueKind::Boolean => match bytes[0] {
-            0 => Ok(WeaponRuntimeValue::Boolean(false)),
-            1 => Ok(WeaponRuntimeValue::Boolean(true)),
+        RuntimeValueKind::Boolean => match bytes[0] {
+            0 => Ok(RuntimeValue::Boolean(false)),
+            1 => Ok(RuntimeValue::Boolean(true)),
             value => Err(format!(
                 "Runtime boolean contains invalid native value {value}"
             )),
         },
-        WeaponRuntimeValueKind::SignedInteger { bits } => {
-            decode_signed(*bits, bytes).map(WeaponRuntimeValue::Signed)
+        RuntimeValueKind::SignedInteger { bits } => {
+            decode_signed(*bits, bytes).map(RuntimeValue::Signed)
         }
-        WeaponRuntimeValueKind::UnsignedInteger { bits }
-        | WeaponRuntimeValueKind::Enum { bits }
-        | WeaponRuntimeValueKind::BitFlags { bits }
-        | WeaponRuntimeValueKind::HexIdentifier { bits } => {
-            decode_unsigned(*bits, bytes).map(WeaponRuntimeValue::Unsigned)
+        RuntimeValueKind::UnsignedInteger { bits }
+        | RuntimeValueKind::Enum { bits }
+        | RuntimeValueKind::BitFlags { bits }
+        | RuntimeValueKind::HexIdentifier { bits } => {
+            decode_unsigned(*bits, bytes).map(RuntimeValue::Unsigned)
         }
-        WeaponRuntimeValueKind::Float32 => Ok(WeaponRuntimeValue::Float32Bits(u32::from_le_bytes(
+        RuntimeValueKind::Float32 => Ok(RuntimeValue::Float32Bits(u32::from_le_bytes(
             bytes.try_into().expect("four-byte runtime float"),
         ))),
-        WeaponRuntimeValueKind::Float64 => Ok(WeaponRuntimeValue::Float64Bits(u64::from_le_bytes(
+        RuntimeValueKind::Float64 => Ok(RuntimeValue::Float64Bits(u64::from_le_bytes(
             bytes.try_into().expect("eight-byte runtime float"),
         ))),
-        WeaponRuntimeValueKind::Vector4Float32 => {
+        RuntimeValueKind::Vector4Float32 => {
             let mut values = [0; 4];
             for (index, value) in values.iter_mut().enumerate() {
                 let start = index * 4;
@@ -90,9 +83,9 @@ pub(super) fn decode_runtime_value(
                         .expect("four-byte runtime vector component"),
                 );
             }
-            Ok(WeaponRuntimeValue::Vector4Float32Bits(values))
+            Ok(RuntimeValue::Vector4Float32Bits(values))
         }
-        WeaponRuntimeValueKind::FixedBytes { .. } => Ok(WeaponRuntimeValue::Bytes(bytes.to_vec())),
+        RuntimeValueKind::FixedBytes { .. } => Ok(RuntimeValue::Bytes(bytes.to_vec())),
     }
 }
 

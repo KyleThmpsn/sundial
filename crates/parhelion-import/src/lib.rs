@@ -13,6 +13,7 @@ mod hud_icon;
 pub mod io;
 pub mod marathon;
 pub mod mark;
+mod math;
 pub mod preview;
 mod stat_group;
 pub mod store;

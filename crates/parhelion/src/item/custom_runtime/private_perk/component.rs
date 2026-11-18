@@ -13,7 +13,7 @@ pub(super) fn append(
     manager: &PackageManager,
     target: &mut Vec<u8>,
     components: &[NativeAssetComponent],
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let mut sources = Vec::new();
     for component in components {
         let source = read_tag(
@@ -154,7 +154,7 @@ fn bindings(graph: &[u8]) -> AuthoringResult<Bindings> {
 pub(super) fn remap_patches(
     source: &[u8],
     target: &[u8],
-    patches: &mut [WeaponRuntimeResourcePatch],
+    patches: &mut [RuntimeResourcePatch],
 ) -> AuthoringResult<()> {
     for patch in patches {
         patch.resource_index =

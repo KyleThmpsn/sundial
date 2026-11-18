@@ -103,7 +103,7 @@ impl SundialApp {
                     AccountSourceKind::Json => {
                         format!("Replaces all of settings.json with your {runtime} defaults.")
                     }
-                    AccountSourceKind::Sqlite | AccountSourceKind::Dawn | AccountSourceKind::Blocked => {
+                    AccountSourceKind::Sunrise | AccountSourceKind::Dawn | AccountSourceKind::Blocked => {
                         format!("Restores settings.json defaults and keeps its inactive /state/account and /state/characters data. {database} is unchanged.")
                     }
                 });
@@ -192,7 +192,7 @@ impl SundialApp {
                     AccountSourceKind::Json => {
                         "If the game stops loading, restore Sunrise defaults in Preferences > Saving & Recovery. This resets the account after backing it up."
                     }
-                    AccountSourceKind::Sqlite => {
+                    AccountSourceKind::Sunrise => {
                         "If the game stops loading, restore an account backup in Preferences > Saving & Recovery. The current database is backed up first."
                     }
                     AccountSourceKind::Dawn => {

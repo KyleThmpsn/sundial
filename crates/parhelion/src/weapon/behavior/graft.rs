@@ -48,7 +48,7 @@ pub(super) fn graph_values(
     host_graph: Option<u32>,
     graph: u32,
     boost: f32,
-) -> AuthoringResult<Vec<sundial::package_authoring::runtime::WeaponRuntimeValueOverride>> {
+) -> AuthoringResult<Vec<sundial::package_authoring::runtime::RuntimeValueOverride>> {
     // One is the neutral multiplier, so anything at or below it asks for no change. A hand-edited
     // recipe carrying NaN stops here too, rather than reaching the clamp, where `f32::min` would
     // quietly turn it into the largest value this can write.
@@ -113,7 +113,7 @@ fn projectile_speeds(
     use sundial::package_authoring::sandbox_perk::entity::projectile::parameters::{
         Kind, discover,
     };
-    let loaded = sundial::package_authoring::runtime::load_weapon_runtime_graph_for_entity(
+    let loaded = sundial::package_authoring::runtime::load_runtime_graph_for_entity(
         manager, 0, 0, entity_tag, entity,
     )
     .map_err(invalid)?;
@@ -194,8 +194,8 @@ pub(super) fn source_block(
     manager: &PackageManager,
     entry: &Behavior,
 ) -> AuthoringResult<(Vec<u8>, usize)> {
-    use sundial::package_authoring::runtime::load_weapon_runtime_entity_for_item_with_manager;
-    let runtime = load_weapon_runtime_entity_for_item_with_manager(manager, entry.source_item_hash)
+    use sundial::package_authoring::runtime::load_runtime_entity_for_item_with_manager;
+    let runtime = load_runtime_entity_for_item_with_manager(manager, entry.source_item_hash)
         .map_err(|error| invalid(format!("{}: {error}", entry.source_name)))?;
     let source = content(manager, &runtime.payload)?;
     let block = block_for_group(&source, runtime.weapon_content_group_hash)?;
@@ -215,7 +215,7 @@ pub(super) fn label_append(
     host_block: usize,
     kind_block: Option<usize>,
     sources: &[(Vec<u8>, usize)],
-) -> AuthoringResult<Option<crate::item::WeaponRuntimeResourceAppend>> {
+) -> AuthoringResult<Option<crate::item::RuntimeResourceAppend>> {
     // Labels are an addition to a graft, never a condition of one. A weapon whose block keeps
     // no label array, on either side, simply carries none, which is what every graft did before
     // labels travelled. Six catalogued sources are in that position, and a host can be too, so
@@ -261,7 +261,7 @@ pub(super) fn label_append(
         bytes.extend_from_slice(row);
     }
     let triple = first_triple(&content.owner, host_block)?;
-    Ok(Some(crate::item::WeaponRuntimeResourceAppend {
+    Ok(Some(crate::item::RuntimeResourceAppend {
         binding_hash: BINDING,
         resource_index: 0,
         bytes,
@@ -273,6 +273,8 @@ pub(super) fn label_append(
         arrays: Vec::new(),
         pointers: Vec::new(),
         references: Vec::new(),
+        retained_pointers: Vec::new(),
+        retained_bytes: Vec::new(),
     }))
 }
 

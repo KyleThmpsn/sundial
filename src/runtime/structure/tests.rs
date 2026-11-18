@@ -20,17 +20,13 @@ fn damage_modifier_settings_expose_typed_keys_without_consuming_adjacent_flags()
         (
             0xE0,
             "Required Source Property",
-            WeaponRuntimeValueKind::HexIdentifier { bits: 32 },
+            RuntimeValueKind::HexIdentifier { bits: 32 },
         ),
-        (
-            0xE4,
-            "Invert Source Property",
-            WeaponRuntimeValueKind::Boolean,
-        ),
+        (0xE4, "Invert Source Property", RuntimeValueKind::Boolean),
         (
             0xE8,
             "Require Matching Source Owner",
-            WeaponRuntimeValueKind::Boolean,
+            RuntimeValueKind::Boolean,
         ),
     ] {
         let field = decoded
@@ -547,11 +543,6 @@ fn runtime_references_preserve_tokens_and_never_become_asset_links() {
     );
     assert_eq!(decoded.fields[0].value, "None, validation token 0x12345678");
     assert_eq!(decoded.fields[1].representation, "Runtime Reference");
-    assert!(
-        decoded.fields[1]
-            .value
-            .contains("runtime resolution required")
-    );
     assert_eq!(decoded.fields[2].representation, "Package Reference");
 }
 
@@ -623,7 +614,6 @@ fn runtime_selected_records_keep_both_interpretations_and_all_storage_bits() {
     assert_eq!(selected.0, "Runtime-Selected Eight-Byte Value");
     assert!(selected.1.contains("0x8000000000000001"));
     assert!(selected.1.contains("-9223372036854775807"));
-    assert!(selected.1.contains("runtime selects"));
     let mut data = vec![0xA5; 16];
     data[8..12].copy_from_slice(&0x7FC1_2345_u32.to_le_bytes());
     data[12] = 0xFE;

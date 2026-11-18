@@ -14,6 +14,12 @@ mod tests;
 
 impl Branding {
     pub(crate) fn detect(install: &Path) -> Self {
+        // An install whose Dawn installer signs and composes packages is Dawn's, and so is the
+        // stock view a build for it reads, which holds no runtime of its own.
+        #[cfg(feature = "dawn")]
+        if crate::parhelion_dawn::install::composes(&install.join("packages")) {
+            return Self::Dawn;
+        }
         sundial::package_authoring::installed_runtime_kind(install)
             .map_or(Self::Sunrise, |(brand, _)| Self::of(brand))
     }
@@ -90,8 +96,8 @@ impl Branding {
 
     pub(crate) fn texture(self, index: usize) -> AuthoringResult<image::RgbaImage> {
         match self {
-            Self::Dawn => crate::watermark::render_dawn_texture(index),
-            Self::Sunrise => crate::watermark::render_output_texture(index),
+            Self::Dawn => crate::icon::watermark::render_dawn_texture(index),
+            Self::Sunrise => crate::icon::watermark::render_output_texture(index),
         }
     }
 }

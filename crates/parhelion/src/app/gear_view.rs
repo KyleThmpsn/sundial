@@ -70,7 +70,7 @@ fn armor_detail(catalog: &InvestmentCatalog, hash: u32, slot: Option<&str>) -> S
 /// "Solar Energy 7" as ("Solar", 7).
 fn energy_plug(label: &str) -> Option<(&'static str, u8)> {
     let mut words = label.split_whitespace();
-    let element = words.next()?;
+    let energy_type = words.next()?;
     if words.next()? != "Energy" {
         return None;
     }
@@ -78,10 +78,10 @@ fn energy_plug(label: &str) -> Option<(&'static str, u8)> {
     if words.next().is_some() {
         return None;
     }
-    let element = ENERGY_TYPES
+    let energy_type = ENERGY_TYPES
         .into_iter()
-        .find(|candidate| *candidate == element)?;
-    Some((element, capacity))
+        .find(|candidate| *candidate == energy_type)?;
+    Some((energy_type, capacity))
 }
 
 /// Whether a gear socket is listed on this page and can take a custom perk. The energy sockets
@@ -338,7 +338,7 @@ fn stats_header(ui: &mut egui::Ui, kind: ItemKind, cap: Option<i32>, changed: bo
                 "Tooltip stats. Use Driving Speed to change motion. The Engine also affects \
                  ordinary Sparrow motion"
             }
-            _ => "Totals include the starting plugs. A change here adds to the armor itself",
+            _ => "Totals include the starting plugs. A change here adds to the item itself",
         };
         let hint = cap.map_or_else(
             || hint.to_owned(),
@@ -498,7 +498,8 @@ impl PackageAuthoringApp {
                 false
             }
         };
-        let model = self.recipe.kind != ItemKind::Emblem && (donor.is_some() || imported);
+        let model = !matches!(self.recipe.kind, ItemKind::Emblem | ItemKind::Artifact)
+            && (donor.is_some() || imported);
         let column = egui::Layout::top_down(egui::Align::Min);
         if let Some(base_width) = workbench_left_column_width(ui.available_width()) {
             let spacing = ui.spacing().item_spacing.x;
@@ -566,7 +567,7 @@ impl PackageAuthoringApp {
             return;
         }
         let stats: &[&'static str] = match self.recipe.kind {
-            ItemKind::Armor => &ARMOR_STATS,
+            ItemKind::Armor | ItemKind::Artifact => &ARMOR_STATS,
             ItemKind::Sparrow => &SPARROW_STATS,
             _ => &[],
         };
@@ -702,7 +703,7 @@ impl PackageAuthoringApp {
             &format!("Base {}", kind.label()),
             Some(match kind {
                 ItemKind::Shader => "Starting dyes.",
-                ItemKind::Subclass => "Class, element and starting abilities.",
+                ItemKind::Subclass => "Class, damage type and starting abilities.",
                 ItemKind::Emblem => "Starting icon and nameplate.",
                 _ => "Slot, class, look and starting sockets.",
             }),
@@ -823,6 +824,8 @@ impl PackageAuthoringApp {
             } else {
                 &[0, 3]
             }
+        } else if kind == ItemKind::Artifact {
+            &[0, 3]
         } else if energy.is_some() {
             &[0, 1, 2]
         } else if kind == ItemKind::Sparrow {
@@ -845,7 +848,9 @@ impl PackageAuthoringApp {
                             draw_energy_type(column, &mut self.recipe, donor, energy);
                         }
                     }
-                    3 => draw_armor_class(column, &mut self.recipe.overrides, inherited_class),
+                    3 => {
+                        draw_armor_class(column, &mut self.recipe.overrides, inherited_class, kind)
+                    }
                     4 => vehicle::draw_summon(column, self),
                     _ => {
                         if let (Some(energy), Some(donor)) = (&energy, donor) {
@@ -999,6 +1004,7 @@ fn draw_armor_class(
     ui: &mut egui::Ui,
     overrides: &mut WeaponRecipeOverrides,
     inherited: Option<u8>,
+    kind: ItemKind,
 ) {
     let base = inherited.map_or("Base Class", |class| {
         class_label(class).unwrap_or("Any Class")
@@ -1019,11 +1025,7 @@ fn draw_armor_class(
         .truncate()
         .show_ui(ui, |ui| {
             workbench_style(ui);
-            ui.selectable_value(
-                &mut overrides.armor_class,
-                None,
-                follow_base(ItemKind::Armor),
-            );
+            ui.selectable_value(&mut overrides.armor_class, None, follow_base(kind));
             for class in crate::ArmorClass::ALL {
                 ui.selectable_value(&mut overrides.armor_class, Some(class), class.label());
             }
@@ -1128,8 +1130,8 @@ fn draw_energy_type(
     energy: &EnergySocket,
 ) {
     const HINT: &str = "Arc, Solar or Void Energy for its mods";
-    let current = energy.current.map(|(element, _)| element);
-    let base = energy.base.map(|(element, _)| element);
+    let current = energy.current.map(|(energy_type, _)| energy_type);
+    let base = energy.base.map(|(energy_type, _)| energy_type);
     let modified = current != base;
     let (name, reset) = match base {
         Some(base) => style::stock_field_name(ui, "Energy Type", HINT, modified.then_some(base)),
@@ -1139,7 +1141,7 @@ fn draw_energy_type(
     let mut chosen = None;
     if reset {
         match base {
-            Some(element) => chosen = Some(element),
+            Some(energy_type) => chosen = Some(energy_type),
             None => restore_socket(recipe, energy.index),
         }
     }
@@ -1149,30 +1151,30 @@ fn draw_energy_type(
         .width(ui.available_width())
         .show_ui(ui, |ui| {
             workbench_style(ui);
-            for element in ENERGY_TYPES {
+            for energy_type in ENERGY_TYPES {
                 let available = energy
                     .plugs
                     .keys()
-                    .any(|(candidate, _)| *candidate == element);
+                    .any(|(candidate, _)| *candidate == energy_type);
                 if ui
                     .add_enabled(
                         available,
-                        egui::Button::selectable(current == Some(element), element),
+                        egui::Button::selectable(current == Some(energy_type), energy_type),
                     )
                     .clicked()
                 {
-                    chosen = Some(element);
+                    chosen = Some(energy_type);
                 }
             }
         });
     combo.response.labelled_by(name.id);
-    if let Some(element) = chosen {
+    if let Some(energy_type) = chosen {
         let capacity = energy.current.map_or(1, |(_, capacity)| capacity);
         // Keep the capacity when the new type has it, otherwise the nearest one it has.
         let plug = energy
             .plugs
             .iter()
-            .filter(|((candidate, _), _)| *candidate == element)
+            .filter(|((candidate, _), _)| *candidate == energy_type)
             .min_by_key(|((_, candidate), _)| candidate.abs_diff(capacity))
             .map(|(_, plug)| *plug);
         if let (Some(plug), Some(socket)) = (plug, donor.sockets.get(energy.index)) {
@@ -1199,7 +1201,7 @@ fn draw_energy_capacity(
         ),
         None => style::field_name(ui, "Energy Capacity", HINT, modified),
     };
-    let Some((element, current)) = energy.current else {
+    let Some((energy_type, current)) = energy.current else {
         ui.add_enabled(false, egui::Button::new("Unknown"));
         return;
     };
@@ -1207,7 +1209,8 @@ fn draw_energy_capacity(
     // type does not offer it.
     let mut chosen = None;
     if reset {
-        chosen = base_capacity.and_then(|capacity| energy.plugs.get(&(element, capacity)).copied());
+        chosen =
+            base_capacity.and_then(|capacity| energy.plugs.get(&(energy_type, capacity)).copied());
         if chosen.is_none() {
             restore_socket(recipe, energy.index);
         }
@@ -1219,7 +1222,7 @@ fn draw_energy_capacity(
         .show_ui(ui, |ui| {
             workbench_style(ui);
             for (&(candidate, capacity), &plug) in &energy.plugs {
-                if candidate == element
+                if candidate == energy_type
                     && ui
                         .selectable_label(capacity == current, capacity.to_string())
                         .clicked()

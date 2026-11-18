@@ -3,17 +3,19 @@ use super::*;
 pub(crate) const fn fixed_damage_perk(
     perk: u16,
 ) -> Option<(WeaponDamageCarrierFamily, ModernDamageType)> {
-    use sundial::package_authoring::native_weapon::{DamageFamily, Element, fixed_damage_marker};
+    use sundial::package_authoring::native_weapon::{
+        DamageFamily, ElementalDamage, fixed_damage_marker,
+    };
     match fixed_damage_marker(perk) {
-        Some((family, element)) => Some((
+        Some((family, damage)) => Some((
             match family {
                 DamageFamily::Legacy => WeaponDamageCarrierFamily::LegacyFixed,
                 DamageFamily::Modern => WeaponDamageCarrierFamily::ModernFixed,
             },
-            match element {
-                Element::Arc => ModernDamageType::Arc,
-                Element::Solar => ModernDamageType::Solar,
-                Element::Void => ModernDamageType::Void,
+            match damage {
+                ElementalDamage::Arc => ModernDamageType::Arc,
+                ElementalDamage::Solar => ModernDamageType::Solar,
+                ElementalDamage::Void => ModernDamageType::Void,
             },
         )),
         None => None,
@@ -280,9 +282,9 @@ pub(in crate::item) fn replaces_damage_socket(
 }
 
 /// Makes an authored column on the weapon's damage socket offer the recipe's damage type. The
-/// Damage Type field decides the element, but a saved column still names the plug of the element
-/// it was made with, a conversion's own or an earlier choice, and columns are written after the
-/// damage type, so that plug would bring its element back. A column that gives the socket another
+/// Damage Type field decides it, but a saved column still names the plug of the damage type it
+/// was made with, a conversion's own or an earlier choice, and columns are written after the
+/// damage type, so that plug would bring its own back. A column that gives the socket another
 /// role, or names no damage plug or several, is left as authored.
 pub(in crate::item) fn follow_authored_damage(
     data: &[u8],
@@ -461,8 +463,8 @@ pub(in crate::item) fn apply_weapon_slot_and_damage(
 }
 
 /// Gives a weapon whose damage socket was replaced its damage type as the modern marker on the
-/// weapon itself, the way stock fixed-element weapons carry theirs. Kinetic needs no marker.
-/// Runs once the socket columns are written.
+/// weapon itself, the way stock weapons with a fixed damage type carry theirs. Kinetic needs no
+/// marker. Runs once the socket columns are written.
 pub(in crate::item) fn carry_damage_without_socket(
     data: &mut Vec<u8>,
     strings: &mut Vec<u8>,

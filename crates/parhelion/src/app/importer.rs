@@ -7,6 +7,8 @@ fn item_kind(item: &Weapon) -> ItemKind {
     match item.family() {
         service::Family::Weapon => ItemKind::Weapon,
         service::Family::Armor => ItemKind::Armor,
+        service::Family::Artifact => ItemKind::Artifact,
+        service::Family::Subclass => ItemKind::Subclass,
         service::Family::GhostShell => ItemKind::GhostShell,
         service::Family::Ship => ItemKind::Ship,
         service::Family::Sparrow => ItemKind::Sparrow,
@@ -867,6 +869,12 @@ impl PackageAuthoringApp {
                         .plug_category
                         .is_none_or(|category| !weapon_ornament_categories.contains(&category));
                 }
+                if weapon.family() == service::Family::Artifact {
+                    return self.gear_donors_for(ItemKind::Artifact).is_empty();
+                }
+                if weapon.family() == service::Family::Subclass {
+                    return self.roi_subclass_base().is_none();
+                }
                 if weapon.family().is_model_gear() {
                     return !self.gear_donors_for(item_kind(weapon)).iter().any(|donor| {
                         weapon.accepts_gear_donor(
@@ -884,7 +892,7 @@ impl PackageAuthoringApp {
                                 .catalog
                                 .as_ref()
                                 .and_then(|catalog| catalog.item_definition_tag(donor.hash))
-                                .is_some_and(crate::package_profile::is_stock_item_definition)
+                                .is_some_and(crate::package::profile::is_stock_item_definition)
                     });
                 }
                 !types.contains(weapon.weapon_type.as_str())
@@ -907,7 +915,7 @@ impl PackageAuthoringApp {
             .filter(|&hash| {
                 catalog
                     .item_definition_tag(hash)
-                    .is_none_or(crate::package_profile::is_stock_item_definition)
+                    .is_none_or(crate::package::profile::is_stock_item_definition)
             })
             .filter_map(|hash| {
                 let category = catalog.plug_category(hash)?;
@@ -928,7 +936,7 @@ impl PackageAuthoringApp {
         let stock = |hash: u32| {
             catalog
                 .item_definition_tag(hash)
-                .is_none_or(crate::package_profile::is_stock_item_definition)
+                .is_none_or(crate::package::profile::is_stock_item_definition)
         };
         catalog
             .shared_weapon_ornaments()
@@ -1625,7 +1633,7 @@ impl PackageAuthoringApp {
             self.catalog
                 .as_ref()
                 .and_then(|catalog| catalog.item_definition_tag(hash))
-                .is_none_or(crate::package_profile::is_stock_item_definition)
+                .is_none_or(crate::package::profile::is_stock_item_definition)
         };
         let gear = [ItemKind::Armor,ItemKind::GhostShell,ItemKind::Ship,ItemKind::Sparrow].into_iter()
                     .flat_map(|kind|self.gear_donors_for(kind)).filter(|donor|stock(donor.hash))
@@ -2066,6 +2074,27 @@ fn save_imported_recipe(
     .ok_or_else(|| "The import was cancelled".into())
 }
 
+/// Saves the converted recipe at `prepared` into the recipe library at `library` the way a
+/// library reimport does, for callers without the importer window. A saved recipe of the same
+/// item keeps its edits over the new conversion. Returns the saved path with a note about edits
+/// that could not be reapplied.
+pub fn save_reimported(
+    library: &Path,
+    prepared: &Path,
+) -> Result<(PathBuf, Option<String>), String> {
+    let library = RecipeLibrary::open(library.to_path_buf())?;
+    let existing = library
+        .scan()?
+        .entries
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.identity_hash))
+        .collect::<Vec<_>>();
+    save_import(&library, &existing, prepared, &mut |_, _| {
+        Some(edits::Choice::Reapply)
+    })?
+    .ok_or_else(|| "The import was cancelled".into())
+}
+
 /// Saves the converted recipe at `recipe` into the library. A saved recipe of the same item
 /// that was edited since its own conversion follows `choose`, asked with the saved recipe and the
 /// one its conversion prepared: its edits are reapplied to the new conversion or the conversion
@@ -2088,6 +2117,12 @@ fn save_import(
         }
         if baseline.kind != recipe.kind {
             return Err("Reimport would change this recipe's item kind".into());
+        }
+        // A subclass conversion owns its whole ability layout, which has no socket edits to
+        // reapply, so it replaces the saved recipe and the earlier one stays in the backups.
+        if recipe.kind == ItemKind::Subclass {
+            library.save_existing_with_backup(path, &baseline, &recipe)?;
+            return Ok(Some((path.clone(), None)));
         }
         let pristine = edits::pristine(&baseline);
         let choice = match &pristine {
@@ -2140,6 +2175,11 @@ fn save_import(
         {
             updated.overrides.icon_edit.imported_image =
                 recipe.overrides.icon_edit.imported_image.clone();
+        }
+        // The source's large picture fills a saved icon that has none.
+        if updated.overrides.icon_edit.backdrop_image.is_none() {
+            updated.overrides.icon_edit.backdrop_image =
+                recipe.overrides.icon_edit.backdrop_image.clone();
         }
         // Source HUD artwork fills a saved entry that has none of its own.
         if updated.overrides.hud_icon.is_none() {

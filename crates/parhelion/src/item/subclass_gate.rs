@@ -18,7 +18,7 @@ pub(crate) fn expand_subclass_gates(
     }
     let catalog = sundial::investment::InvestmentCatalog::load(install_directory, false, |_| {})
         .map_err(|error| invalid(format!("Could not load the installed subclasses: {error}")))?;
-    let supers = catalog.subclass_super_entities(crate::package_profile::is_stock_item_definition);
+    let supers = catalog.subclass_super_entities(crate::package::profile::is_stock_item_definition);
     for weapon in weapons {
         let name = weapon.text.name.clone();
         for program in weapon

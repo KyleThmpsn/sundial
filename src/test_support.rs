@@ -1,3 +1,5 @@
+//! Fixtures the tests share: configured package paths, artifact folders and headless UI helpers.
+
 /// The clean Shadowkeep `packages` directory the opt-in tests read, from `SUNDIAL_STOCK_PACKAGES`.
 pub(crate) fn stock_packages() -> PathBuf {
     PathBuf::from(

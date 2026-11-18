@@ -17,6 +17,8 @@ pub(crate) struct Selection {
     vertical_offset: f32,
     labels: [Vec<u32>; 4],
     predicate: Vec<u8>,
+    /// The source exclusion mask.
+    mask: u64,
     code: Vec<u8>,
     constants: Vec<u8>,
 }
@@ -86,13 +88,28 @@ impl Selection {
                 && bound_scale > 0.0
                 && vertical_offset.is_finite()
                 && p.u64(helper + 0x18)? == 0x811C9DC5
-                && p.u64(helper + 0xC0)? == 0xA1
+                && matches!(p.u64(helper + 0xC0)?, 0xA1 | 0xA9)
                 && p.u32(helper + 0x398)? == 1
                 && p.u32(helper + 0x39C)? == 0x808020AE,
             "Source query has unqualified geometry, locator, exclusions or required components"
         );
-        let labels = label::destination(source, p, helper + 0xC8, registry)?
+        let mask = p.u64(helper + 0xC0)?;
+        let mut labels = label::destination(source, p, helper + 0xC8, registry)?
             .context("Source ally labels cannot hold in Shadowkeep")?;
+        // Original 5ACBA0 bit 3 excludes a candidate that 2A87E0 finds in none of the twenty
+        // player slots, so only player units remain. The native query has no slot test here.
+        // Shadowkeep's player units carry the object label `player`, which the label
+        // predicate then requires. This is an adaptation of the slot test.
+        if mask & 8 != 0 {
+            const PLAYER: u32 = 0x3FBE_3C2A;
+            ensure!(
+                label::held(registry)?.contains(&PLAYER),
+                "Shadowkeep lacks the player label a players-only query needs"
+            );
+            if !labels[1].contains(&PLAYER) {
+                labels[1].push(PLAYER);
+            }
+        }
         let child_labels = label::destination(source, p, helper + 0x1A0, registry)?
             .context("Source child labels cannot hold in Shadowkeep")?;
         ensure!(
@@ -145,6 +162,7 @@ impl Selection {
             vertical_offset,
             labels,
             predicate,
+            mask,
             code,
             constants: constants.concat(),
         })
@@ -224,7 +242,8 @@ impl Selection {
         Ok(json!({"class":0x808092B1u32,"kind":2,"radius":self.radius,
             "nested_provider":true,"bound_scale":self.bound_scale,"vertical_offset":self.vertical_offset,
             "labels":self.labels,"required_component":0x80803B70u32,
-            "scale_program":hex::encode(&self.code),"source_exclusion_mask":0xA1,
+            "scale_program":hex::encode(&self.code),"source_exclusion_mask":self.mask,
+            "players_only_as_label":self.mask & 8 != 0,
             "gameplay_verified":false}))
     }
 }

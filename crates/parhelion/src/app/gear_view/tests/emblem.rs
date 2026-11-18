@@ -75,7 +75,7 @@ pub(super) fn nameplate_layers(manager: &PackageManager, container: u32) -> [Opt
 pub(super) fn layer_texture(manager: &PackageManager, layer: u32) -> (TagHash, (u32, u32)) {
     let layer_tag = TagHash(layer);
     let payload = manager.read_tag(layer_tag).unwrap();
-    let header = crate::icon_edit::texture_reference_offsets(&payload, layer_tag).unwrap()[0].1;
+    let header = crate::icon::edit::texture_reference_offsets(&payload, layer_tag).unwrap()[0].1;
     let header_payload = manager.read_tag(header).unwrap();
     let side = |offset: usize| {
         u32::from(u16::from_le_bytes([

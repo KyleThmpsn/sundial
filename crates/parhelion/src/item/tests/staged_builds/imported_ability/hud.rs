@@ -3,7 +3,7 @@
 //! but require different artwork and colors. Follow actual controller, bank and bitmap references,
 //! preserve the original group and stock, and retain a repeatable package/readback artifact.
 use super::*;
-use crate::icon_edit::ImportedIcon;
+use crate::icon::edit::ImportedIcon;
 use std::collections::BTreeSet;
 use sundial::package_authoring::{ability_hud, ability_modifier};
 
@@ -19,12 +19,12 @@ fn prepared_choices_keep_independent_hud_artwork_and_colors() {
     fs::write(view.path().join("destiny2.exe"), []).unwrap();
     let catalog = crate::test_support::catalog(view.path()).unwrap();
     let base = catalog
-        .subclasses(crate::package_profile::is_stock_item_definition)
+        .subclasses(crate::package::profile::is_stock_item_definition)
         .into_iter()
         .find(|item| item.name == "Stormcaller")
         .unwrap();
     let fixture = catalog
-        .subclasses(crate::package_profile::is_stock_item_definition)
+        .subclasses(crate::package::profile::is_stock_item_definition)
         .into_iter()
         .find(|item| item.name == "Gunslinger")
         .unwrap();
@@ -191,7 +191,7 @@ fn prepared_choices_keep_independent_hud_artwork_and_colors() {
                 .all(|pixel| pixel == [255, 255, 255, alphas[index]])
         );
         fs::write(output.join(format!("glyph-{}.rgba", site.key)), &pixels).unwrap();
-        observations.push(json!({"entry":entry,"root":root,"glyph":site.key,"bank":bank,"rgba_sha256":sha(&pixels),"color":colors[index]}));
+        observations.push(json!({"entry":entry,"root":root,"glyph":site.key,"bank":bank,"rgba_sha256":sha256_hex(&pixels),"color":colors[index]}));
     }
     for row in source_table[48..].chunks_exact(112) {
         let key = read_u32(row, 0).unwrap();
@@ -214,6 +214,6 @@ fn prepared_choices_keep_independent_hud_artwork_and_colors() {
         "revision":std::env::var("SUNDIAL_TEST_REVISION").unwrap(),"native_build":"86657.20.08.23.1800.d2_rc___release",
         "manifest":build.manifest_path,"recipe":saved,"prepared_sha256":fingerprint,"readback":observations,
         "stock_unchanged":true,"prepared_unchanged":true,"installed":false,"gameplay_verified":false,
-        "executable_sha256":sha(&fs::read(std::env::current_exe().unwrap()).unwrap())
+        "executable_sha256":sha256_hex(&fs::read(std::env::current_exe().unwrap()).unwrap())
     })).unwrap()).unwrap();
 }

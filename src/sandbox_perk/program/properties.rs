@@ -118,12 +118,12 @@ pub struct KeyEvidence {
 #[must_use]
 pub fn key_purpose(hash: u32) -> Option<&'static str> {
     match hash {
-        // The Fundamentals reads this key to choose the weapon's element: its Void effect is
+        // The Fundamentals reads this key to choose the weapon's damage type: its Void effect is
         // gated on 0, its Arc effect on 1 and its Solar effect on 2. Sixteen stock exotic
         // perks write 1 to it when they enter their empowered state, among them Memento
         // Mori, Reservoir Burst, Release the Wolves and the Bad Juju catalyst.
         0xA43A_8C2E => Some(
-            "The weapon's alternate state. The Fundamentals reads it to pick the element: Void at 0, Arc at 1, Solar at 2. Sixteen stock exotic perks write 1 here for their empowered state and none writes 2, so Solar is only reachable by authoring a write. Writing this key on a weapon that carries The Fundamentals also changes that weapon's element.",
+            "The weapon's alternate state. The Fundamentals reads it to pick the damage type: Void at 0, Arc at 1, Solar at 2. Sixteen stock exotic perks write 1 here for their empowered state and none writes 2, so Solar is only reachable by authoring a write. Writing this key on a weapon that carries The Fundamentals also changes that weapon's damage type.",
         ),
         // The three ammo find chances split by ammo type, not weapon slot: Hand Cannon Ammo
         // Finder writes both the Primary and the Special key because Eriana's Vow is a

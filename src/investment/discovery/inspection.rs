@@ -7,8 +7,8 @@ use crate::{
     investment::schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
     package_runtime::{open_shadowkeep_packages, resolve_live_named_tag},
     runtime::{
-        WeaponRuntimeGraph, load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_graph_for_entity,
+        RuntimeGraph, load_runtime_entity_at_pattern_index_with_manager,
+        load_runtime_graph_for_entity,
     },
     sandbox_perk::{
         FinishedSandboxPerk, finished_sandbox_perk_at, load_sandbox_perk_runtime_action,
@@ -26,7 +26,7 @@ pub enum RuntimeTarget {
 
 #[derive(Debug)]
 pub enum LoadedDetails {
-    Weapon(WeaponRuntimeGraph),
+    Weapon(RuntimeGraph),
     Perk(Box<PerkDetails>),
     Dye(crate::dyes::WeaponDyeColors),
 }
@@ -49,7 +49,7 @@ pub struct PerkAction {
 pub struct PerkGraph {
     pub tag: u32,
     pub action_offsets: Vec<usize>,
-    pub decoded: Result<WeaponRuntimeGraph, String>,
+    pub decoded: Result<RuntimeGraph, String>,
 }
 
 pub fn load(install: &Path, target: RuntimeTarget) -> Result<LoadedDetails, String> {
@@ -64,8 +64,8 @@ pub fn load(install: &Path, target: RuntimeTarget) -> Result<LoadedDetails, Stri
         RuntimeTarget::Weapon(pattern_index) => {
             // Translation row indices are authoritative; several items may share a pattern.
             let source =
-                load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, pattern_index)?;
-            load_weapon_runtime_graph_for_entity(
+                load_runtime_entity_at_pattern_index_with_manager(&manager, pattern_index)?;
+            load_runtime_graph_for_entity(
                 &manager,
                 source.item_hash,
                 source.pattern_global_id_hash,
@@ -106,7 +106,7 @@ fn load_perk(manager: &PackageManager, index: u16) -> Result<PerkDetails, String
                 .map(|source| PerkGraph {
                     tag: source.tag.0,
                     action_offsets: source.action_offsets,
-                    decoded: load_weapon_runtime_graph_for_entity(
+                    decoded: load_runtime_graph_for_entity(
                         manager,
                         0,
                         0,

@@ -1,6 +1,6 @@
 //! Imported source cards and override labels, read without blocking the UI thread.
 use super::*;
-use crate::icon_edit::ImportedIcon;
+use crate::icon::edit::ImportedIcon;
 use std::sync::{Arc, Mutex};
 
 struct Presentation {

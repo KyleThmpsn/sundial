@@ -1,5 +1,5 @@
 //! Resolve an investment item through its authoritative sandbox-pattern selector.
-use super::{WeaponRuntimeEntitySource, load_weapon_runtime_entity_at_pattern_index_with_manager};
+use super::{RuntimeEntitySource, load_runtime_entity_at_pattern_index_with_manager};
 use crate::{
     investment::schema::{
         ITEM_DEFINITION_HASH_OFFSET, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE,
@@ -14,9 +14,9 @@ use tiger_pkg::TagHash;
 
 /// Load a weapon's runtime using the selector in its investment definition. The returned source
 /// keeps the selected pattern's identity, which can differ from the requested item hash.
-pub fn load(manager: &PackageManager, item_hash: u32) -> Result<WeaponRuntimeEntitySource, String> {
+pub fn load(manager: &PackageManager, item_hash: u32) -> Result<RuntimeEntitySource, String> {
     pattern_index(manager, item_hash)
-        .and_then(|index| load_weapon_runtime_entity_at_pattern_index_with_manager(manager, index))
+        .and_then(|index| load_runtime_entity_at_pattern_index_with_manager(manager, index))
         .map_err(|error| format!("Weapon item 0x{item_hash:08X}: {error}"))
 }
 

@@ -85,10 +85,10 @@ pub(super) fn own_bank(
     importer: sundial::package_authoring::mod_content::Importer,
     records: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<AuthoredLocalization> {
-    let host = crate::package_profile::host();
+    let host = crate::package::profile::host();
     let allocator = AppendedTagAllocator::records(host.first);
     let first = records.len();
-    if crate::appended_tags::records_end().is_some_and(|end| end > host.first + first) {
+    if crate::package::appended_tags::records_end().is_some_and(|end| end > host.first + first) {
         return Err(validation(
             "Records were assigned past the build's records before its string bank",
         ));
@@ -126,7 +126,7 @@ pub(super) fn own_bank(
     let mut index = std::mem::take(&mut localization.index);
     let (count, array, rows, class) = array_at(&index, 8)?;
     if class != LOCALIZED_INDEX_ROW_CLASS
-        || count != crate::package_profile::localization_table()
+        || count != crate::package::profile::localization_table()
         || rows + count * LOCALIZED_INDEX_ROW_SIZE != index.len()
     {
         return Err(invalid(

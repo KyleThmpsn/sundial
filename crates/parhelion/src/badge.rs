@@ -1,3 +1,5 @@
+//! Collections badges for authored items: the Project Sunrise badge and each importer's own, with
+//! their rows, strings and icons.
 use crate::progression::begin_array_block;
 use crate::progression::presentation::*;
 mod custom;
@@ -122,7 +124,7 @@ impl Identity {
 
     /// The badge of the family member the build is compiling.
     pub(crate) fn current() -> Self {
-        crate::package_profile::member().map_or(Self::SUNRISE, Self::importer)
+        crate::package::profile::member().map_or(Self::SUNRISE, Self::importer)
     }
 
     /// The badge of `importer`'s items, in its own mod or in one mod for every source.
@@ -149,7 +151,7 @@ impl Identity {
 /// The name and description of the badge the build is compiling: the runtime's for the main mod,
 /// and an importer's source game for an importer.
 pub(crate) fn text(branding: crate::branding::Branding) -> (&'static str, &'static str) {
-    match crate::package_profile::member() {
+    match crate::package::profile::member() {
         None => (branding.name(), branding.description()),
         Some(importer) => source_text(importer),
     }
@@ -234,6 +236,38 @@ pub struct SunriseProjectMetadata {
     pub watermarked_icon_containers: Vec<TagHash>,
 }
 
+/// Where an item goes among a badge's entries: by category in the order stock badges list theirs,
+/// then from Exotic down to Common. Items that tie keep the build's order.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct Rank {
+    category: u8,
+    rarity: std::cmp::Reverse<u8>,
+}
+
+impl Rank {
+    /// `rarity` is the item's native rarity byte, 1 for Common through 5 for Exotic.
+    pub(crate) const fn of(kind: crate::ItemKind, rarity: u8) -> Self {
+        use crate::ItemKind;
+        let category = match kind {
+            ItemKind::Weapon => 0,
+            ItemKind::Armor => 1,
+            // Worn with armor. No stock badge holds one.
+            ItemKind::Artifact => 2,
+            ItemKind::GhostShell => 3,
+            ItemKind::Sparrow => 4,
+            ItemKind::Ship => 5,
+            ItemKind::Shader => 6,
+            ItemKind::Emblem => 7,
+            // A mod with an entry is an imported ornament. A subclass has none.
+            ItemKind::Mod | ItemKind::Subclass => 8,
+        };
+        Self {
+            category,
+            rarity: std::cmp::Reverse(rarity),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SunriseBadgePlacement {
     pub pages: crate::collection::CollectionPages,
@@ -243,6 +277,8 @@ pub(crate) struct SunriseBadgePlacement {
     pub acquisition: crate::progression::Acquisition,
     /// Where the entry goes among the stock entries of the pages it joins.
     pub position: Option<crate::collection::Position>,
+    /// Where the entry goes among the entries of the badges it joins.
+    pub rank: Rank,
 }
 
 pub(crate) struct SunriseBadgeGraph {
@@ -346,7 +382,11 @@ fn author_graph(
         badge_icon_index,
         placements,
     } = input;
-    let first = placements
+    // The class leaves list their entries by rank. The objective and the stock pages keep the
+    // build's order.
+    let mut ranked = placements.iter().collect::<Vec<_>>();
+    ranked.sort_by_key(|placement| placement.rank);
+    let first = *ranked
         .first()
         .ok_or_else(|| invalid("Project Sunrise requires at least one authored collectible"))?;
     let acquisitions = placements
@@ -364,7 +404,8 @@ fn author_graph(
     let (records, record_strings) =
         append_records(stock_records, stock_record_strings, objective_index, layout)?;
     let mut nodes = append_nodes(stock_nodes, first.authored_collectible_index, layout)?;
-    for placement in placements.iter().skip(1) {
+    // Each entry goes in right after the first, so the last ranked goes in first.
+    for placement in ranked.iter().skip(1).rev() {
         for leaf in [
             (layout.node_start + 1),
             (layout.node_start + 2),
@@ -437,9 +478,9 @@ fn author_graph(
     Ok(graph)
 }
 
-/// The badges a member's build adds for `weapons`: its own badge when any of them has a
-/// Collections entry, one for each custom badge name those items use, and in a build without mod
-/// folders one for each importer whose items join a source badge (`append_source_badges`).
+/// The badges a member's build adds for `weapons`: its own badge when any of them joins it, one
+/// for each custom badge name those items use, and in a build without mod folders one for each
+/// importer whose items join a source badge (`append_source_badges`).
 pub(crate) fn count<'a>(
     weapons: impl IntoIterator<Item = &'a crate::item::WeaponCloneSpec>,
 ) -> usize {
@@ -459,7 +500,8 @@ pub(crate) fn count<'a>(
         .iter()
         .filter_map(|weapon| source_badge(weapon))
         .collect::<BTreeSet<_>>();
-    1 + custom.len() + sources.len()
+    let own = collected.iter().any(|weapon| joins_own_badge(weapon));
+    usize::from(own) + custom.len() + sources.len()
 }
 
 /// Extends the stock badge-root objective with an acquired-all term for each badge in `groups`

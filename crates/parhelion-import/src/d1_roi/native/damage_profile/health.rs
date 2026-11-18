@@ -55,5 +55,6 @@ pub(super) fn translate(
         unqualified: [0, 0],
         absent: Vec::new(),
         silent: Vec::new(),
+        unnamed: None,
     })
 }

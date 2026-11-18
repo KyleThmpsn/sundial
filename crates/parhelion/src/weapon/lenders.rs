@@ -7,7 +7,7 @@ use crate::{AuthoringResult, error::invalid};
 use std::collections::BTreeMap;
 use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::entity::weapon_component_bindings;
-use sundial::package_authoring::runtime::load_weapon_runtime_entities_at_pattern_indices_with_manager;
+use sundial::package_authoring::runtime::load_runtime_entities_at_pattern_indices_with_manager;
 
 const CONTENT: u32 = 0x5F0D_D954;
 const ATTACHMENT: u32 = 0xD3A5_500E;
@@ -74,7 +74,7 @@ pub(crate) fn index(
         .iter()
         .map(|(_, pattern)| *pattern)
         .collect::<Vec<_>>();
-    let sources = load_weapon_runtime_entities_at_pattern_indices_with_manager(manager, &patterns)
+    let sources = load_runtime_entities_at_pattern_indices_with_manager(manager, &patterns)
         .map_err(invalid)?;
     let owner =
         |entity: &[u8], binding| match weapon_component_bindings(entity, binding).ok().as_deref() {

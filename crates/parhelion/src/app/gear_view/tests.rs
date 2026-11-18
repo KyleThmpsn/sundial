@@ -72,8 +72,8 @@ use sundial::package_authoring::investment_schema::{
     GLOBALS_ITEM_DENSE_PRESENTATION_TABLE_SLOT, investment_globals_table_tag,
 };
 use sundial::package_authoring::runtime::{
-    WeaponRuntimeFieldSource, WeaponRuntimeValue, WeaponRuntimeValueKind,
-    WeaponRuntimeValueOverride, load_weapon_runtime_graph_for_entity, resolve_weapon_runtime_field,
+    RuntimeFieldSource, RuntimeValue, RuntimeValueKind, RuntimeValueOverride,
+    load_runtime_graph_for_entity, resolve_runtime_field,
 };
 use sundial::package_authoring::sandbox_perk::load_sandbox_perk_runtime_action;
 use sundial::package_authoring::{
@@ -1003,7 +1003,8 @@ fn author(
         | ItemKind::Shader
         | ItemKind::Subclass
         | ItemKind::Emblem
-        | ItemKind::Mod => {
+        | ItemKind::Mod
+        | ItemKind::Artifact => {
             unreachable!()
         }
     };
@@ -1086,8 +1087,8 @@ fn author(
         let sets = app.gear_plug_sets(base).unwrap();
         let catalog = app.catalog.as_ref().unwrap();
         let energy = energy_socket(catalog, &app.recipe, &donor, &sets).expect("energy socket");
-        let (element, _) = energy.current.expect("a current energy plug");
-        let plug = energy.plugs[&(element, 10)];
+        let (energy_type, _) = energy.current.expect("a current energy plug");
+        let plug = energy.plugs[&(energy_type, 10)];
         set_socket_plug(&mut app.recipe, &donor, &donor.sockets[energy.index], plug);
         assert_eq!(
             socket_choices(app, &donor, energy.index),
@@ -1195,7 +1196,7 @@ fn package_view(packages: &Path, artifacts: &[(PathBuf, &str)], view: &Path) {
             .path()
             .extension()
             .is_some_and(|extension| extension == "pkg")
-            && !crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+            && !crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
                 .iter()
                 .any(|canonical| name == *canonical)
             && !artifacts.iter().any(|(_, file_name)| name == **file_name)
@@ -1479,7 +1480,7 @@ fn every_class_subclasses_remove_the_native_equip_requirement() {
     let artifacts = crate::test_support::artifact_dir("gear").join("class-requirements");
     fs::create_dir_all(&artifacts).unwrap();
     let stock = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
-    let bases = stock.subclasses(crate::package_profile::is_stock_item_definition);
+    let bases = stock.subclasses(crate::package::profile::is_stock_item_definition);
     let recipes = bases
         .iter()
         .flat_map(|base| {

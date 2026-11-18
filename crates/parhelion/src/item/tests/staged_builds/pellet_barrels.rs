@@ -16,8 +16,8 @@ use super::*;
 use sundial::package_authoring::{
     entity::{WEAPON_BARREL_COMPONENT_KEY as BARREL, WEAPON_STAT_TRANSLATOR_COMPONENT_KEY},
     runtime::{
-        load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_entity_with_manager, load_weapon_runtime_graph_for_entity,
+        load_runtime_entity_at_pattern_index_with_manager, load_runtime_entity_with_manager,
+        load_runtime_graph_for_entity,
         modifiers::{BARREL_BULLETS_PER_SHOT, BARREL_COMPONENT},
     },
     sandbox_perk::entity::projectile::parameters::{self, Kind},
@@ -374,7 +374,7 @@ fn composed_pellet_barrels_and_final_projectiles_survive_packaging() {
     let fusion = named("Cartesian Coordinate");
     let rocket = named("Bellowing Giant");
     let runtime = |donor: &sundial::investment::WeaponDonorSummary| {
-        load_weapon_runtime_entity_at_pattern_index_with_manager(
+        load_runtime_entity_at_pattern_index_with_manager(
             &stock,
             donor.weapon_pattern_index.unwrap(),
         )
@@ -438,8 +438,7 @@ fn composed_pellet_barrels_and_final_projectiles_survive_packaging() {
     let wolves_capacity = pool(&stock, wolves_graph).0;
     assert!(wolves_capacity >= expected_spread.0 as usize);
     let graph_payload = stock.read_tag(TagHash(thorn_graph)).unwrap();
-    let graph =
-        load_weapon_runtime_graph_for_entity(&stock, 0, 0, thorn_graph, &graph_payload).unwrap();
+    let graph = load_runtime_graph_for_entity(&stock, 0, 0, thorn_graph, &graph_payload).unwrap();
     let mut speed = Vec::new();
     parameters::discover(&graph)
         .iter()
@@ -482,15 +481,16 @@ fn composed_pellet_barrels_and_final_projectiles_survive_packaging() {
     let binding = weapon_component_bindings(&hand_runtime.payload, BARREL).unwrap()[0];
     let owner = stock.read_tag(TagHash(binding.owner_tag)).unwrap();
     let slot = read_u64(&owner, binding.resource_offset as usize + 8).unwrap() as usize + 0xE60;
-    cleared.overrides.runtime_resource_patches.push(
-        crate::recipe::WeaponRuntimeResourcePatchRecipe {
+    cleared
+        .overrides
+        .runtime_resource_patches
+        .push(crate::recipe::RuntimeResourcePatchRecipe {
             binding_hash: BARREL.into(),
             resource_index: 0,
             offset: (slot - binding.resource_offset as usize) as u32,
             bytes: "00 00 00 00 00 00 00 00".into(),
             graph_values: Vec::new(),
-        },
-    );
+        });
     let recipes = vec![
         edited,
         make("sufficient", hand, shotgun, Some("lord-of-wolves-graph")),
@@ -556,7 +556,7 @@ fn composed_pellet_barrels_and_final_projectiles_survive_packaging() {
     let mut readback = Vec::new();
     for (i, recipe) in recipes.iter().enumerate() {
         let item = recipe.identity.item_hash.parse_u32().unwrap();
-        let authored = load_weapon_runtime_entity_with_manager(&manager, item).unwrap();
+        let authored = load_runtime_entity_with_manager(&manager, item).unwrap();
         let actual = spread(&manager, &authored.payload);
         let rotation = rotation_byte(&manager, &authored.payload);
         if i == 6 {

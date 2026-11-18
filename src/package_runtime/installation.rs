@@ -80,7 +80,7 @@ impl RuntimeInspection {
             let dawn = identity.as_ref().is_some_and(|(name, _)| *name == "Dawn");
             // Builds that bundle account schema 3 or later read the trace level.
             let trace_logging = !dawn && dll.as_ref().ok().and_then(|bytes| embedded_account_schema(bytes))
-                .is_some_and(crate::persistence::sqlite_account::Schema::has_appearance);
+                .is_some_and(crate::persistence::sunrise_account::Schema::has_appearance);
             // Each runtime reads its settings and account from its own named folder.
             let settings_path = directory.join(runtime_folder(dawn)).join("settings.json");
             let settings = fs::read(&settings_path);
@@ -183,13 +183,13 @@ fn embedded_defaults(bytes: &[u8]) -> Option<Value> {
     .ok()
 }
 
-fn embedded_account_schema(bytes: &[u8]) -> Option<crate::persistence::sqlite_account::Schema> {
+fn embedded_account_schema(bytes: &[u8]) -> Option<crate::persistence::sunrise_account::Schema> {
     let image = pelite::PeFile::from_bytes(bytes).ok()?;
     let resources = image.resources().ok()?;
     let sql = resources
         .find_resource(&[Name::Id(10), Name::Id(106)])
         .ok()?;
-    crate::persistence::sqlite_account::Schema::from_sql(std::str::from_utf8(sql).ok()?).ok()
+    crate::persistence::sunrise_account::Schema::from_sql(std::str::from_utf8(sql).ok()?).ok()
 }
 
 fn settings_document(bytes: &[u8]) -> Option<Value> {

@@ -15,7 +15,7 @@
 //! guessed.
 use std::collections::BTreeMap;
 
-use crate::runtime::{WeaponRuntimeField, WeaponRuntimeGraph, WeaponRuntimeValue, modifiers};
+use crate::runtime::{RuntimeField, RuntimeGraph, RuntimeValue, modifiers};
 
 /// One modifier record and the fields it is read from.
 #[derive(Clone, Debug, PartialEq)]
@@ -23,12 +23,12 @@ pub struct Modifier {
     pub owner_tag: u32,
     /// Where the record starts in its owner.
     pub owner_offset: u32,
-    pub amount: WeaponRuntimeField,
-    pub operation: WeaponRuntimeField,
+    pub amount: RuntimeField,
+    pub operation: RuntimeField,
     /// The ability slot, which only the Abilities interface reads.
-    pub ability: Option<WeaponRuntimeField>,
-    pub input: WeaponRuntimeField,
-    pub component: WeaponRuntimeField,
+    pub ability: Option<RuntimeField>,
+    pub input: RuntimeField,
+    pub component: RuntimeField,
 }
 
 impl Modifier {
@@ -36,7 +36,7 @@ impl Modifier {
     #[must_use]
     pub fn stock(&self) -> f32 {
         match self.amount.value {
-            WeaponRuntimeValue::Float32Bits(bits) => f32::from_bits(bits),
+            RuntimeValue::Float32Bits(bits) => f32::from_bits(bits),
             _ => f32::NAN,
         }
     }
@@ -80,10 +80,10 @@ impl Modifier {
     }
 }
 
-fn number(value: &WeaponRuntimeValue) -> Option<i64> {
+fn number(value: &RuntimeValue) -> Option<i64> {
     match value {
-        WeaponRuntimeValue::Signed(value) => Some(*value),
-        WeaponRuntimeValue::Unsigned(value) => i64::try_from(*value).ok(),
+        RuntimeValue::Signed(value) => Some(*value),
+        RuntimeValue::Unsigned(value) => i64::try_from(*value).ok(),
         _ => None,
     }
 }
@@ -92,8 +92,8 @@ fn number(value: &WeaponRuntimeValue) -> Option<i64> {
 /// decode, by owner and then by where each starts. A record reached through two roots is
 /// read once, from the first.
 #[must_use]
-pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<Modifier> {
-    let mut records = BTreeMap::<(u32, u32), [Option<&WeaponRuntimeField>; 5]>::new();
+pub fn discover(graph: &RuntimeGraph) -> Vec<Modifier> {
+    let mut records = BTreeMap::<(u32, u32), [Option<&RuntimeField>; 5]>::new();
     let roots = graph
         .resources
         .iter()
@@ -143,7 +143,7 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<Modifier> {
             else {
                 return None;
             };
-            if !matches!(amount.value, WeaponRuntimeValue::Float32Bits(_)) {
+            if !matches!(amount.value, RuntimeValue::Float32Bits(_)) {
                 return None;
             }
             for field in [operation, input, component] {

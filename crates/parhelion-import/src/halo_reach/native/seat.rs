@@ -1,5 +1,6 @@
 //! Source driver attachments bound to their translated skeleton frames.
 use super::*;
+use crate::math::product;
 use crate::tiger::entity;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -28,15 +29,6 @@ impl DriverPose {
             rig::quaternion(product(source.1, rotation))?,
         ))
     }
-}
-
-fn product(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    [
-        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
-        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
-        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
-        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
-    ]
 }
 
 /// The source seats apart from the driver's that ride as seated children, in row order.

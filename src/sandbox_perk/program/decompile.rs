@@ -260,7 +260,7 @@ fn trigger_of(
         }
         Probability::Literal(_) => {
             return Err(Unsupported(
-                "The activation probability is outside the authored range.".into(),
+                "The activation chance is outside the authored range.".into(),
             ));
         }
         Probability::NativeStat(_) if layout::condition_layout(condition.kind).is_none() => {

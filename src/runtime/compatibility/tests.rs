@@ -3,8 +3,8 @@ use super::*;
 const INSTANCE: u32 = 0x8080_1001;
 const DEFINITION: u32 = 0x8080_2001;
 
-fn fixture() -> (Vec<u8>, WeaponRuntimeBinding, RuntimeRegistry) {
-    let binding = WeaponRuntimeBinding {
+fn fixture() -> (Vec<u8>, RuntimeBinding, RuntimeRegistry) {
+    let binding = RuntimeBinding {
         binding_hash: WEAPON_TRIGGER_COMPONENT_KEY,
         binding_label: "Trigger".into(),
         resource_index: 0,
@@ -60,7 +60,7 @@ fn absent_native_definition_is_distinct_from_an_unknown_declared_schema() {
         without_definition[0x44..0x48].copy_from_slice(&absent.to_le_bytes());
         assert_eq!(
             native_resource_shape(&without_definition, &binding, &registry),
-            Ok(WeaponRuntimeResourceShape {
+            Ok(RuntimeResourceShape {
                 instance_schema: INSTANCE,
                 definition_schema: None,
             })

@@ -43,25 +43,24 @@ const DEAD_RESOURCE: u32 = 0x8ABC_0001;
 #[test]
 fn draft_keeps_component_overrides_and_refuses_to_merge_distinct_edits() {
     use crate::runtime::{
-        WeaponRuntimeFieldLocator, WeaponRuntimeRootKind, WeaponRuntimeValue,
-        WeaponRuntimeValueOverride,
+        RuntimeFieldLocator, RuntimeRootKind, RuntimeValue, RuntimeValueOverride,
     };
     let first = Asset {
         graph: 0x815282E1,
         path: "content/projectile.pattern.tft".into(),
-        values: vec![WeaponRuntimeValueOverride {
-            locator: WeaponRuntimeFieldLocator {
+        values: vec![RuntimeValueOverride {
+            locator: RuntimeFieldLocator {
                 graph_tag: Some(0x815282E1.into()),
                 binding_hash: 1.into(),
                 resource_index: 0,
-                root: WeaponRuntimeRootKind::ComponentInstance,
+                root: RuntimeRootKind::ComponentInstance,
                 root_schema: 0x80803B73.into(),
                 path: vec![],
                 type_handle: 2.into(),
                 value_offset: 0x144,
                 byte_size: 8,
             },
-            value: WeaponRuntimeValue::Bytes(
+            value: RuntimeValue::Bytes(
                 [0x7FC12345_u32.to_le_bytes(), 0x80000000_u32.to_le_bytes()].concat(),
             ),
         }],

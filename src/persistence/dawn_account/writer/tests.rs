@@ -5,6 +5,7 @@ use sundial_account::{
     DefinitionHash, KeyBindingSlot, ProfileItem, ProfileItemCommand,
 };
 
+mod per_item;
 mod profile_stacks;
 mod schema;
 

@@ -156,7 +156,6 @@ fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions(
             }],
             unlock_flag_definitions: vec![flag.clone()],
             unlock_value_definitions: vec![value.clone(), reader_named_value.clone()],
-            progression_package_error: Some("Objective definitions: unavailable".to_owned()),
             ..Default::default()
         },
         PathBuf::new(),
@@ -168,10 +167,6 @@ fn catalog_resolves_state_slots_and_family5_indices_through_package_definitions(
     assert_eq!(catalog.unlock_value_for_state(1, 58), Some((0, &value)));
     assert!(catalog.unlock_value_for_state(2, 58).is_none());
     assert_eq!(catalog.unlock_value_definition(0), Some(&value));
-    assert_eq!(
-        catalog.progression_package_error(),
-        Some("Objective definitions: unavailable")
-    );
     assert_eq!(
         catalog
             .objective_for_unlock_value(0)

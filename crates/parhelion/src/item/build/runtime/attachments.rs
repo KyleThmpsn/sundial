@@ -19,7 +19,7 @@ pub(super) fn load(
     )
 }
 
-fn load_group(
+pub(super) fn load_group(
     directory: &Path,
     fingerprint: &str,
     symbol: &str,
@@ -79,7 +79,7 @@ pub(super) fn author_groups(
         }
         let restore = super::Restore::take(assets, ordinal);
         let before = (layers.clone(), shared.clone(), statuses.len());
-        let allocation = crate::appended_tags::checkpoint();
+        let allocation = crate::package::appended_tags::checkpoint();
         match item_groups(
             manager,
             (donor, ordinal),

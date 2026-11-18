@@ -227,7 +227,7 @@ const ROUNDS_LOADED: EventKey = EventKey {
 const PERK_ACTIVE: EventKey = EventKey {
     hash: 0xA43A_8C2E,
     name: "Perk Active",
-    evidence: "The engine name perk_active. The Fundamentals, Arc Conductor and Revolution use this shared property for different weapon states. Its values belong to the receiving program, not a universal element or alternate-fire enumeration.",
+    evidence: "The engine name perk_active. The Fundamentals, Arc Conductor and Revolution use this shared property for different weapon states. Its values belong to the receiving program, not a universal damage type or alternate-fire enumeration.",
 };
 
 const WEAPON_EQUIPPED_STATE: EventKey = EventKey {
@@ -469,7 +469,7 @@ const HIGH_CALIBER_ROUNDS: EventKey = EventKey {
 const TESSERACT: EventKey = EventKey {
     hash: 0x5A5B_A104,
     name: "Tesseract",
-    evidence: "Written and counted by Tesseract (\"launch a heavy Blink attack\") and by its catalyst (\"Reduces the activation time of Tesseract\").",
+    evidence: "Written and counted by Tesseract (\"launch a heavy Blink attack\") and by its catalyst (\"Reduces the activation time of Tesseract\"). As a weapon key it selects the two attack rows that sword owner 80FEFA06 keys to it, the first row of one light and one heavy list.",
 };
 const AGGRESSIVE_FRAME: EventKey = EventKey {
     hash: 0xBE35_746F,
@@ -841,7 +841,7 @@ const EMPOWERED_ALLY: EventKey = EventKey {
 const FOCUSED_FIRE_TRIGGERED: EventKey = EventKey {
     hash: 0x5913_75D1,
     name: "Focused Fire Triggered",
-    evidence: "The engine name focused_fire_triggered. Published only by the undescribed perk #29 on a precision hit, as it attaches Precision Hit Buff.",
+    evidence: "The engine name focused_fire_triggered. Published only by the undescribed perk #29 on a precision hit, as it attaches Precision Hit Boost.",
 };
 const SHADOWSHOT_TETHER: EventKey = EventKey {
     hash: 0xD402_EF01,
@@ -906,12 +906,12 @@ const PLAYER_CONTEXT: EventKey = EventKey {
 const HEAVY_GUARD: EventKey = EventKey {
     hash: 0xA8F9_A54E,
     name: "Heavy Guard",
-    evidence: "Counted only by Heavy Guard (\"Sword Guard has high overall defenses\").",
+    evidence: "Given to the weapon only by Heavy Guard (\"Sword Guard has high overall defenses\"). Guard owner 81A6B532 of the stock sword entity is keyed to it, and the open guard 81A6B52F excludes it.",
 };
 const SWORDMASTERS_GUARD: EventKey = EventKey {
     hash: 0x530A_BDAB,
     name: "Swordmaster's Guard",
-    evidence: "Counted only by Swordmaster's Guard (\"Sword Guard has low overall defenses, but increases charge rate\").",
+    evidence: "Given to the weapon only by Swordmaster's Guard (\"Sword Guard has low overall defenses, but increases charge rate\"). Guard owner 81A6B531 of the stock sword entity is keyed to it, and the open guard 81A6B52F excludes it.",
 };
 const CHARGED_FIRE: EventKey = EventKey {
     hash: 0x9510_8C87,
@@ -1107,7 +1107,7 @@ const FIREFLY: EventKey = EventKey {
 const SWORD_GUARD: EventKey = EventKey {
     hash: 0xB0D2_C151,
     name: "Sword Guard",
-    evidence: "Counted by Burst Guard, Enduring Guard and Heavy Guard, every one a Sword Guard perk.",
+    evidence: "Given to the weapon by Burst Guard, Enduring Guard and Heavy Guard, every one a Sword Guard perk. Guard owner 81A6B530 of the stock sword entity is keyed to it, and the open guard 81A6B52F excludes it.",
 };
 
 const STATE_KEYS: &[EventKey] = &[

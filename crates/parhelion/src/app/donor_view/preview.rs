@@ -87,6 +87,25 @@ pub(in crate::app) fn loadout(
 }
 
 impl PackageAuthoringApp {
+    /// The model the icon editor can render as artwork: a weapon's stock model with the recipe's
+    /// ornament and shader, as the appearance preview draws it. An imported model has artwork of
+    /// its own.
+    pub(in crate::app) fn icon_model(&self) -> Option<crate::icon::edit::IconModel> {
+        if !self.recipe.kind.is_weapon() {
+            return None;
+        }
+        #[cfg(feature = "d2-model-importer")]
+        if self.recipe.overrides.imported_graph.is_some() {
+            return None;
+        }
+        let catalog = self.catalog.as_ref()?;
+        let loadout = loadout(catalog, &self.recipe)?;
+        Some(crate::icon::edit::IconModel {
+            packages: self.packages.clone(),
+            appearance: catalog.preview_appearance(&loadout),
+        })
+    }
+
     pub(in crate::app) fn follow_appearance_preview(&self, ctx: &egui::Context) {
         let inline = egui::Id::new("weapon-preview");
         if !model_preview::weapon_is_open(ctx) && !model_preview::popped_out(ctx, inline) {

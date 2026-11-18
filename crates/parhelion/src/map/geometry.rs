@@ -16,7 +16,7 @@ use tiger_pkg::TagHash;
 use crate::{
     AuthoringResult, NewTagSpec, NewTagStorageMode,
     error::invalid,
-    extend::{NewTagReference, NewTagReferenceOverride},
+    package::extend::{NewTagReference, NewTagReferenceOverride},
     shared_tag_dependency_index::native::Companions,
     tag_payload::{read_u32, write_u32},
 };
@@ -884,7 +884,7 @@ impl Geometry {
             |plan| std::borrow::Cow::Borrowed(plan.probes.as_slice()),
         );
         let base = self.chain.entries();
-        if base > crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+        if base > crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
             return Err(invalid("The map root chain exceeds one package"));
         }
         let mut symbols = BTreeMap::new();

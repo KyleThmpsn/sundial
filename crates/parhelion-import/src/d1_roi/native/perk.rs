@@ -10,12 +10,14 @@ use sundial::package_authoring::sandbox_perk::program::{
 };
 mod animation;
 mod armor;
+mod assignment;
 mod audio;
 mod condition;
 mod counterpart;
 mod damage;
 pub(crate) mod direct;
 mod energy;
+mod event;
 mod feedback;
 mod filter;
 mod grant;
@@ -39,11 +41,16 @@ mod weighted;
 pub(super) enum Host {
     Weapon,
     Armor,
+    Artifact,
 }
 
 impl Host {
+    fn equipped(self) -> bool {
+        self != Self::Weapon
+    }
+
     fn validate_variant(self, step: &Value, record: &Payload) -> Result<()> {
-        if self == Self::Armor {
+        if self.equipped() {
             ensure!(
                 step["appearance_choices"].as_u64() == Some(0),
                 "Appearance choices use the separate ornament route"
@@ -66,7 +73,7 @@ impl Host {
         tag: u32,
         ancestors: &mut Vec<u32>,
     ) -> Result<()> {
-        if self != Self::Armor {
+        if !self.equipped() {
             return Ok(());
         }
         ensure!(
@@ -85,7 +92,7 @@ impl Host {
         tag: u32,
         ancestors: &mut Vec<u32>,
     ) -> Result<()> {
-        if self == Self::Armor {
+        if self.equipped() {
             let data = source.read(tag)?;
             for row in data.array(0x38, 8, None)? {
                 let at = data.pointer(row)?;
@@ -130,6 +137,13 @@ impl Host {
                         data.u8(at + 0x94)? == 0,
                         "Source armor damage modifier requires the owner gate disabled"
                     ),
+                    // Source `71BB50` resolves the event's other combatant and the owning player
+                    // (`6C88E0`), neither through a weapon.
+                    38 => {}
+                    // Event label and numeric effects run from the event callback alone and
+                    // test only the event's labels and damage filter. Their translation
+                    // refuses stat-driven rows, the one part that reads the owner.
+                    32 | 33 => {}
                     kind => anyhow::bail!("Source effect {kind} needs an armor host contract"),
                 }
             }
@@ -175,13 +189,17 @@ fn adjustments(
             report.push(json!({"source_hash":hash,"source_index":row["index"],"inert":true}));
             continue;
         }
-        if host == Host::Armor
+        if host.equipped()
             && let Some(budget) = budgets.get(&hash)
             && bytes.0.len() == 16
             && bytes.bytes::<2>(14)? == [0, 0]
         {
             let (low, high, selector) = (bytes.f32(4)?, bytes.f32(8)?, bytes.u8(13)?);
             if selector != 0xFF {
+                ensure!(
+                    host != Host::Artifact,
+                    "Source artifact random stat rolls require instance-stat translation"
+                );
                 // The roll interpolates `[low, high]` by one of the instance's random bytes. The
                 // native item's own base stats are its roll, so a second one would double them.
                 report.push(json!({"source_hash":hash,"source_index":row["index"],
@@ -220,7 +238,7 @@ fn adjustments(
         // Armor/Resilience keeps its investment identity across these builds. The
         // plain Armor policy treats each source unit as one native tier, expressed
         // as ten points. It does not recreate D1's health curve or armor roll.
-        let scale = if host == Host::Armor {
+        let scale = if host.equipped() {
             ensure!(
                 hash == 0x1769_266F,
                 "Source armor stat {hash:08X} requires a native unit and scaling contract"
@@ -264,6 +282,8 @@ struct Lowered {
     stock_plugs: Vec<String>,
     grants: Vec<Value>,
     audio_cues: BTreeSet<u32>,
+    /// Source actions left out of the choice, each with its reason.
+    omitted_actions: Vec<Value>,
 }
 
 /// Source talent perks, by identity, that run a stock Shadowkeep weapon perk instead of their
@@ -450,6 +470,8 @@ fn effect(
             })
         }
         (0x808031C0, 34) => damage::read(source, data, at, native),
+        (0x80802BAB, 32) => event::labels(source, data, at, native),
+        (0x808025D8, 33) => event::scale(source, data, at, native),
         (0x80802AC6, 5) => {
             ensure!(
                 data.u8(at + 1)? == 1 && data.u8(at + 2)? <= 3,
@@ -591,6 +613,31 @@ fn effect(
                 },
             })
         }
+        // Source kind 38 (`71BB50`) and native kind 44 (`1083060`) are the same routine. Both take
+        // target selector 3, the event's other combatant, and the owning player's team. With no
+        // deadline on the target's component they store that team as an override for `+04`
+        // seconds (`531A40` and `C70B50`). With one set, a repeat at least `+08` seconds after
+        // its start clears the override (`531B10` and `C68330`). Both apply the selection through
+        // one helper (`531880` and `C719D0`), and neither has a removal callback. The twelve-byte
+        // record carries with the kind renumbered. No stock action uses native kind 44, so what
+        // a combatant on the player's team does in Shadowkeep is unobserved.
+        (0x80801101, 38) => {
+            let (seconds, repeat) = (data.f32(at + 4)?, data.f32(at + 8)?);
+            ensure!(
+                data.bytes::<3>(at + 1)? == [0; 3]
+                    && seconds.is_finite()
+                    && seconds > 0.0
+                    && seconds <= 3600.0
+                    && repeat.is_finite()
+                    && (0.0..=3600.0).contains(&repeat),
+                "Source team assignment has retained state or unbounded times"
+            );
+            let mut bytes = vec![44, 0, 0, 0];
+            bytes.extend_from_slice(&data.bytes::<8>(at + 4)?);
+            Ok(Action::Native {
+                node: NativeNode { kind: 44, bytes },
+            })
+        }
         // Source kind 26 holds native kind 30's retained and operation bytes.
         // Padding before the next object is not part of this three-byte record.
         // Tracking `[1A 01 01]` equals stock Tracking Module `[1E 01 01]`.
@@ -598,6 +645,26 @@ fn effect(
             ensure!(data.u8(at + 1)? == 1, "Unknown source weapon count fields");
             Ok(Action::WeaponReferenceCount {
                 selector: data.u8(at + 2)?,
+            })
+        }
+        // Source effect 35 and native kind 41 add a name to a weapon's key set: the retained
+        // flag at `+1`, the current-weapon flag at `+2`, the inventory slot mask at `+3` and
+        // the name at `+4`. Their activation, writer and removal match step for step. A name
+        // changes behavior only through the sword owner that reads it, which `lower_step`
+        // requires of the weapon's own translated attacks.
+        (0x8080321D, 35) => {
+            ensure!(
+                data.u8(at + 1)? == 1 && data.u8(at + 2)? <= 1 && data.u8(at + 3)? <= 7,
+                "Source weapon key effect has unknown flags"
+            );
+            ensure!(
+                ![0, u32::MAX, 0x811C_9DC5].contains(&data.u32(at + 4)?),
+                "Source weapon key effect has no name"
+            );
+            let mut bytes = data.bytes::<8>(at)?.to_vec();
+            bytes[0] = 41;
+            Ok(Action::Native {
+                node: NativeNode { kind: 41, bytes },
             })
         }
         _ => anyhow::bail!("Effect {class:08X} ({kind}) requires runtime translation"),
@@ -638,7 +705,7 @@ fn action_program(
     source: &Source,
     tag: u32,
     name: &str,
-    mut native: Option<&mut Reader>,
+    native: Option<&mut Reader>,
     folder: Option<&Path>,
     ancestors: &mut Vec<u32>,
 ) -> Result<(Program, usize)> {
@@ -647,18 +714,29 @@ fn action_program(
         "Source perk is not an action controller"
     );
     let data = source.read(tag)?;
+    action_body(source, &data, name, native, folder, ancestors)
+}
+
+fn action_body(
+    source: &Source,
+    data: &Payload,
+    name: &str,
+    mut native: Option<&mut Reader>,
+    folder: Option<&Path>,
+    ancestors: &mut Vec<u32>,
+) -> Result<(Program, usize)> {
     ensure!(
         data.u64(0x68)? == 0,
         "Additional source action groups require translation"
     );
-    let policy = policy::read(source, &data, native.as_deref_mut())?;
+    let policy = policy::read(source, data, native.as_deref_mut())?;
     let Effects {
         mut actions,
         patches,
         damage_profiles,
         imported_assets,
         mut omitted_feedback,
-    } = translate_effects(source, &data, native.as_deref_mut(), folder, ancestors)?;
+    } = translate_effects(source, data, native.as_deref_mut(), folder, ancestors)?;
     // An execution policy runs its own handlers, so a choice may hold only the policy, as stock
     // action `80BBCA51` does for its stacking policy.
     ensure!(
@@ -667,16 +745,16 @@ fn action_program(
     );
     // Activation on equipping a super of one damage type, ending when it leaves, becomes a
     // subclass gate the build expands over the installed subclasses' supers.
-    let gate = super_gate::read(source, &data)?;
+    let gate = super_gate::read(source, data)?;
     let (mut activation, mut removal) = if gate.is_some() {
         (Vec::new().into_iter(), Vec::new().into_iter())
     } else {
         (
-            conditions(source, &data, 0x20, native.as_deref_mut())?.into_iter(),
-            conditions(source, &data, 0x48, native.as_deref_mut())?.into_iter(),
+            conditions(source, data, 0x20, native.as_deref_mut())?.into_iter(),
+            conditions(source, data, 0x48, native.as_deref_mut())?.into_iter(),
         )
     };
-    let mut rearm = conditions(source, &data, 0x58, native.as_deref_mut())?.into_iter();
+    let mut rearm = conditions(source, data, 0x58, native.as_deref_mut())?.into_iter();
     let native_trigger = activation.next();
     let alternative_triggers = activation.collect::<Vec<_>>();
     // Target 3 selects the event's other combatant at context-summary +14 in both builds. When
@@ -737,7 +815,7 @@ fn action_program(
             native: None,
         });
     }
-    let (auxiliary, omitted) = feedback::read(source, native, &data, &program)?;
+    let (auxiliary, omitted) = feedback::read(source, native, data, &program)?;
     program.auxiliary = auxiliary;
     omitted_feedback += omitted;
     program.validate_structure().map_err(anyhow::Error::msg)?;
@@ -747,6 +825,13 @@ fn action_program(
 /// Intrinsic plugs (`67FBA961`) set a native weapon's frame, a fixed perk Rise of Iron never had.
 /// An exotic's trait is the one fixed perk its grid singles out, so only that takes the socket.
 const INTRINSIC_CATEGORY: u64 = 0x67FB_A961;
+/// The native socket type of weapon trait columns.
+const TRAIT_SOCKET_TYPE: u16 = 92;
+/// The native plug category of sights, FNV-1 of `scopes`.
+const SCOPE_CATEGORY: u64 = 0x9C27_7BCE;
+/// The hidden stat a Rise of Iron sight talent sets to pick its sight model, source ordinal 29.
+/// No other talent carries it, so it marks the grid's sight steps.
+const SIGHT_MODEL_STAT: u64 = 0xC430_48A0;
 /// The source item rarity of an exotic. A legendary's first column can also hold one fixed perk,
 /// such as Burning Eye's Snapshot or Abyss Defiant's Hive Disruptor, which stays a perk column.
 const EXOTIC_RARITY: u64 = 5;
@@ -854,8 +939,8 @@ fn source_damage(
 }
 
 /// The damage type the source effects give a weapon: the one type all of them select, or Kinetic
-/// when no talent carries one, since Rise of Iron applies an element only through such an effect.
-/// A mix of types or an unreadable selector gives none.
+/// when no talent carries one, since Rise of Iron applies a damage type only through such an
+/// effect. A mix of types or an unreadable selector gives none.
 fn effect_damage(found: &[(u64, u64, Option<&'static str>)]) -> Option<&'static str> {
     let kinds = found
         .iter()
@@ -878,10 +963,12 @@ pub(super) fn requires_kinetic(source: &Source, weapon: &Value) -> Result<bool> 
     Ok(effect_damage(&source_damage(source, nodes)?) == Some("kinetic"))
 }
 
-/// A native perk socket: its index, socket type and perk plugs, a default first when present.
+/// A native perk socket: its index, socket type, the plug category of its default and its perk
+/// plugs, a default first when present.
 struct PerkSocket<'a> {
     index: usize,
     socket_type: &'a Value,
+    category: Option<u64>,
     plugs: Vec<u32>,
 }
 
@@ -893,7 +980,11 @@ fn perk_sockets(
     let mut intrinsic = None;
     let mut perks = Vec::new();
     for (index, socket) in sockets.iter().enumerate() {
-        if socket["socket_type"] == u16::MAX {
+        // Artifact equipment admits only the ordinary legacy armor perk role. Other
+        // roles can coexist on the same lender without belonging on the artifact.
+        if socket["socket_type"] == u16::MAX
+            || (host == Host::Artifact && socket["socket_type"] != 15)
+        {
             continue;
         }
         let Some(choices) = socket["choices"].as_array() else {
@@ -933,9 +1024,10 @@ fn perk_sockets(
         let socket = PerkSocket {
             index,
             socket_type: &socket["socket_type"],
+            category: default["category"].as_u64(),
             plugs,
         };
-        if host == Host::Armor || default["category"].as_u64() != Some(INTRINSIC_CATEGORY) {
+        if host.equipped() || default["category"].as_u64() != Some(INTRINSIC_CATEGORY) {
             perks.push(socket);
         } else if intrinsic.is_none() {
             intrinsic = Some(socket);
@@ -1203,10 +1295,10 @@ fn trait_column(
 /// share a separate socket so their private effects follow the equipped choice, and all of them
 /// stay selectable rather than rolled. A fixed damage choice that does more keeps the rest on that
 /// socket, as its one choice. Without a translated damage choice, the source effects set the
-/// recipe's damage type, Kinetic when no talent sets an element.
+/// recipe's damage type, Kinetic when no talent sets one.
 /// Unused perk sockets are disabled so the base's own perks do not stand in for the source's, and
 /// so is a base exotic's catalyst socket.
-/// Damage alternatives keep their source talent art, the element marks Rise of Iron drew.
+/// Damage alternatives keep their source talent art, the damage type marks Rise of Iron drew.
 #[allow(clippy::cognitive_complexity)]
 /// What lowering one talent step needs besides the step: the source and native packages, the
 /// folder for imported attachment groups, the native stat definitions, the stock plugs that
@@ -1228,6 +1320,38 @@ struct StepContext<'a> {
     budgets: &'a BTreeMap<u32, stat::Budget>,
     /// Keys stock actions write on their own item, read on first use.
     item_properties: &'a mut Option<BTreeSet<u32>>,
+    /// Weapon key names the item's translated sword attacks read, with the slots of the base's
+    /// key set and the names the item's talents already hold in them.
+    sword_keys: (&'a BTreeSet<u32>, usize, &'a mut BTreeSet<u32>),
+}
+
+/// A weapon key write does nothing unless a sword attack row reads its name, so each name a
+/// program writes must be one the weapon's own translated attacks hold. The talents of one
+/// weapon can hold no more names at once than its key set has slots.
+fn sword_keys(context: &mut StepContext<'_>, program: &Program) -> Result<()> {
+    for action in program.owned_programs().flat_map(|owned| &owned.actions) {
+        if let Action::Native { node } = action
+            && node.kind == 41
+        {
+            let name = u32::from_le_bytes(
+                node.bytes
+                    .get(4..8)
+                    .context("Weapon key effect")?
+                    .try_into()?,
+            );
+            let (read, slots, held) = &mut context.sword_keys;
+            ensure!(
+                read.contains(&name),
+                "No translated sword attack of this weapon reads weapon key {name:08X}"
+            );
+            held.insert(name);
+            ensure!(
+                held.len() <= *slots,
+                "The base's sword key set has no free slot for weapon key {name:08X}"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The step's ability grant catalog, read once per item.
@@ -1334,12 +1458,23 @@ fn lower_step(context: &mut StepContext<'_>, step: &Value, name: &str) -> Result
     let mut stock = Vec::new();
     let mut stock_plugs = Vec::new();
     let mut property_reports = Vec::new();
+    let omitted_actions = Vec::new();
+    let assignment = assignment::Plan::read(context.source, perks)?;
+    if let Some(plan) = &assignment {
+        plan.prepare(context.source, context.native, context.folder)?;
+    }
     for perk in perks {
         let Some(tag) = perk["action"].as_u64() else {
             // A grant-backed talent can have a display perk without its own action.
-            // The complete grant array must lower successfully below.
+            // The complete grant array must lower successfully below. A display perk can
+            // also sit beside perks that carry the step's actions, as Timur's Demons' first
+            // perk does: its runtime key is the empty name and it has no action assignment,
+            // so it contributes no behavior and the other perks must all lower.
+            let display = perk["runtime_key"].as_u64() == Some(0x811C9DC5);
+            let beside_actions = perk["assignment_present"] == false
+                && perks.iter().any(|other| other["action"].is_u64());
             ensure!(
-                !grants.is_empty() && perk["runtime_key"].as_u64() == Some(0x811C9DC5),
+                display && (!grants.is_empty() || beside_actions),
                 "Source perk has no resolved standalone action"
             );
             continue;
@@ -1347,7 +1482,7 @@ fn lower_step(context: &mut StepContext<'_>, step: &Value, name: &str) -> Result
         let tag = u32::try_from(tag)?;
         tags.push(tag);
         host.validate_action(context.source, tag)?;
-        if host == Host::Armor {
+        if host.equipped() {
             item_property_witness(context.source, context.native, context.item_properties, tag)?;
         }
         let identity = u32::try_from(perk["hash"].as_u64().context("Source perk identity")?)?;
@@ -1356,13 +1491,8 @@ fn lower_step(context: &mut StepContext<'_>, step: &Value, name: &str) -> Result
             stock_plugs.push(format!("{plug:08X}"));
             continue;
         }
-        let (mut program, omitted) = program(
-            context.source,
-            tag,
-            name,
-            Some(&mut *context.native),
-            Some(context.folder),
-        )?;
+        let (mut program, omitted) = assignment::lower(context, assignment.as_ref(), tag, name)?;
+        sword_keys(context, &program)?;
         property_reports.extend(ability_properties(context, &mut program, name)?);
         auxiliary += omitted;
         let carrier = context
@@ -1413,6 +1543,7 @@ fn lower_step(context: &mut StepContext<'_>, step: &Value, name: &str) -> Result
         stock_plugs,
         grants: granted,
         audio_cues,
+        omitted_actions,
     })
 }
 
@@ -1458,8 +1589,12 @@ pub(super) fn translate(
     } else {
         Vec::new()
     };
-    let armor_lender = if host == Host::Armor && perk_sockets.is_empty() {
-        Some(armor::layout(&mut assembly.native, donor)?)
+    let armor_lender = if host.equipped() && perk_sockets.is_empty() {
+        Some(armor::layout(
+            &mut assembly.native,
+            donor,
+            host == Host::Artifact,
+        )?)
     } else {
         None
     };
@@ -1554,14 +1689,33 @@ pub(super) fn translate(
         intrinsic = Some(PerkSocket {
             index,
             socket_type: &signature_socket_type,
+            category: Some(INTRINSIC_CATEGORY),
             plugs: vec![layout.plug],
         });
     }
+    // Rise of Iron has one kind of talent node, and a talent sits in different columns on different
+    // weapons. A choice that copied the role of the base socket its column lands on would be a
+    // barrel or sight on one weapon and a trait on another, and the library would hold both.
+    // Every weapon column therefore takes the base's trait role and trait plug layout. A base
+    // without a trait socket keeps each socket's own role. Sight steps are the one kind the
+    // source marks, so a column of them takes the base's sight layout when it has one.
+    let layout = |found: &dyn Fn(&PerkSocket<'_>) -> bool| {
+        (host == Host::Weapon)
+            .then(|| {
+                perk_sockets
+                    .iter()
+                    .chain(&extra_layouts)
+                    .find(|socket| found(socket))
+            })
+            .flatten()
+    };
+    let trait_layout = layout(&|socket| *socket.socket_type == TRAIT_SOCKET_TYPE);
+    let sight_layout = layout(&|socket| socket.category == Some(SCOPE_CATEGORY));
     emit_talent_columns(
         &assembly.projectile_names,
         (&choices, &source_columns, &mut unsupported),
         (signature, intrinsic.as_ref()),
-        (&perk_sockets, &extra_layouts),
+        (&perk_sockets, &extra_layouts, (trait_layout, sight_layout)),
         (&mut columns, &mut variants, &mut translated),
     )?;
     let (legacy, stat_intrinsic) = finish_intrinsic(
@@ -1582,17 +1736,22 @@ pub(super) fn translate(
     } else {
         "none"
     };
-    let adaptation = if host == Host::Armor {
+    let adaptation = if host == Host::Artifact {
+        "Supported source talents become private equipped socket choices. Each choice must translate completely. Fixed source stat shares use their artifact-slot budget in native points. Source random stat rolls, progression and unqualified effects remain unsupported. A source class restriction becomes the item's native class equip condition. A source damage-over-time label filter uses Shadowkeep's burn, poison and scorch labels. Native seasonal requirements, objectives, baseline Power and direct donor perks are removed."
+    } else if host == Host::Armor {
         "Supported source armor talents become private equipped socket choices. Source activation, removal, rearm and explicit player or triggering-weapon targets are retained through the bounded translators. Supported charge and script-parameter grants use private properties restricted to matching ability banks. Every action and grant must translate for a choice to be admitted. An exotic's signature talent, found among talents only exotic armor shows, takes a Year 1 exotic intrinsic socket at the front of the perk row when it translates, and a donor stat intrinsic it displaces moves to a socket outside the perk row. Donor perk columns and direct perks are cleared. Native base stats remain the baseline. Source stat tiers, progression and unqualified effects remain unsupported. Ornaments keep their separate appearance sockets."
     } else {
-        "Source talent columns become private socket choices, with additional perk sockets when needed. A column offers the first supported step of each of its first four nodes, in row order, and every supported step joins a private randomized plug set the socket rolls from, since Rise of Iron rolled one step of each node. Offered talents are available immediately, with plain stat adjustments as equipped stat contributions. A fixed damage talent sets the weapon's damage type. One that also carries other effects keeps them on a separate damage socket. Alternative damage steps share that socket, which offers every one of them, with the first source step as the initial damage type. A weapon whose talents set no element is Kinetic. On an exotic, the last single talent whose name only exotic weapons show takes the intrinsic socket, or the earlier talent it upgrades, and its other exotic talents stay perk columns. Supported attached status companions remain part of their talent. Source progression and unsupported talents are not migrated. Unsupported talents are reported individually and do not block weapon import."
+        "Source talent columns become private socket choices, with additional perk sockets when needed. Every column is a trait column on a base with a trait socket, whichever base socket it lands on. A column offers the first supported step of each of its first four nodes, in row order, and every supported step joins a private randomized plug set the socket rolls from, since Rise of Iron rolled one step of each node. Offered talents are available immediately, with plain stat adjustments as equipped stat contributions. A fixed damage talent sets the weapon's damage type. One that also carries other effects keeps them on a separate damage socket. Alternative damage steps share that socket, which offers every one of them, with the first source step as the initial damage type. A weapon whose talents set no damage type is Kinetic. On an exotic, the last single talent whose name only exotic weapons show takes the intrinsic socket, or the earlier talent it upgrades, and its other exotic talents stay perk columns. Supported attached status companions remain part of their talent. Source progression and unsupported talents are not migrated. Unsupported talents are reported individually and do not block weapon import."
     };
     // Authored columns make the build curate the sockets the base keeps, such as a year-two
     // armor base's random stat intrinsic, so each needs a default.
     let mut columns = json!(columns);
     let mut native_defaults = Vec::new();
     crate::tiger::shadowkeep::fill_native_defaults(&native, &mut columns, &mut native_defaults)?;
-    assembly.human = grant_catalog.as_ref().and_then(grant::Catalog::take_human);
+    hold_human(
+        assembly,
+        grant_catalog.as_ref().and_then(grant::Catalog::take_human),
+    )?;
     Ok((
         columns,
         json!(variants),
@@ -1607,7 +1766,7 @@ pub(super) fn translate(
         "empty_source_grid":nodes.is_empty(),
         "finished_perk_templates":{"plug":template_hash,"indices":templates},
         "socket_layout_lender":armor_lender.as_ref().map(|lender| &lender["weapon"]),
-        "host":if host == Host::Armor { "armor" } else { "weapon" },
+        "host":match host { Host::Weapon => "weapon", Host::Armor => "armor", Host::Artifact => "artifact" },
         "adaptation":adaptation,
         "gameplay_verified":false}),
         damage,
@@ -1770,6 +1929,9 @@ pub(crate) fn census(source: &Source, native: &mut Reader, folder: &Path) -> Res
                                     slot,
                                     budgets: &budgets,
                                     item_properties: &mut item_properties,
+                                    // The census lowers a step without its weapon, so no
+                                    // sword attack stands behind a key it writes.
+                                    sword_keys: (&BTreeSet::new(), 0, &mut BTreeSet::new()),
                                 },
                                 step,
                                 &name,
@@ -1786,7 +1948,11 @@ pub(crate) fn census(source: &Source, native: &mut Reader, folder: &Path) -> Res
                                     .filter(|grant| {
                                         matches!(
                                             grant["route"].as_str(),
-                                            Some("native_port_key" | "left_out")
+                                            Some(
+                                                "native_port_key"
+                                                    | "left_out"
+                                                    | "imported_ability_key"
+                                            )
                                         ) || grant["evidence"]["route"].is_string()
                                             || grant["evade"].is_object()
                                             || grant["route"] == "native_air_evade"
@@ -1881,6 +2047,7 @@ pub(crate) fn census(source: &Source, native: &mut Reader, folder: &Path) -> Res
                 source.exotic_talents()?,
             ),
             Host::Armor => (BTreeSet::new(), source.exotic_armor_talents()?),
+            Host::Artifact => unreachable!("Artifact census is separate"),
         };
         let column = trait_column(&nodes, &damage_nodes, exotic_talents, &name)?;
         let talent = column.and_then(|column| {
@@ -1904,12 +2071,35 @@ pub(crate) fn census(source: &Source, native: &mut Reader, folder: &Path) -> Res
             .collect::<Vec<_>>();
         intrinsics.insert(
             format!("{name} {hash:08X}"),
-            json!({"host":if host == Host::Armor { "armor" } else { "weapon" },
+            json!({"host":match host { Host::Weapon => "weapon", Host::Armor => "armor", Host::Artifact => "artifact" },
                 "column":column,"talent":talent,"first_column":first}),
         );
     }
     report.insert("exotic_intrinsics".into(), Value::Object(intrinsics));
     Ok(Value::Object(report))
+}
+
+/// The events an attached group's provenance lists as omitted, across all of its sequences.
+fn silent_events(directory: &Path) -> Result<usize> {
+    fn count(value: &Value) -> u64 {
+        match value {
+            Value::Object(map) => map
+                .iter()
+                .map(|(key, value)| match (key.as_str(), value.as_array()) {
+                    ("omitted", Some(rows)) => {
+                        rows.iter().filter_map(|row| row["count"].as_u64()).sum()
+                    }
+                    _ => count(value),
+                })
+                .sum(),
+            Value::Array(rows) => rows.iter().map(count).sum(),
+            _ => 0,
+        }
+    }
+    let provenance: Value = serde_json::from_slice(
+        &fs::read(directory.join("provenance.json")).context("Attached group provenance")?,
+    )?;
+    Ok(usize::try_from(count(&provenance))?)
 }
 
 struct Effects {
@@ -1927,7 +2117,7 @@ fn translate_effects(
     folder: Option<&Path>,
     ancestors: &mut Vec<u32>,
 ) -> Result<Effects> {
-    let mut omitted_feedback = 0;
+    let mut omitted_feedback = 0usize;
     let mut patches = Vec::new();
     let mut damage_profiles = Vec::new();
     let mut imported_assets = Vec::new();
@@ -1951,6 +2141,12 @@ fn translate_effects(
                 folder.context("Translated attachments need an import folder")?,
             )?
             .context("Source attachment has no translation")?;
+            // A graph translated whole keeps presentation events without a converter, and
+            // sounds the bank converter refused, as silent timing. The talent report counts
+            // them with its other omitted feedback.
+            omitted_feedback = omitted_feedback
+                .checked_add(silent_events(&group.directory)?)
+                .context("Attached feedback record count overflow")?;
             imported_assets.push(ImportedAsset {
                 action_index: actions.len(),
                 directory: group.directory,
@@ -2063,12 +2259,28 @@ fn assign_damage_choices(choices: &mut [Choice]) -> Result<()> {
 
 type TalentChoices<'a> = (&'a [Choice], &'a [i64], &'a mut Vec<Value>);
 type TalentOutput<'a> = (&'a mut Vec<Value>, &'a mut Vec<Value>, &'a mut Vec<Value>);
+/// The base's perk sockets, the layouts added columns borrow, and the trait and sight layouts a
+/// weapon column takes its role and template plug from.
+type TalentSockets<'a> = (
+    &'a [PerkSocket<'a>],
+    &'a [PerkSocket<'a>],
+    (Option<&'a PerkSocket<'a>>, Option<&'a PerkSocket<'a>>),
+);
+
+/// Whether a translated step sets the sight model, which only a sight talent does.
+fn sight(choice: &Choice) -> bool {
+    choice.report["stat_adjustments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|row| row["source_hash"].as_u64() == Some(SIGHT_MODEL_STAT))
+}
 
 fn emit_talent_columns(
     projectile_names: &BTreeSet<u32>,
     (choices, source_columns, unsupported): TalentChoices<'_>,
     (signature, intrinsic): (Option<i64>, Option<&PerkSocket<'_>>),
-    (perk_sockets, extra_layouts): (&[PerkSocket<'_>], &[PerkSocket<'_>]),
+    (perk_sockets, extra_layouts, (trait_layout, sight_layout)): TalentSockets<'_>,
     (columns, variants, translated): TalentOutput<'_>,
 ) -> Result<()> {
     let mut ordinal = 0;
@@ -2085,33 +2297,44 @@ fn emit_talent_columns(
         // The runtime base supplies socket layouts, not a limit on source talent columns.
         // Additional columns use a normal perk layout and still receive private plug identities.
         let extra;
-        let socket = if signature == Some(column)
-            && let Some(socket) = intrinsic
-        {
+        let is_signature = signature == Some(column) && intrinsic.is_some();
+        let socket = if is_signature && let Some(socket) = intrinsic {
             socket
         } else if let Some(socket) = perk_sockets.get(ordinal) {
             ordinal += 1;
             socket
         } else {
-            let layout = perk_sockets
-                .last()
+            let layout = trait_layout
+                .or_else(|| perk_sockets.last())
                 .or_else(|| extra_layouts.last())
                 .context("Native base has no perk socket layout")?;
             extra = PerkSocket {
                 index: columns.len(),
                 socket_type: layout.socket_type,
+                category: layout.category,
                 plugs: layout.plugs.clone(),
             };
             columns.push(Value::Null);
             &extra
         };
+        // The signature keeps the intrinsic socket's own role. A column of sight steps is a sight
+        // column and every other column a trait column, wherever the base has that layout to lend.
+        let sights = !members.is_empty() && members.iter().all(|&index| sight(&choices[index]));
+        let layout = if is_signature {
+            socket
+        } else {
+            sight_layout
+                .filter(|_| sights)
+                .or(trait_layout)
+                .unwrap_or(socket)
+        };
         let mut plugs = Vec::new();
         for (choice_index, index) in members.into_iter().enumerate() {
             let choice = &choices[index];
             // The template only lends its layout, and each choice still becomes its own private
-            // item. Every choice takes the socket's first plug, so one talent on weapons with the
+            // item. Every choice takes the layout's first plug, so one talent on weapons with the
             // same base builds the same plug wherever its column places it, and the build shares it.
-            let plug = socket.plugs[0];
+            let plug = layout.plugs[0];
             plugs.push(format!("0x{plug:08X}"));
             let mut variant = json!({"socket_index":socket.index,"choice_index":choice_index,
                 "source_plug_hash":format!("0x{plug:08X}"),"name":choice.name,
@@ -2145,7 +2368,7 @@ fn emit_talent_columns(
         }
         if !plugs.is_empty() {
             let count = plugs.len();
-            columns[socket.index] = json!({"choices":plugs,"socket_type":socket.socket_type});
+            columns[socket.index] = json!({"choices":plugs,"socket_type":layout.socket_type});
             // Choices past the reusable ones exist only in the roll pool. A socket rolls as many
             // of them as the column had nodes it offered, one step per node as Rise of Iron did.
             if reusable < count {
@@ -2170,6 +2393,21 @@ struct LoweredTalents {
     grant_catalog: Option<grant::Catalog>,
 }
 
+/// Adds the talents' private human actions to those the item already holds, as a sword's keyed
+/// attack does.
+fn hold_human(
+    assembly: &mut Assembly<'_>,
+    human: Option<crate::d1_roi::ability::animation::Human>,
+) -> Result<()> {
+    if let Some(human) = human {
+        match assembly.human.as_mut() {
+            Some(held) => held.absorb(human)?,
+            None => assembly.human = Some(human),
+        }
+    }
+    Ok(())
+}
+
 fn lower_talents(
     assembly: &mut Assembly<'_>,
     source: &Value,
@@ -2182,8 +2420,9 @@ fn lower_talents(
     let mut grant_catalog = None;
     let mut item_properties = None;
     let budgets = stat::budgets(assembly.source)?;
+    let mut sword_held = BTreeSet::new();
     // The armor import's item record carries its source slot.
-    let slot = if host == Host::Armor {
+    let slot = if host.equipped() {
         Some(u8::try_from(
             source["item"]["slot"]
                 .as_u64()
@@ -2220,6 +2459,11 @@ fn lower_talents(
                     slot,
                     budgets: &budgets,
                     item_properties: &mut item_properties,
+                    sword_keys: (
+                        &assembly.sword_keys,
+                        assembly.sword_key_slots,
+                        &mut sword_held,
+                    ),
                 },
                 step,
                 name,
@@ -2236,7 +2480,8 @@ fn lower_talents(
                 "stat_adjustments":lowered.adjustments,"stock_perk_plugs":lowered.stock_plugs,
                 "ability_grants":lowered.grants,
                 "source_audio_cues":lowered.audio_cues,
-                "omitted_feedback_records":lowered.auxiliary});
+                "omitted_feedback_records":lowered.auxiliary,
+                "omitted_source_actions":lowered.omitted_actions});
             let container = u32::try_from(step["icon"].as_u64().unwrap_or(0))?;
             let icon = assembly
                 .talent_icon(container)
@@ -2342,10 +2587,11 @@ fn signature_column(
     // Armor finds its signature among names only exotic armor shows, and a weapon among names only
     // exotic weapons show. A weapon base without an intrinsic socket has nowhere to put one.
     let exotic = source["item"]["rarity"].as_u64() == Some(EXOTIC_RARITY);
-    let trait_at = if exotic && (has_intrinsic || host == Host::Armor) {
+    let trait_at = if host != Host::Artifact && exotic && (has_intrinsic || host == Host::Armor) {
         let talents = match host {
             Host::Weapon => reader.exotic_talents()?,
             Host::Armor => reader.exotic_armor_talents()?,
+            Host::Artifact => unreachable!("Artifacts have no armor signature"),
         };
         trait_column(
             nodes,

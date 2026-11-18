@@ -573,6 +573,17 @@ pub(super) fn append_kind(out: &mut String, recipe: &WeaponRecipe, donor: Option
                 },
             );
         }
+        ItemKind::Artifact => {
+            let _ = writeln!(out, "\nARTIFACT");
+            field(
+                out,
+                "class",
+                overrides.armor_class.map_or_else(
+                    || "follows the base artifact".to_owned(),
+                    |class| format!("{}  (recipe)", class.label()),
+                ),
+            );
+        }
         ItemKind::Emblem => {
             use crate::emblem::NameplatePart;
             let _ = writeln!(out, "\nEMBLEM");
@@ -651,7 +662,7 @@ pub(super) fn append_subclass(out: &mut String, recipe: &WeaponRecipe) {
         "damage type icon",
         overrides.subclass_damage_type.map_or_else(
             || "base subclass's".to_owned(),
-            |damage| format!("{damage:?}  (recipe, item strings and element unlocks)"),
+            |damage| format!("{damage:?}  (recipe, item strings and damage type unlocks)"),
         ),
     );
     field(
@@ -1130,7 +1141,7 @@ pub(super) fn append_weapon_item(
         overrides
             .variable_damage
             .as_ref()
-            .map_or_else(|| "none".to_owned(), |damage| json(&damage.elements)),
+            .map_or_else(|| "none".to_owned(), |damage| json(&damage.damage_types)),
     );
     field(
         out,

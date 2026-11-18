@@ -4,7 +4,7 @@ use crate::recipe::{RecipeAmmoType, RecipeDamageType, RecipeInventorySlot, Recip
 use crate::{
     HexHash, WeaponDonorReference, WeaponRecipe, WeaponSocketColumnRecipe, WeaponStatOverride,
 };
-use sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager;
+use sundial::package_authoring::runtime::load_runtime_entity_with_manager;
 mod good_company;
 mod invalid;
 mod private;
@@ -286,7 +286,7 @@ fn verify_ammo(
     hash: u32,
     ammo: WeaponAmmoType,
 ) -> usize {
-    let entity = load_weapon_runtime_entity_with_manager(manager, hash).unwrap();
+    let entity = load_runtime_entity_with_manager(manager, hash).unwrap();
     let bindings = weapon_component_bindings(&entity.payload, 0x5F0D_D954).unwrap();
     assert_eq!(bindings.len(), 1);
     let binding = bindings[0];
@@ -572,7 +572,7 @@ fn run_batch(
     })
     .unwrap();
     assert_eq!(build.weapons.len(), recipes.len());
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();

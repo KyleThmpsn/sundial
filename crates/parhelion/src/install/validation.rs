@@ -142,6 +142,7 @@ pub(super) fn validate_request_with_progress(
         merge_data: manifest.merge_data,
         map_diagnostics: manifest.map_diagnostics,
         mission_scripts: manifest.mission_scripts,
+        activity_packs: manifest.activity_packs,
         mods: manifest.mods,
         obsolete_artifacts,
         selected_recipe_files: manifest.selected_recipe_files,
@@ -310,6 +311,11 @@ pub(super) fn validate_manifest_and_staged_files(
         manifest.mission_scripts,
         target_packages_directory,
     )?;
+    let activity_packs = validate_activity_packs(
+        staged_run_directory,
+        manifest.activity_packs,
+        target_packages_directory,
+    )?;
     Ok(ValidatedManifest {
         inputs,
         packages,
@@ -318,6 +324,7 @@ pub(super) fn validate_manifest_and_staged_files(
         merge_data,
         map_diagnostics,
         mission_scripts,
+        activity_packs,
         mods: manifest.mods,
         selected_recipe_files,
         selected_map_files,
@@ -395,6 +402,33 @@ fn validate_mission_scripts(
     Ok(scripts)
 }
 
+/// Each member's activity pack matches its manifest digest. Sunrise checks the rows when it maps
+/// the pack and leaves out a pack it refuses.
+fn validate_activity_packs(
+    directory: &Path,
+    packs: Vec<ArtifactMetadata>,
+    target: &Path,
+) -> Result<Vec<ArtifactMetadata>, InstallError> {
+    use sundial::package_authoring::mod_content::{self, activity_pack};
+    if !packs.is_empty() && !uses_mod_loader(target) {
+        return Err(InstallError::validation(
+            "Activity packs require Sunrise 0.6 or later",
+        ));
+    }
+    for pack in &packs {
+        if crate::mod_family::native_name(&pack.file_name) != activity_pack::FILE_NAME
+            || pack.byte_length == 0
+            || pack.byte_length > activity_pack::BYTE_LIMIT
+        {
+            return Err(InstallError::validation("Invalid activity pack artifact"));
+        }
+        let path = directory.join(&pack.file_name);
+        mod_content::checked_path(directory, &path).map_err(InstallError::validation)?;
+        loader::verify_file(&path, &TransactionDigest::from(pack))?;
+    }
+    Ok(packs)
+}
+
 /// Merge data matches its manifest digest and describes the package beside it, since Sunrise binds
 /// it to that package's header and ignores it otherwise.
 fn validate_merge_data(
@@ -463,7 +497,7 @@ fn validate_merge_data(
 fn check_layout(target: &Path, artifacts: &[ArtifactMetadata]) -> Result<(), InstallError> {
     let mod_layout = artifacts.iter().any(|artifact| {
         let name = crate::mod_family::native_name(&artifact.file_name);
-        crate::package_profile::is_records_package(name)
+        crate::package::profile::is_records_package(name)
     });
     if mod_layout && !uses_mod_loader(target) {
         return Err(InstallError::validation(
@@ -816,7 +850,7 @@ pub(super) fn validate_source_artifact_records(
     let required =
         CANONICAL_PACKAGE_IDS
             .into_iter()
-            .filter(|id| !crate::package_profile::RENDERING_PACKAGE_IDS.contains(id))
+            .filter(|id| !crate::package::profile::RENDERING_PACKAGE_IDS.contains(id))
             .chain(by_name.keys().filter_map(|name| {
                 parse_canonical_source_artifact_file_name(name).map(|(id, _)| id)
             }))
@@ -958,7 +992,7 @@ pub(super) fn verify_source_artifacts(
         .into_iter()
         .filter(|name| {
             parse_canonical_source_artifact_file_name(name).is_none_or(|(id, _)| {
-                !crate::package_profile::RENDERING_PACKAGE_IDS.contains(&id)
+                !crate::package::profile::RENDERING_PACKAGE_IDS.contains(&id)
                     || recorded_packages.contains(&id)
             })
         })

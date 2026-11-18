@@ -1,5 +1,5 @@
 //! Detached source objects in a private rigid native assembly.
-use super::{body, collision, damage, secondary::Bundle};
+use super::{body, bundle::Bundle, collision, damage};
 use crate::{
     halo_reach::{
         self, ExportRequest, Scene, View,

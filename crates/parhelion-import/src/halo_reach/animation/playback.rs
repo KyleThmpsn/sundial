@@ -1,6 +1,7 @@
 //! Portable playback on the exact source model hierarchy selected by its object branch.
 use super::codec::{Motion, Track};
 use crate::halo_reach::{Scene, model::Model, rig::Bone};
+use crate::math::product;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::Path};
@@ -50,17 +51,6 @@ pub(super) fn mapping(graph: &Value, model: &Model) -> Result<Vec<usize>> {
     Ok(map)
 }
 
-fn rotation(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    let [x, y, z, w] = a;
-    let [i, j, k, r] = b;
-    [
-        w * i + x * r + y * k - z * j,
-        w * j - x * k + y * r + z * i,
-        w * k + x * j - y * i + z * r,
-        w * r - x * i - y * j - z * k,
-    ]
-}
-
 fn sample<T: Copy>(values: &[T], frame: usize) -> T {
     values[if values.len() == 1 { 0 } else { frame }]
 }
@@ -71,7 +61,7 @@ fn rotations(track: &Track, bone: &Bone, frames: usize, overlay: bool) -> Vec<f3
     for frame in 0..frames {
         let mut q = sample(&track.rotation, frame);
         if overlay {
-            q = rotation(bone.rotation, q);
+            q = product(bone.rotation, q);
         }
         if previous.is_some_and(|p| p.iter().zip(q).map(|(a, b)| a * b).sum::<f32>() < 0.) {
             q = q.map(|v| -v);

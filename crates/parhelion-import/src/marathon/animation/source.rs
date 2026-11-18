@@ -9,6 +9,7 @@
 //! is evaluated on it, which qualifies these modes for that rig.
 use super::*;
 use crate::tiger::animation::pose::Pose;
+pub(super) use sundial::package_authoring::fnv1 as fnv;
 
 pub(super) const SKELETON: u32 = 0x8080_9FB7;
 pub(super) const CONTROLS: u32 = 0x8080_AD7E;
@@ -266,9 +267,4 @@ impl Rig {
             .copied()
             .with_context(|| format!("Source rig has no {name} role"))
     }
-}
-
-pub(super) fn fnv(name: &str) -> u32 {
-    name.bytes()
-        .fold(0x811C9DC5, |h, b| h.wrapping_mul(0x01000193) ^ u32::from(b))
 }

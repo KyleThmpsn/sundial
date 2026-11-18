@@ -15,9 +15,9 @@ use sundial::package_authoring::ability_spawns::Discovery;
 pub(in crate::item) fn append_private_graph_tree(
     manager: &PackageManager,
     source: TagHash,
-    values: &[WeaponRuntimeValueOverride],
-    patches: &BTreeMap<u32, Vec<WeaponRuntimeResourcePatch>>,
-    appends: &BTreeMap<u32, Vec<WeaponRuntimeResourceAppend>>,
+    values: &[RuntimeValueOverride],
+    patches: &BTreeMap<u32, Vec<RuntimeResourcePatch>>,
+    appends: &BTreeMap<u32, Vec<RuntimeResourceAppend>>,
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<TagHash> {
@@ -31,9 +31,9 @@ pub(in crate::item) fn append_private_graph_tree(
 
 /// The edits [`append_private_graph_tree`] takes: values, resource patches and owner appends.
 pub(in crate::item) type TreeEdits<'a> = (
-    &'a [WeaponRuntimeValueOverride],
-    &'a BTreeMap<u32, Vec<WeaponRuntimeResourcePatch>>,
-    &'a BTreeMap<u32, Vec<WeaponRuntimeResourceAppend>>,
+    &'a [RuntimeValueOverride],
+    &'a BTreeMap<u32, Vec<RuntimeResourcePatch>>,
+    &'a BTreeMap<u32, Vec<RuntimeResourceAppend>>,
 );
 
 /// [`append_private_graph_tree`], walking through `discovery`, which the other walks of one
@@ -44,7 +44,7 @@ pub(in crate::item) fn append_private_graph_tree_in(
     (values, patches, appends): TreeEdits<'_>,
     (allocator, tags): (AppendedTagAllocator, &mut Vec<NewTagSpec>),
 ) -> AuthoringResult<TagHash> {
-    let mut by_graph = BTreeMap::<u32, Vec<WeaponRuntimeValueOverride>>::new();
+    let mut by_graph = BTreeMap::<u32, Vec<RuntimeValueOverride>>::new();
     for value in values {
         by_graph
             .entry(
@@ -114,17 +114,17 @@ pub(super) fn graph_closure(
 /// both, and one neither reaches stays with the ability, whose copy refuses it.
 /// An ability's own values, and the values of each swapped-in projectile's tree by replacement.
 pub(in crate::item) type SplitValues = (
-    Vec<WeaponRuntimeValueOverride>,
-    BTreeMap<u32, Vec<WeaponRuntimeValueOverride>>,
+    Vec<RuntimeValueOverride>,
+    BTreeMap<u32, Vec<RuntimeValueOverride>>,
 );
 
 pub(in crate::item) fn split_swapped_values(
     (manager, discovery): (&PackageManager, &mut Discovery),
     source: TagHash,
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
     replacements: &[u32],
 ) -> AuthoringResult<SplitValues> {
-    let mut swapped = BTreeMap::<u32, Vec<WeaponRuntimeValueOverride>>::new();
+    let mut swapped = BTreeMap::<u32, Vec<RuntimeValueOverride>>::new();
     if replacements.is_empty() || values.is_empty() {
         return Ok((values.to_vec(), swapped));
     }
@@ -158,9 +158,9 @@ pub(in crate::item) fn split_swapped_values(
 /// The graphs below a source that lead to edited ones, and the copies made of them.
 /// Each graph's own value overrides, resource patches and owner appends, by graph.
 pub(super) type GraphEdits<'a> = (
-    &'a BTreeMap<u32, Vec<WeaponRuntimeValueOverride>>,
-    &'a BTreeMap<u32, Vec<WeaponRuntimeResourcePatch>>,
-    &'a BTreeMap<u32, Vec<WeaponRuntimeResourceAppend>>,
+    &'a BTreeMap<u32, Vec<RuntimeValueOverride>>,
+    &'a BTreeMap<u32, Vec<RuntimeResourcePatch>>,
+    &'a BTreeMap<u32, Vec<RuntimeResourceAppend>>,
 );
 
 pub(super) struct GraphTree<'a> {
@@ -337,7 +337,7 @@ impl GraphTree<'_> {
                 continue;
             }
             let child = self.copy(spawn.graph, (values, own_patches, appends), allocator, tags)?;
-            patches.push(WeaponRuntimeResourcePatch {
+            patches.push(RuntimeResourcePatch {
                 binding_hash: spawn.binding_hash,
                 resource_index: spawn.resource_index,
                 offset: spawn.offset,
@@ -355,7 +355,7 @@ impl GraphTree<'_> {
             }) {
                 continue;
             }
-            patches.push(WeaponRuntimeResourcePatch {
+            patches.push(RuntimeResourcePatch {
                 binding_hash: place.binding_hash,
                 resource_index: place.resource_index,
                 offset: place.offset,
@@ -385,9 +385,9 @@ impl GraphTree<'_> {
 pub(super) fn append_private_patched_graph(
     manager: &PackageManager,
     source: TagHash,
-    values: &[WeaponRuntimeValueOverride],
-    patches: &[WeaponRuntimeResourcePatch],
-    appends: &[WeaponRuntimeResourceAppend],
+    values: &[RuntimeValueOverride],
+    patches: &[RuntimeResourcePatch],
+    appends: &[RuntimeResourceAppend],
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<TagHash> {
@@ -407,9 +407,9 @@ pub(super) fn append_private_patched_graph(
 pub(super) fn private_patched_graph(
     manager: &PackageManager,
     source: TagHash,
-    values: &[WeaponRuntimeValueOverride],
-    patches: &[WeaponRuntimeResourcePatch],
-    appends: &[WeaponRuntimeResourceAppend],
+    values: &[RuntimeValueOverride],
+    patches: &[RuntimeResourcePatch],
+    appends: &[RuntimeResourceAppend],
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<Vec<u8>> {
@@ -430,7 +430,7 @@ pub(super) fn private_patched_graph(
     let values = values
         .iter()
         .map(|value| {
-            Ok(WeaponRuntimeValueOverride {
+            Ok(RuntimeValueOverride {
                 locator: value.locator.for_graph(source.0.into()).map_err(invalid)?,
                 value: value.value.clone(),
             })

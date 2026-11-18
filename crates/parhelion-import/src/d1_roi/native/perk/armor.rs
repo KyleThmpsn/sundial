@@ -30,15 +30,23 @@ fn armor_bucket(native: &mut Reader, donor: u32) -> Result<u8> {
     Ok(bucket)
 }
 
-pub(super) fn layout(native: &mut Reader, donor: u32) -> Result<Value> {
-    let bucket = armor_bucket(native, donor)?;
+pub(super) fn layout(native: &mut Reader, donor: u32, artifact: bool) -> Result<Value> {
+    let bucket = if artifact {
+        None
+    } else {
+        Some(armor_bucket(native, donor)?)
+    };
     let items = item_table(native)?;
     // The search can read most of the item table, thousands of definitions, so it keeps its
     // reads in memory. The export records the host it chooses.
     let mut scan = native.shared_discovery();
     for row in items.array(8, 24, Some(0x80807BE8))? {
         let item = scan.tag(items.u32(row + 16)?, Some(0x80807BEA))?;
-        if item.u8(0xB8)? != bucket || item.u8(0xBA)? == 5 || item.u64(0x68)? == 0 {
+        if !bucket.map_or((3..=7).contains(&item.u8(0xB8)?), |bucket| {
+            item.u8(0xB8).ok() == Some(bucket)
+        }) || item.u8(0xBA)? == 5
+            || item.u64(0x68)? == 0
+        {
             continue;
         }
         let sockets = crate::tiger::shadowkeep::sockets(&mut scan, items.u32(row)?)?;
@@ -46,7 +54,11 @@ pub(super) fn layout(native: &mut Reader, donor: u32) -> Result<Value> {
             sockets["sockets"]
                 .as_array()
                 .context("Armor socket layouts")?,
-            Host::Armor,
+            if artifact {
+                Host::Artifact
+            } else {
+                Host::Armor
+            },
         )?;
         if !layouts.is_empty() {
             native.tag(items.u32(row + 16)?, Some(0x80807BEA))?;

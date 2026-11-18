@@ -1,4 +1,4 @@
-//! The Stormtrance callback forwards the shared numeric recipient to the generic rate writer.
+//! Qualified ability callbacks forward the numeric recipient to the generic rate writer.
 use super::*;
 
 pub(in crate::ability::bank) const CLASS: u32 = 0x8080452E;
@@ -13,8 +13,8 @@ pub(in crate::ability::bank) fn slot(
     rows: &[PropertyRow],
     bank_class: u32,
 ) -> Result<HandlerIndex, String> {
-    if bank_class != BANK_DEFINITION {
-        return Err("Active energy rate requires the qualified Stormtrance bank".into());
+    if !matches!(bank_class, BANK_DEFINITION | 0x80804113) {
+        return Err("Active energy rate requires a qualified ability bank".into());
     }
     let mut classes = BTreeMap::new();
     let mut slots = BTreeMap::new();
@@ -73,14 +73,23 @@ pub(in crate::ability::bank) fn check(
     layout: &Layout,
     body: FixedModifier,
 ) -> Result<(), String> {
+    // The Sprint callback retains the movement bank's generic numeric writer. Its stock
+    // rate supplies an existing priority slot. Stormtrance instead needs its same-key
+    // script companion and can add the first rate slot.
+    let movement = bank_class(payload)? == 0x80804113;
+    let (runtime_class, definition_class) = if movement {
+        (0x80804112, 0x80804113)
+    } else {
+        (BANK_RUNTIME, BANK_DEFINITION)
+    };
     let runtime_marker = layout
         .definition
         .checked_sub(4)
         .ok_or("Active energy rate bank has no runtime marker")?;
-    if u32_at(payload, runtime_marker)? != BANK_RUNTIME
-        || u32_at(payload, layout.definition + BLOCK_CLASS)? != BANK_DEFINITION
-        || u32_at(payload, layout.instance - 4)? != BANK_DEFINITION
-        || u32_at(payload, layout.instance + BLOCK_CLASS)? != BANK_RUNTIME
+    if u32_at(payload, runtime_marker)? != runtime_class
+        || u32_at(payload, layout.definition + BLOCK_CLASS)? != definition_class
+        || u32_at(payload, layout.instance - 4)? != definition_class
+        || u32_at(payload, layout.instance + BLOCK_CLASS)? != runtime_class
     {
         return Err("Active energy rate has no qualified bank class pair".into());
     }
@@ -89,8 +98,8 @@ pub(in crate::ability::bank) fn check(
         return Err("Active energy rate bank has another callback table".into());
     }
     for (index, (offset, class, method)) in [
-        (0x30, BANK_RUNTIME, 0),
-        (0x48, BANK_RUNTIME, 1),
+        (0x30, runtime_class, 0),
+        (0x48, runtime_class, 1),
         (0x60, 0x808044FC, 12),
     ]
     .into_iter()
@@ -130,6 +139,13 @@ pub(in crate::ability::bank) fn check(
             }
         }
         if u32_at(payload, row + ROW_KEY)? == body.template_key {
+            if movement {
+                if class != CLASS {
+                    return Err("Movement active rate requires a native rate witness".into());
+                }
+                witnesses += 1;
+                continue;
+            }
             let twin = usize::try_from(u64_at(payload, modifier + BLOCK_TWIN)?)
                 .map_err(|_| "Script companion twin overflow")?;
             if class != SCRIPT_DEFINITION_CLASS
@@ -151,7 +167,7 @@ pub(in crate::ability::bank) fn check(
         }
     }
     if witnesses != 1 {
-        return Err("Active energy rate has no unique native script companion".into());
+        return Err("Active energy rate has no unique native property witness".into());
     }
     Ok(())
 }

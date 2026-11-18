@@ -683,9 +683,12 @@ pub(super) fn plain_action_summary(kind: u8) -> Option<&'static str> {
         // uses raise damage dealt, as Anti-Taken Fletching does against Taken, and damage taken
         // belongs to kind 33.
         40 => "Change the damage dealt by hits that pass its filters, as a bonus or a multiplier.",
-        // Kind 41: the Sword Guard perks (Burst, Enduring, Heavy and Swordmaster's Guard)
-        // all raise the same named count, the key the guard conditions read back by name.
-        41 => "Raise a named count while active and lower it after, as the Sword Guard perks do.",
+        // Kind 41: the name joins the sword's key set. A sword's guard owners and attack rows
+        // are chosen by the names it holds: the stock sword entity keys three guards to the
+        // Sword Guard perks' names, and Worldline Zero's owner puts a row keyed to Tesseract's
+        // name at the head of one light and one heavy list. The loaded image holds no other
+        // reader, and the writer does nothing on a weapon that is not a sword.
+        41 => "Give a sword a named key while active, which picks its guard or an attack.",
         42 => "Write the effect's counter, the value Count Needed is measured against.",
         // Kind 43: the Ace of Spades and Trinity Ghoul catalysts publish one, and Blessing
         // of the Sky another. What receives a given signal is not established.
@@ -804,7 +807,7 @@ pub(super) fn plain_condition_summary(kind: u8) -> Option<&'static str> {
         // requirement. Backup Plan and Archer's Gambit use it to require two things at once,
         // a hip fire state and a precision hit.
         31 => {
-            "Every requirement below must be met, each by any one condition under it, as Archer's Gambit needs both a hip fire state and a precision hit."
+            "Every requirement below must be met, each by any one condition under it, as Archer's Gambit needs both a hip-fire state and a precision hit."
         }
         // Kind 35 runs the general predicate's state check and then its nested condition.
         35 => "Checks a state, such as aiming down sights, and then the condition under it.",

@@ -5,6 +5,7 @@ use super::*;
 
 /// What every owner's translation reads.
 pub(super) struct Scope<'a> {
+    pub(super) graph: u32,
     pub(super) source: &'a Source,
     pub(super) shared: &'a Shared,
     /// Native sequences whose scalar input rows a translated sequence may copy.
@@ -22,6 +23,7 @@ pub(super) type Inputs = BTreeMap<usize, BTreeMap<usize, usize>>;
 
 /// Every translated component in source order, with what later stages read from the owners.
 pub(super) struct Translated {
+    pub(super) additional: Vec<Pending>,
     pub(super) components: Vec<Component>,
     /// Source owners without a translation, each with its reason.
     pub(super) omitted: Vec<Value>,
@@ -52,6 +54,7 @@ pub(super) fn translate(
     owners: &[intake::Owner],
 ) -> Result<Translated> {
     let mut translated = Translated {
+        additional: Vec::new(),
         components: Vec::new(),
         omitted: Vec::new(),
         dependencies: BTreeMap::new(),
@@ -64,6 +67,16 @@ pub(super) fn translate(
     for item in owners {
         let (ordinal, owner, payload, family) = item;
         let Some(family) = *family else {
+            if payload.u32(payload.pointer(24)? - 4)? == 0x808010FB {
+                ensure!(
+                    scope
+                        .shared
+                        .assignment
+                        .as_ref()
+                        .is_some_and(|plan| plan.graph == scope.graph && plan.owner == *owner),
+                    "Temporary actor tuning requires a qualified native assignment and cancellation plan"
+                );
+            }
             translated
                 .omitted
                 .push(omission(*ordinal, *owner, payload)?);
@@ -81,6 +94,18 @@ pub(super) fn translate(
         }
         let component = translated.private(native, scope, item, family, &counterpart)?;
         translated.components.push(component);
+    }
+    if let Some(plan) = &scope.shared.assignment
+        && plan.graph == scope.graph
+        && let Some((ordinal, _, _, _)) = owners.iter().find(|item| item.1 == plan.owner)
+    {
+        ensure!(
+            owners.len() < 0x80,
+            "Assignment graph exceeds its private owner identity span"
+        );
+        let (component, additional) = assignment::write(native, scope, plan, *ordinal)?;
+        translated.components.push(component);
+        translated.additional.extend(additional);
     }
     ensure!(
         translated.status.is_some() || !scope.choice.template.owners.contains_key(&Family::Status),
@@ -282,7 +307,8 @@ impl Translated {
             symbol: format!("{symbol}-{}-{ordinal}", family.name()),
             template_tag: counterpart.tag,
             template: counterpart.owner.clone(),
-            entity: scope.choice.template.graph.clone(),
+            // A borrowed owner keeps the registrations of the graph that lends it.
+            entity: counterpart.entity.clone(),
             payload: counterpart.owner.clone(),
             patches: Vec::new(),
             allocation: None,
@@ -301,6 +327,17 @@ impl Translated {
             Family::IncomingDamage => incoming_damage(native, scope, target, payload)?,
             Family::Volume => condition_volume(native, scope, target, payload)?,
             Family::Nested => nested(native, scope, target, item, counterpart)?,
+            Family::Restriction => restriction(target, payload)?,
+            Family::Query => {
+                retarget(&mut target.payload, counterpart.tag, target.id)?;
+                target.evidence = crate::d1_roi::native::write_query(
+                    scope.source,
+                    native,
+                    payload,
+                    &mut target.payload,
+                )?;
+                owner::finish(&mut target.payload)?;
+            }
             Family::Context | Family::Category | Family::Invisibility => {
                 anyhow::bail!("Framework owners are retained before translation")
             }
@@ -326,12 +363,22 @@ impl Translated {
         // A status whose lifetime receiver policy the template status lacks takes a stock status
         // of that policy, as a host takes a stock host of its lifetime form.
         let policy = |p: &Payload| -> Result<u64> { p.u64(p.pointer(24)? + 0x70) };
-        if policy(native_owner)? != fields.receiver_policy {
+        // A lifetime program's channel input is a request row only a status with such an input
+        // holds, so a source status with one needs a stock status that has the row.
+        let request = |p: &Payload| -> Result<bool> {
+            Ok(!typed(p, p.u32(pair(p)?.0)?, 0x80809789)?.is_empty())
+        };
+        let reads = fields.lifetime_input.is_some() || fields.count_input.is_some();
+        let needs_request = reads && !request(native_owner)?;
+        if policy(native_owner)? != fields.receiver_policy || needs_request {
             replace(
                 native,
                 component,
                 &STATUSES,
-                |candidate| Ok(policy(candidate)? == fields.receiver_policy),
+                |candidate| {
+                    Ok(policy(candidate)? == fields.receiver_policy
+                        && (!reads || request(candidate)?))
+                },
                 "No stock status has the source status's lifetime receiver policy",
             )?;
         }
@@ -534,6 +581,38 @@ fn damage(component: &mut Component, payload: &Payload) -> Result<()> {
     retarget(&mut component.payload, template_tag, component.id)?;
     component.evidence = json!({"damage":owner::damage(&mut component.payload, payload)?,
         "template":template_tag});
+    Ok(())
+}
+
+/// Source definition `80802518` and native `80803A78` hold four ability masks, at source
+/// `+88` and native `+90`. Native `DF1770` tests bit `i` of each mask for ability slot `i` of
+/// eight and passes the mask's ordinal with the slot to `186AAC0`. Bungie's Shadowkeep ports of
+/// five source statuses carry the source's four bytes in the same order, with only the two bits
+/// the six source slots lack added (`0B 00 04 00` as `CB 00 04 00`, `10 10 10 00` and
+/// `18 18 18 00` unchanged). The masks therefore copy as they are. What each mask restricts is
+/// not decoded. The other settings must be the defaults every examined owner holds.
+fn restriction(component: &mut Component, payload: &Payload) -> Result<()> {
+    let template_tag = component.template_tag;
+    retarget(&mut component.payload, template_tag, component.id)?;
+    let from = payload.pointer(24)?;
+    let masks = payload.bytes::<4>(from + 0x88)?;
+    ensure!(
+        payload.u32(from - 4)? == 0x80802518
+            && masks.iter().all(|mask| mask & !0x3F == 0)
+            && payload.bytes::<0x18>(from + 0x70)? == [0; 0x18]
+            && payload.bytes::<12>(from + 0x8C)? == [0; 12],
+        "Source ability restriction has unqualified settings"
+    );
+    let to = component.payload.pointer(24)?;
+    ensure!(
+        component.payload.u32(to - 4)? == 0x80803A78
+            && component.payload.u32(to + 0x78)? == 0x811C9DC5
+            && component.payload.bytes::<16>(to + 0x80)? == [0; 16]
+            && component.payload.bytes::<12>(to + 0x94)? == [0; 12],
+        "Native ability restriction template has unqualified settings"
+    );
+    put(&mut component.payload.0, to + 0x90, &masks)?;
+    component.evidence = json!({"restriction":masks,"template":template_tag});
     Ok(())
 }
 

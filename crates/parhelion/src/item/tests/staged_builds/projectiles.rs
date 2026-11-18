@@ -7,21 +7,18 @@ const PRIVATE_PERK_RESIDENCY_COMPANION_SIZE: usize = 0xE6;
 #[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn native_component_values_compile_into_private_owners_and_reject_stale_paths() {
-    use sundial::package_authoring::runtime::{
-        WeaponRuntimeFieldSource, load_weapon_runtime_graph_for_entity,
-    };
+    use sundial::package_authoring::runtime::{RuntimeFieldSource, load_runtime_graph_for_entity};
     let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
     let mut tested = BTreeSet::new();
     let mut linked = 0;
     for graph_tag in [0x80FB_5618, 0x8153_2FDC, 0x80FB_86B7] {
         let source = read_tag(&manager, TagHash(graph_tag), "effect graph").unwrap();
-        let graph =
-            load_weapon_runtime_graph_for_entity(&manager, 0, 0, graph_tag, &source).unwrap();
+        let graph = load_runtime_graph_for_entity(&manager, 0, 0, graph_tag, &source).unwrap();
         let mut candidates = graph.fields().filter(|field| {
-            field.source == WeaponRuntimeFieldSource::NativeDeclaration
+            field.source == RuntimeFieldSource::NativeDeclaration
                 && !matches!(field.locator.root_schema.get(), 0x8080_3B73 | 0x8080_388F)
-                && matches!(field.value, WeaponRuntimeValue::Float32Bits(bits) if f32::from_bits(bits).is_finite())
+                && matches!(field.value, RuntimeValue::Float32Bits(bits) if f32::from_bits(bits).is_finite())
         }).collect::<Vec<_>>();
         candidates.sort_by_key(|field| {
             !field
@@ -41,10 +38,10 @@ fn native_component_values_compile_into_private_owners_and_reject_stale_paths() 
                     .iter()
                     .any(|step| step.name_hash == 0x504E_5000),
             );
-            let resolved = resolve_weapon_runtime_field(&manager, &source, &field.locator).unwrap();
+            let resolved = resolve_runtime_field(&manager, &source, &field.locator).unwrap();
             let original = read_tag(&manager, TagHash(resolved.owner_tag), "source owner").unwrap();
-            let value = WeaponRuntimeValue::Float32Bits(2.75_f32.to_bits());
-            let edits = vec![WeaponRuntimeValueOverride {
+            let value = RuntimeValue::Float32Bits(2.75_f32.to_bits());
+            let edits = vec![RuntimeValueOverride {
                 locator: field.locator.clone(),
                 value: value.clone(),
             }];
@@ -122,21 +119,16 @@ fn native_component_values_compile_into_private_owners_and_reject_stale_paths() 
     reason = "Independent native-byte audit checks the owner, graph, both caster links, and stale recipe rejection together"
 )]
 fn private_referenced_telesto_graph_preserves_stock_and_shares_both_caster_links() {
-    use sundial::package_authoring::runtime::load_weapon_runtime_graph_for_entity;
+    use sundial::package_authoring::runtime::load_runtime_graph_for_entity;
     let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
     let graph_tag = TagHash(0x80BB_B1B9);
     let stock_graph = read_tag(&manager, graph_tag, "Telesto projectile graph").unwrap();
-    let graph =
-        load_weapon_runtime_graph_for_entity(&manager, 0, 0, graph_tag.0, &stock_graph).unwrap();
+    let graph = load_runtime_graph_for_entity(&manager, 0, 0, graph_tag.0, &stock_graph).unwrap();
     let mut values = Vec::new();
     for (root, schema, offset) in [
-        (WeaponRuntimeRootKind::ComponentInstance, 0x8080_3B73, 0x144),
-        (
-            WeaponRuntimeRootKind::ComponentDefinition,
-            0x8080_388F,
-            0x88,
-        ),
+        (RuntimeRootKind::ComponentInstance, 0x8080_3B73, 0x144),
+        (RuntimeRootKind::ComponentDefinition, 0x8080_388F, 0x88),
     ] {
         let field = graph
             .fields()
@@ -147,7 +139,7 @@ fn private_referenced_telesto_graph_preserves_stock_and_shares_both_caster_links
                     && field.locator.value_offset + field.locator.byte_size >= offset + 4
             })
             .unwrap();
-        let WeaponRuntimeValue::Bytes(mut bytes) = field.value.clone() else {
+        let RuntimeValue::Bytes(mut bytes) = field.value.clone() else {
             panic!("bounded field")
         };
         let relative = (offset - field.locator.value_offset) as usize;
@@ -156,9 +148,9 @@ fn private_referenced_telesto_graph_preserves_stock_and_shares_both_caster_links
         let mut locator = field.locator.clone();
         locator.binding_hash = BindingHash::new(0xB176_70ED);
         locator.resource_index = 0;
-        values.push(WeaponRuntimeValueOverride {
+        values.push(RuntimeValueOverride {
             locator,
-            value: WeaponRuntimeValue::Bytes(bytes),
+            value: RuntimeValue::Bytes(bytes),
         });
     }
     if let Some(path) = std::env::var_os("PARHELION_ERGO_SPEED_RECIPE") {
@@ -169,9 +161,13 @@ fn private_referenced_telesto_graph_preserves_stock_and_shares_both_caster_links
             assert_eq!(patch.graph_values, values);
         }
     }
-    let pattern = sundial::package_authoring::runtime::load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, 395).unwrap();
+    let pattern =
+        sundial::package_authoring::runtime::load_runtime_entity_at_pattern_index_with_manager(
+            &manager, 395,
+        )
+        .unwrap();
     let mut entity = pattern.payload;
-    let patches = [21544, 22056].map(|offset| WeaponRuntimeResourcePatch {
+    let patches = [21544, 22056].map(|offset| RuntimeResourcePatch {
         binding_hash: 0x2D8A_944C,
         resource_index: 0,
         offset,
@@ -534,7 +530,7 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
         assert_eq!(appended.file_size, file_size);
     }
     let private_runtime_layout =
-        crate::format::PackageLayout::parse(private_runtime_artifact.bytes())
+        crate::package::format::PackageLayout::parse(private_runtime_artifact.bytes())
             .expect("the private runtime overlay should parse with its first shared-tag table");
     let enrollment = private_runtime_layout
         .shared_tag_enrollment_rows(private_runtime_artifact.bytes())
@@ -786,23 +782,22 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
     );
     let weapon_plan = &bundle.plan.weapons[0];
     let source_breachlight_runtime =
-        sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager(
+        sundial::package_authoring::runtime::load_runtime_entity_with_manager(
             &source_manager,
             BREACHLIGHT_ITEM_HASH,
         )
         .expect("Breachlight runtime entity should load");
-    let authored_runtime =
-        sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager(
-            &authored_manager,
-            weapon_plan.item_hash,
-        )
-        .expect("authored Breachlight-based runtime entity should load");
+    let authored_runtime = sundial::package_authoring::runtime::load_runtime_entity_with_manager(
+        &authored_manager,
+        weapon_plan.item_hash,
+    )
+    .expect("authored Breachlight-based runtime entity should load");
     assert_eq!(
         authored_runtime.payload, source_breachlight_runtime.payload,
         "a private perk-action edit must not alter Breachlight's weapon runtime entity"
     );
     let source_breachlight_graph =
-        sundial::package_authoring::runtime::load_weapon_runtime_graph_for_entity(
+        sundial::package_authoring::runtime::load_runtime_graph_for_entity(
             &source_manager,
             source_breachlight_runtime.item_hash,
             source_breachlight_runtime.pattern_global_id_hash,
@@ -810,7 +805,7 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
             &source_breachlight_runtime.payload,
         )
         .expect("Breachlight runtime graph should decode");
-    let authored_graph = sundial::package_authoring::runtime::load_weapon_runtime_graph_for_entity(
+    let authored_graph = sundial::package_authoring::runtime::load_runtime_graph_for_entity(
         &authored_manager,
         authored_runtime.item_hash,
         authored_runtime.pattern_global_id_hash,
@@ -1038,7 +1033,7 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
 )]
 fn real_private_projectile_speed_clone_preserves_stock_graph_and_action() {
     use sundial::package_authoring::runtime::{
-        WeaponRuntimeRootKind, WeaponRuntimeValue, load_weapon_runtime_graph_for_entity,
+        RuntimeRootKind, RuntimeValue, load_runtime_graph_for_entity,
     };
     let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
@@ -1052,18 +1047,18 @@ fn real_private_projectile_speed_clone_preserves_stock_graph_and_action() {
         .find(|graph| graph.tag.0 == 0x8152_82E1)
         .unwrap();
     let decoded =
-        load_weapon_runtime_graph_for_entity(&manager, 0, 0, graph.tag.0, &graph.payload).unwrap();
+        load_runtime_graph_for_entity(&manager, 0, 0, graph.tag.0, &graph.payload).unwrap();
     let field = decoded
         .fields()
         .find(|field| {
             field.locator.root_schema.get() == 0x8080_388F
-                && field.locator.root == WeaponRuntimeRootKind::ComponentDefinition
+                && field.locator.root == RuntimeRootKind::ComponentDefinition
                 && field.locator.value_offset == 0x48
                 && field.locator.byte_size == 112
         })
         .unwrap();
     assert_eq!(field.owner_offset, 0x17D8);
-    let WeaponRuntimeValue::Bytes(mut bytes) = field.value.clone() else {
+    let RuntimeValue::Bytes(mut bytes) = field.value.clone() else {
         panic!("expected bounded raw field");
     };
     assert_eq!(read_u32(&bytes, 0x40).unwrap(), 1.0_f32.to_bits());
@@ -1071,9 +1066,9 @@ fn real_private_projectile_speed_clone_preserves_stock_graph_and_action() {
     let mut locator = field.locator.clone();
     locator.binding_hash = BindingHash::new(0xB176_70ED); // Select the unambiguous alias used by the recipe.
     locator.resource_index = 0;
-    let value = WeaponRuntimeValueOverride {
+    let value = RuntimeValueOverride {
         locator,
-        value: WeaponRuntimeValue::Bytes(bytes),
+        value: RuntimeValue::Bytes(bytes),
     };
     // Launch can copy prebuilt component state without resetting it from the definition.
     // Keep the serialized prototype and the reset source in agreement.
@@ -1081,13 +1076,13 @@ fn real_private_projectile_speed_clone_preserves_stock_graph_and_action() {
         .fields()
         .find(|field| {
             field.locator.root_schema.get() == 0x8080_3B73
-                && field.locator.root == WeaponRuntimeRootKind::ComponentInstance
+                && field.locator.root == RuntimeRootKind::ComponentInstance
                 && field.locator.value_offset == 0xA0
                 && field.locator.byte_size == 256
         })
         .unwrap();
     assert_eq!(instance_field.owner_offset, 0x1D0);
-    let WeaponRuntimeValue::Bytes(mut instance_bytes) = instance_field.value.clone() else {
+    let RuntimeValue::Bytes(mut instance_bytes) = instance_field.value.clone() else {
         panic!("expected bounded prototype field");
     };
     assert_eq!(read_u32(&instance_bytes, 0xA4).unwrap(), 1.0_f32.to_bits());
@@ -1097,9 +1092,9 @@ fn real_private_projectile_speed_clone_preserves_stock_graph_and_action() {
     instance_locator.resource_index = 0;
     let values = vec![
         value,
-        WeaponRuntimeValueOverride {
+        RuntimeValueOverride {
             locator: instance_locator,
-            value: WeaponRuntimeValue::Bytes(instance_bytes),
+            value: RuntimeValue::Bytes(instance_bytes),
         },
     ];
     if let Some(path) = std::env::var_os("PARHELION_PRIVATE_SPEED_RECIPE") {

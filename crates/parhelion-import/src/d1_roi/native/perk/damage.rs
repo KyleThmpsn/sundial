@@ -1,4 +1,4 @@
-//! Literal damage-event rows and offsets with qualified empty ability filters.
+//! Literal damage-event rows and offsets, with the source damage filter where one is set.
 use super::*;
 use sundial::package_authoring::sandbox_perk::action::native::{Block, Graph, NodeKind};
 
@@ -6,15 +6,18 @@ pub(super) fn read(
     source: &Source,
     p: &Payload,
     at: usize,
-    native: Option<&mut Reader>,
+    mut native: Option<&mut Reader>,
 ) -> Result<Action> {
+    // The damage filter at `+08` has the layout of a hit condition's: damage types, then
+    // ability labels to match and to exclude, their masks and four empty flags at `+90`.
+    let filtered = p.bytes::<4>(at + 0x90)? != [1; 4];
     ensure!(
         p.u8(at + 1)? == 0
-            && p.bytes::<0x8E>(at + 2)? == [0; 0x8E]
-            && p.bytes::<4>(at + 0x90)? == [1; 4]
+            && p.bytes::<6>(at + 2)? == [0; 6]
+            && (filtered || p.bytes::<0x88>(at + 8)? == [0; 0x88])
             && p.u8(at + 0x94)? <= 1
             && p.bytes::<3>(at + 0x95)? == [0; 3],
-        "Source damage modifier has additional ability filters or lifecycle state"
+        "Source damage modifier has an unqualified damage filter or lifecycle state"
     );
     ensure!(
         p.u32(at + 0x16C)? == 0 && p.u8(at + 0x194)? == 0xFF && p.bytes::<3>(at + 0x195)? == [0; 3],
@@ -80,6 +83,19 @@ pub(super) fn read(
                 links: BTreeMap::new(),
             });
         }
+    }
+    if filtered {
+        // Native kind 40 holds the same filter at `+28`, with its marker at `+A0` and flags at
+        // `+B0`, the positions the empty form above fills by hand.
+        filter::damage(
+            source,
+            p,
+            at + 8,
+            at + 0xD8,
+            &mut graph,
+            0x28,
+            native.as_deref_mut(),
+        )?;
     }
     label::translate(source, p, at + 0x98, &mut graph, 0xC0, native)?;
     graph

@@ -7,44 +7,44 @@ const POINTER: u32 = 0x504E_5000;
 const ELEMENT: u32 = 0x504E_4100;
 const VALUE: u32 = 0x504E_5600;
 
-fn step(name_hash: u32, type_handle: u32, offset: usize) -> WeaponRuntimePathElement {
-    WeaponRuntimePathElement {
+fn step(name_hash: u32, type_handle: u32, offset: usize) -> RuntimePathElement {
+    RuntimePathElement {
         name_hash,
         type_handle: type_handle.into(),
         byte_offset: u32::try_from(offset).unwrap_or(u32::MAX),
     }
 }
 
-pub(super) fn root_path(schema: u32) -> Vec<WeaponRuntimePathElement> {
+pub(super) fn root_path(schema: u32) -> Vec<RuntimePathElement> {
     vec![step(ROOT, schema, 0)]
 }
 
 pub(super) fn field_path(
-    path: &[WeaponRuntimePathElement],
+    path: &[RuntimePathElement],
     schema: u32,
     offset: usize,
-) -> Vec<WeaponRuntimePathElement> {
+) -> Vec<RuntimePathElement> {
     let mut path = path.to_vec();
     path.push(step(VALUE, schema, offset));
     path
 }
 
 pub(super) fn inline_path(
-    path: &[WeaponRuntimePathElement],
+    path: &[RuntimePathElement],
     offset: usize,
     schema: u32,
-) -> Vec<WeaponRuntimePathElement> {
+) -> Vec<RuntimePathElement> {
     let mut path = path.to_vec();
     path.push(step(INLINE, schema, offset));
     path
 }
 
 pub(super) fn pointer_path(
-    path: &[WeaponRuntimePathElement],
+    path: &[RuntimePathElement],
     offset: usize,
     schema: u32,
     index: Option<usize>,
-) -> Vec<WeaponRuntimePathElement> {
+) -> Vec<RuntimePathElement> {
     let mut path = path.to_vec();
     path.push(step(
         POINTER,
@@ -57,7 +57,7 @@ pub(super) fn pointer_path(
     path
 }
 
-pub(super) fn is_native(locator: &WeaponRuntimeFieldLocator) -> bool {
+pub(super) fn is_native(locator: &RuntimeFieldLocator) -> bool {
     locator.path.first().is_some_and(|step| {
         step.name_hash == ROOT && step.byte_offset == 0 && step.type_handle == locator.root_schema
     })
@@ -73,8 +73,8 @@ fn encoding(field: &NativeStructureField) -> u32 {
 fn value(
     data: &[u8],
     field: &NativeStructureField,
-    kind: &WeaponRuntimeValueKind,
-) -> Result<WeaponRuntimeValue, String> {
+    kind: &RuntimeValueKind,
+) -> Result<RuntimeValue, String> {
     let code = encoding(field);
     if code == 0 {
         return decode_runtime_value(data, field.owner_offset, kind);
@@ -82,19 +82,19 @@ fn value(
     let bits = structure::numeric::decode(code as u8, read_u32(data, field.owner_offset)?)
         .ok_or("Unknown native numeric encoding")?;
     Ok(if code == 45 {
-        WeaponRuntimeValue::Float32Bits(bits)
+        RuntimeValue::Float32Bits(bits)
     } else {
-        WeaponRuntimeValue::Signed(i64::from(bits as i32))
+        RuntimeValue::Signed(i64::from(bits as i32))
     })
 }
 
 fn fields(
     data: &[u8],
-    root: &WeaponRuntimeRoot,
+    root: &RuntimeRoot,
     binding: u32,
     index: u16,
     structure: &NativeStructure,
-) -> Result<Vec<WeaponRuntimeField>, String> {
+) -> Result<Vec<RuntimeField>, String> {
     let mut fields = Vec::new();
     // A traversal that failed has no complete write contract.
     if !structure.issues.is_empty() {
@@ -128,8 +128,8 @@ fn fields(
             field.schema,
             field.schema_offset
         );
-        fields.push(WeaponRuntimeField {
-            locator: WeaponRuntimeFieldLocator {
+        fields.push(RuntimeField {
+            locator: RuntimeFieldLocator {
                 graph_tag: None,
                 binding_hash: binding.into(),
                 resource_index: index,
@@ -146,7 +146,7 @@ fn fields(
             path_label: format!("{label} / {}", field.label),
             kind,
             value,
-            source: WeaponRuntimeFieldSource::NativeDeclaration,
+            source: RuntimeFieldSource::NativeDeclaration,
             generated_kind: None,
             name_inferred: field.label.ends_with("(inferred)"),
         });
@@ -156,8 +156,8 @@ fn fields(
 
 pub(super) fn append_fields(
     manager: &PackageManager,
-    resources: &mut [WeaponRuntimeResource],
-    owners: &mut [WeaponRuntimeOwner],
+    resources: &mut [RuntimeResource],
+    owners: &mut [RuntimeOwner],
     payloads: &BTreeMap<u32, Vec<u8>>,
 ) -> Result<(), String> {
     let mut seen = BTreeSet::new();
@@ -176,7 +176,7 @@ pub(super) fn append_fields(
         )
     {
         for field in &root.fields {
-            if field.source != WeaponRuntimeFieldSource::OpaqueNativeType {
+            if field.source != RuntimeFieldSource::OpaqueNativeType {
                 seen.insert((tag, field.owner_offset, field.locator.byte_size));
             }
         }
@@ -231,10 +231,10 @@ pub(super) fn append_fields(
 pub(super) fn resolve(
     manager: &PackageManager,
     data: &[u8],
-    root: &WeaponRuntimeRoot,
-    locator: &WeaponRuntimeFieldLocator,
+    root: &RuntimeRoot,
+    locator: &RuntimeFieldLocator,
     registry: &RuntimeRegistry,
-) -> Result<Option<WeaponRuntimeField>, String> {
+) -> Result<Option<RuntimeField>, String> {
     if crate::ability::settings::native::recognizes(locator) {
         return Ok(crate::ability::settings::native::fields(
             manager,
@@ -267,11 +267,11 @@ pub(super) fn resolve(
 }
 
 /// Encode a resolved field, preserving its proven native numeric storage transform.
-pub fn encode_weapon_runtime_field_value(
-    field: &WeaponRuntimeField,
-    value: &WeaponRuntimeValue,
+pub fn encode_runtime_field_value(
+    field: &RuntimeField,
+    value: &RuntimeValue,
 ) -> Result<Vec<u8>, String> {
-    let bytes = encode_weapon_runtime_value(&field.kind, value)?;
+    let bytes = encode_runtime_value(&field.kind, value)?;
     if !is_native(&field.locator) {
         return Ok(bytes);
     }
@@ -295,10 +295,10 @@ pub fn encode_weapon_runtime_field_value(
 }
 
 /// Read a field-sized slice using the same storage contract as the package writer.
-pub fn decode_weapon_runtime_field_value(
-    field: &WeaponRuntimeField,
+pub fn decode_runtime_field_value(
+    field: &RuntimeField,
     bytes: &[u8],
-) -> Result<WeaponRuntimeValue, String> {
+) -> Result<RuntimeValue, String> {
     if bytes.len() != field.kind.byte_size() as usize {
         return Err("Native field bytes have the wrong size".into());
     }

@@ -31,7 +31,7 @@ pub fn preview_replacement(
         crate::strict_json::from_reader(original_bytes.as_slice()).map_err(|e| e.to_string())?;
     let database_path = crate::persistence::investment_path(settings_path);
     if crate::game_settings::requires_sqlite_account(&original) {
-        return crate::persistence::sqlite_account::package::preview_replacement(
+        return crate::persistence::sunrise_account::package::preview_replacement(
             &database_path,
             hashes,
             unlocks,

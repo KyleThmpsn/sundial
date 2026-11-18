@@ -133,7 +133,7 @@ fn resolve_rejects_a_content_group_the_owner_does_not_hold() {
 /// Hard Light and SUROS Regime share the auto rifle content owner.
 #[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
-fn the_element_switch_graft_matches_the_offsets_verified_in_game() {
+fn the_damage_type_switch_graft_matches_the_offsets_verified_in_game() {
     use sundial::package_authoring::open_shadowkeep_package_manager;
     const AUTO_RIFLE_OWNER: u32 = 0x8152_9461;
     const SUROS_GROUP: u32 = 0xA581_883B;
@@ -153,7 +153,7 @@ fn the_element_switch_graft_matches_the_offsets_verified_in_game() {
     // Hard Light's block holds the records at the offsets the in-game trials used.
     let source = behavior("hard-light").unwrap();
     let BehaviorSource::Record { content_group, .. } = source.source else {
-        panic!("Hard Light's element switch is a record");
+        panic!("Hard Light's damage type switch is a record");
     };
     let graft = resolve(&content, content_group, true).unwrap();
     assert_eq!(graft.state_target, 0xC520);
@@ -253,11 +253,11 @@ fn column(choices: Vec<u32>, socket_type: Option<u16>) -> crate::item::WeaponSoc
 #[allow(clippy::cognitive_complexity)]
 fn state_only_and_graph_state_sources_compile_for_another_family() {
     use sundial::package_authoring::{
-        open_shadowkeep_package_manager, runtime::load_weapon_runtime_entity_with_manager,
+        open_shadowkeep_package_manager, runtime::load_runtime_entity_with_manager,
     };
     let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
-    let sniper = load_weapon_runtime_entity_with_manager(&manager, 0xBB46_CCD3).unwrap();
+    let sniper = load_runtime_entity_with_manager(&manager, 0xBB46_CCD3).unwrap();
 
     let drang = patches(
         &manager,
@@ -319,7 +319,7 @@ fn state_only_and_graph_state_sources_compile_for_another_family() {
                 && donor.rarity == sundial::investment::WeaponRarity::Legendary
                 && donor.weapon_pattern_index.is_some()
         })
-        .find_map(|donor| load_weapon_runtime_entity_with_manager(&manager, donor.hash).ok())
+        .find_map(|donor| load_runtime_entity_with_manager(&manager, donor.hash).ok())
         .expect("a legendary pulse rifle with a runtime entity");
     let graviton = patches(
         &manager,
@@ -358,12 +358,12 @@ fn state_only_and_graph_state_sources_compile_for_another_family() {
 /// A cross-owner graft appends its record and, when the source has labels of its own, a
 /// label array; nothing else.
 fn record_and_labels(
-    appends: &[crate::item::WeaponRuntimeResourceAppend],
+    appends: &[crate::item::RuntimeResourceAppend],
 ) -> (
-    &crate::item::WeaponRuntimeResourceAppend,
-    Option<&crate::item::WeaponRuntimeResourceAppend>,
+    &crate::item::RuntimeResourceAppend,
+    Option<&crate::item::RuntimeResourceAppend>,
 ) {
-    let is_labels = |append: &crate::item::WeaponRuntimeResourceAppend| {
+    let is_labels = |append: &crate::item::RuntimeResourceAppend| {
         u32_at(&append.bytes, 12).ok() == Some(LABEL_ARRAY_CLASS)
     };
     let labels = appends.iter().find(|append| is_labels(append));
@@ -376,30 +376,30 @@ fn record_and_labels(
 }
 
 #[test]
-fn catalogue_ids_are_unique_and_the_element_switch_resolves_per_owner() {
+fn catalogue_ids_are_unique_and_the_damage_type_switch_resolves_per_owner() {
     let mut ids = CATALOG.iter().map(|entry| entry.id).collect::<Vec<_>>();
     ids.sort_unstable();
     let count = ids.len();
     ids.dedup();
     assert_eq!(ids.len(), count);
     assert_eq!(
-        element_switch_for_owner(0x8152_9461).map(|entry| entry.id),
+        damage_type_switch_for_owner(0x8152_9461).map(|entry| entry.id),
         Some("hard-light")
     );
     assert_eq!(
-        element_switch_for_owner(0x8152_BC09).map(|entry| entry.id),
+        damage_type_switch_for_owner(0x8152_BC09).map(|entry| entry.id),
         Some("borealis")
     );
-    assert!(element_switch_for_owner(0x8152_905A).is_none());
+    assert!(damage_type_switch_for_owner(0x8152_905A).is_none());
     assert_eq!(
-        resolve_request(ELEMENT_SWITCH, 0x8152_BC09)
+        resolve_request(DAMAGE_TYPE_SWITCH, 0x8152_BC09)
             .unwrap()
             .unwrap()
             .id,
         "borealis"
     );
     assert!(
-        resolve_request(ELEMENT_SWITCH, 0x8152_905A)
+        resolve_request(DAMAGE_TYPE_SWITCH, 0x8152_905A)
             .unwrap()
             .is_none()
     );
@@ -433,7 +433,7 @@ fn catalogue_ids_are_unique_and_the_element_switch_resolves_per_owner() {
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn every_block_with_labels_parses_at_the_row_size_grafts_copy() {
     use sundial::package_authoring::{
-        open_shadowkeep_package_manager, runtime::load_weapon_runtime_entity_with_manager,
+        open_shadowkeep_package_manager, runtime::load_runtime_entity_with_manager,
     };
     let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
@@ -442,7 +442,7 @@ fn every_block_with_labels_parses_at_the_row_size_grafts_copy() {
     let mut checked = 0_usize;
     let mut failures = Vec::new();
     for donor in catalog.weapon_donors() {
-        let Ok(runtime) = load_weapon_runtime_entity_with_manager(&manager, donor.hash) else {
+        let Ok(runtime) = load_runtime_entity_with_manager(&manager, donor.hash) else {
             continue;
         };
         let Ok(content) = content(&manager, &runtime.payload) else {

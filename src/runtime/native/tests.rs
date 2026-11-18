@@ -42,12 +42,12 @@ fn player_settings_use_checked_locators_and_exact_storage_encodings() {
                 assert!(field.locator.is_buildable());
                 assert_eq!(field.locator.type_handle.get(), schema);
                 assert_eq!(field.locator.value_offset as usize, at);
-                assert_eq!(field.value, WeaponRuntimeValue::Float32Bits(bits));
-                let same = encode_weapon_runtime_field_value(field, &field.value).unwrap();
+                assert_eq!(field.value, RuntimeValue::Float32Bits(bits));
+                let same = encode_runtime_field_value(field, &field.value).unwrap();
                 assert_eq!(same, bits.to_le_bytes());
-                let changed = encode_weapon_runtime_field_value(
+                let changed = encode_runtime_field_value(
                     field,
-                    &WeaponRuntimeValue::Float32Bits(2.5_f32.to_bits()),
+                    &RuntimeValue::Float32Bits(2.5_f32.to_bits()),
                 )
                 .unwrap();
                 assert_eq!(changed, 2.5_f32.to_le_bytes());
@@ -62,12 +62,11 @@ fn player_settings_use_checked_locators_and_exact_storage_encodings() {
             if schema == 0x8080_43EC {
                 let flags = editable.iter().find(|f| f.owner_offset == 0x298).unwrap();
                 assert_eq!(flags.name, "Attachment Flags");
-                assert_eq!(flags.kind, WeaponRuntimeValueKind::BitFlags { bits: 32 });
-                assert_eq!(flags.value, WeaponRuntimeValue::Unsigned(0x31));
+                assert_eq!(flags.kind, RuntimeValueKind::BitFlags { bits: 32 });
+                assert_eq!(flags.value, RuntimeValue::Unsigned(0x31));
                 assert!(flags.locator.is_buildable());
                 let encoded =
-                    encode_weapon_runtime_field_value(flags, &WeaponRuntimeValue::Unsigned(0x21))
-                        .unwrap();
+                    encode_runtime_field_value(flags, &RuntimeValue::Unsigned(0x21)).unwrap();
                 assert_eq!(encoded, [0x21, 0, 0, 0]);
                 assert!(
                     presentation::field_tooltip(flags)
@@ -76,12 +75,9 @@ fn player_settings_use_checked_locators_and_exact_storage_encodings() {
             }
             if schema == 0x8080_43E2 {
                 let movement = editable.iter().find(|f| f.owner_offset == 0x1D8).unwrap();
-                assert_eq!(movement.value, WeaponRuntimeValue::Boolean(true));
-                let encoded = encode_weapon_runtime_field_value(
-                    movement,
-                    &WeaponRuntimeValue::Boolean(false),
-                )
-                .unwrap();
+                assert_eq!(movement.value, RuntimeValue::Boolean(true));
+                let encoded =
+                    encode_runtime_field_value(movement, &RuntimeValue::Boolean(false)).unwrap();
                 assert_eq!(encoded, [0]);
             }
         }
@@ -123,21 +119,20 @@ fn player_property_modifiers_expose_and_encode_exact_fields() {
         assert_eq!(fields.len(), 5);
         for field in &fields {
             let at = field.owner_offset as usize;
-            let encoded = encode_weapon_runtime_field_value(field, &field.value).unwrap();
+            let encoded = encode_runtime_field_value(field, &field.value).unwrap();
             assert_eq!(encoded, data[at..at + encoded.len()]);
             assert_eq!(
-                decode_weapon_runtime_field_value(field, &encoded).unwrap(),
+                decode_runtime_field_value(field, &encoded).unwrap(),
                 field.value
             );
         }
         let operation = fields.iter().find(|f| f.name == "Operation").unwrap();
-        assert_eq!(operation.value, WeaponRuntimeValue::Unsigned(254));
-        let encoded =
-            encode_weapon_runtime_field_value(operation, &WeaponRuntimeValue::Unsigned(1)).unwrap();
+        assert_eq!(operation.value, RuntimeValue::Unsigned(254));
+        let encoded = encode_runtime_field_value(operation, &RuntimeValue::Unsigned(1)).unwrap();
         assert_eq!(encoded, [1]);
         assert_eq!(
             fields.iter().find(|f| f.name == "Ability").unwrap().value,
-            WeaponRuntimeValue::Signed(-1)
+            RuntimeValue::Signed(-1)
         );
     }
     let bad = structure::test_walk(&[0; 0x58], 0, schema, |_| {
@@ -153,9 +148,9 @@ fn player_property_modifiers_expose_and_encode_exact_fields() {
     );
 }
 
-fn root(schema: u32, start: u32, size: u32) -> WeaponRuntimeRoot {
-    WeaponRuntimeRoot {
-        kind: WeaponRuntimeRootKind::ComponentDefinition,
+fn root(schema: u32, start: u32, size: u32) -> RuntimeRoot {
+    RuntimeRoot {
+        kind: RuntimeRootKind::ComponentDefinition,
         schema,
         owner_offset: start,
         byte_size: size,
@@ -165,7 +160,7 @@ fn root(schema: u32, start: u32, size: u32) -> WeaponRuntimeRoot {
     }
 }
 
-fn array_fields(start: usize, target: usize) -> (Vec<u8>, Vec<WeaponRuntimeField>) {
+fn array_fields(start: usize, target: usize) -> (Vec<u8>, Vec<RuntimeField>) {
     let schema = 0x8080_1234;
     let mut data = vec![0; target + 24];
     data[start + 8..start + 16]
@@ -204,11 +199,11 @@ fn native_array_paths_survive_relocation_and_select_exact_elements() {
     for (before, after) in original.iter().zip(&moved) {
         assert!(before.locator.is_buildable());
         assert_eq!(
-            encode_weapon_runtime_field_value(before, &before.value).unwrap(),
+            encode_runtime_field_value(before, &before.value).unwrap(),
             data[before.owner_offset as usize..before.owner_offset as usize + 4]
         );
         assert_eq!(
-            encode_weapon_runtime_field_value(after, &after.value).unwrap(),
+            encode_runtime_field_value(after, &after.value).unwrap(),
             rebased[after.owner_offset as usize..after.owner_offset as usize + 4]
         );
         assert_eq!(before.value, after.value);
@@ -222,13 +217,13 @@ fn native_array_paths_survive_relocation_and_select_exact_elements() {
         forged.value_offset += 4;
         assert!(!moved.iter().any(|f| f.locator == forged));
     }
-    let edit = WeaponRuntimeValueOverride {
+    let edit = RuntimeValueOverride {
         locator: original[1].locator.clone(),
-        value: WeaponRuntimeValue::Float32Bits(3.5_f32.to_bits()),
+        value: RuntimeValue::Float32Bits(3.5_f32.to_bits()),
     };
     let saved = serde_json::to_string(&edit).unwrap();
     assert_eq!(
-        serde_json::from_str::<WeaponRuntimeValueOverride>(&saved).unwrap(),
+        serde_json::from_str::<RuntimeValueOverride>(&saved).unwrap(),
         edit
     );
 }
@@ -240,20 +235,17 @@ fn native_numeric_writes_preserve_all_bits_and_reject_unknown_encodings() {
         let mut field = fields[0].clone();
         field.locator.path.last_mut().unwrap().name_hash = VALUE + code;
         if code == 44 {
-            field.kind = WeaponRuntimeValueKind::SignedInteger { bits: 32 };
-            field.value = WeaponRuntimeValue::Signed(0);
+            field.kind = RuntimeValueKind::SignedInteger { bits: 32 };
+            field.value = RuntimeValue::Signed(0);
         }
         for bits in [0, 0x8000_0000, 0x7FC1_2345, u32::MAX, 0x3F80_0000] {
             let value = if code == 44 {
-                WeaponRuntimeValue::Signed(i64::from(bits as i32))
+                RuntimeValue::Signed(i64::from(bits as i32))
             } else {
-                WeaponRuntimeValue::Float32Bits(bits)
+                RuntimeValue::Float32Bits(bits)
             };
-            let bytes = encode_weapon_runtime_field_value(&field, &value).unwrap();
-            assert_eq!(
-                decode_weapon_runtime_field_value(&field, &bytes).unwrap(),
-                value
-            );
+            let bytes = encode_runtime_field_value(&field, &value).unwrap();
+            assert_eq!(decode_runtime_field_value(&field, &bytes).unwrap(), value);
             assert_eq!(
                 structure::numeric::decode(
                     code as u8,
@@ -263,8 +255,8 @@ fn native_numeric_writes_preserve_all_bits_and_reject_unknown_encodings() {
             );
         }
         field.locator.path.last_mut().unwrap().name_hash = VALUE + 256 + code;
-        assert!(encode_weapon_runtime_field_value(&field, &field.value).is_err());
-        assert!(decode_weapon_runtime_field_value(&field, &[0; 4]).is_err());
+        assert!(encode_runtime_field_value(&field, &field.value).is_err());
+        assert!(decode_runtime_field_value(&field, &[0; 4]).is_err());
     }
 }
 
@@ -280,7 +272,7 @@ fn incomplete_native_traversal_never_produces_editable_values() {
             path: original[0].locator.path.clone(),
             label: "Partial Value".into(),
             representation: "Float32".into(),
-            storage: Some((WeaponRuntimeValueKind::Float32, 0)),
+            storage: Some((RuntimeValueKind::Float32, 0)),
             value: "0".into(),
         }],
         issues: vec!["Truncated array".into()],
@@ -310,7 +302,7 @@ fn structural_metadata_wins_over_inline_numeric_aliases() {
             path: field.locator.path.clone(),
             label: "Aliased Value".into(),
             representation: "Float32".into(),
-            storage: Some((WeaponRuntimeValueKind::Float32, 0)),
+            storage: Some((RuntimeValueKind::Float32, 0)),
             value: String::new(),
         });
     }

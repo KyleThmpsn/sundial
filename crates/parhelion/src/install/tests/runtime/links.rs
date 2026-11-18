@@ -190,7 +190,7 @@ fn lifecycle(schema: u64, root: bool) -> serde_json::Value {
     let previous = inventory(&fixture.target);
     super::super::loader::change_assets(&mut fixture);
     let record = interrupted_replacement(&fixture, &request);
-    let assets = crate::package_profile::PARHELION_ASSET_FILE_NAME;
+    let assets = crate::package::profile::PARHELION_ASSET_FILE_NAME;
     assert_ne!(
         fs::read(fixture.target.join(assets)).unwrap(),
         previous[assets]

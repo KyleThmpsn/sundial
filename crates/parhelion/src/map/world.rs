@@ -4,7 +4,10 @@
 //! names, as Sunrise's activity inventory does, finds the map under its own name. The scenario
 //! still names the donor's world, unless the map has geometry: then its slice set, object
 //! registry and map root chain are the map's own, and its bubble takes the map's name.
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use sundial::package_authoring::PackageManager;
 use tiger_pkg::TagHash;
@@ -12,7 +15,7 @@ use tiger_pkg::TagHash;
 use crate::{
     AuthoringResult, NewTagSpec, NewTagStorageMode,
     error::invalid,
-    format::NamedTag,
+    package::format::NamedTag,
     shared_tag_dependency_index::{
         enroll_dependencies, enroll_inherited_dependencies,
         native::{Companions, native_companion},
@@ -667,6 +670,86 @@ impl World {
         }
     }
 
+    /// What the map's activity SDK rows name when its activity package starts at `first`: its
+    /// activity root and scenario, and the donor tags each of its registries copies. A converted
+    /// level's connected areas each take the donor's one bubble under the area's own name. Any
+    /// other map keeps the donor's bubbles, the first under the map's name when the map owns its
+    /// slice set.
+    pub(super) fn pack_rows(&self, first: TagHash) -> AuthoringResult<super::pack::Destination> {
+        let at = |offset: usize| {
+            let index = first.entry_index() as usize + offset;
+            if index >= crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+                return Err(invalid("The map's activity package has too many entries"));
+            }
+            Ok(TagHash::new(first.pkg_id(), index as u16))
+        };
+        let copies = |registry: &super::registry::Registry, first: TagHash| {
+            registry.copies(first).map(|copies| {
+                let moved = copies
+                    .moved
+                    .into_iter()
+                    .map(|(donor, copy)| (donor.0, copy.0))
+                    .collect::<BTreeMap<_, _>>();
+                (copies.entries, moved, copies.lost, copies.encounter)
+            })
+        };
+        let mut rows = super::pack::Destination {
+            name: self.name.clone(),
+            donor_scenario: self.scenario.tag.0,
+            scenario: at(2)?.0,
+            root: at(0)?.0,
+            moved: BTreeMap::new(),
+            lost: BTreeMap::new(),
+            bubbles: BTreeMap::new(),
+            encounter: None,
+            areas: Vec::new(),
+        };
+        if let Some(layout) = &self.streaming {
+            let first_area = self
+                .registry
+                .as_ref()
+                .ok_or_else(|| invalid("Streaming registry is absent"))?;
+            // The first area's registry follows the map's slice set. Each later area's follows a
+            // slice set of its own, after the area before it.
+            let mut next = ENTRIES + 1;
+            for (bubble, registry) in std::iter::once(first_area)
+                .chain(&self.extra_registries)
+                .enumerate()
+            {
+                if bubble != 0 {
+                    next += 1;
+                }
+                let (entries, moved, lost, encounter) = copies(registry, at(next)?)?;
+                next += entries;
+                rows.areas.push(super::pack::Area {
+                    name: layout.hash(bubble),
+                    state: (bubble != 0).then(|| {
+                        sundial::package_authoring::fnv1_name_hash(&format!(
+                            "{}/default",
+                            layout.names[bubble]
+                        ))
+                    }),
+                    moved,
+                    lost,
+                    encounter,
+                });
+            }
+        } else if self.slice_set.is_some() {
+            // The scenario names the map's bubble and registry only when the map owns its slice
+            // set.
+            let name = BubbleName::new(&self.world, &self.name);
+            rows.bubbles
+                .insert(u32::from_le_bytes(name.donor), u32::from_le_bytes(name.map));
+            if let Some(registry) = &self.registry {
+                let (_, moved, lost, encounter) = copies(registry, at(ENTRIES + 1)?)?;
+                rows.moved = moved;
+                rows.lost = lost;
+                rows.encounter = encounter;
+            }
+        }
+        Ok(rows)
+    }
+
     fn single_activity(
         &self,
         manager: &PackageManager,
@@ -674,7 +757,7 @@ impl World {
     ) -> AuthoringResult<(Vec<NewTagSpec>, Vec<NamedTag>)> {
         let at = |offset: usize| {
             let index = first.entry_index() as usize + offset;
-            if index >= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+            if index >= crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
                 return Err(invalid("The map's activity package has too many entries"));
             }
             Ok(TagHash::new(first.pkg_id(), index as u16))
@@ -749,7 +832,7 @@ impl World {
     ) -> AuthoringResult<(
         Vec<NewTagSpec>,
         Vec<NamedTag>,
-        Vec<crate::extend::NewTagReferenceOverride>,
+        Vec<crate::package::extend::NewTagReferenceOverride>,
     )> {
         if self.streaming.is_some() {
             return Err(invalid(
@@ -793,7 +876,7 @@ impl World {
     ) -> AuthoringResult<(
         Vec<NewTagSpec>,
         Vec<NamedTag>,
-        Vec<crate::extend::NewTagReferenceOverride>,
+        Vec<crate::package::extend::NewTagReferenceOverride>,
     )> {
         if let Some(layout) = &self.streaming {
             return self.streaming_tags(native, resources, layout);
@@ -823,7 +906,7 @@ impl World {
         let (mut tags, names) = self.single_activity(manager, first)?;
         let at = |offset: usize| -> AuthoringResult<TagHash> {
             let index = first.entry_index() as usize + offset;
-            if index >= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+            if index >= crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
                 return Err(invalid("Streaming activity exceeds one package"));
             }
             Ok(TagHash::new(first.pkg_id(), index as u16))
@@ -856,7 +939,7 @@ impl World {
             tags.extend(records);
             slices.push(slice);
         }
-        if tags.len() > crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+        if tags.len() > crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
             return Err(invalid("Streaming activity exceeds one package"));
         }
         let scenario = &mut tags[2].payload;
@@ -912,13 +995,13 @@ impl World {
     ) -> AuthoringResult<(
         Vec<NewTagSpec>,
         Vec<NamedTag>,
-        Vec<crate::extend::NewTagReferenceOverride>,
+        Vec<crate::package::extend::NewTagReferenceOverride>,
     )> {
         let native_count = self
             .split_counts()
             .ok_or_else(|| invalid("Streaming geometry is absent"))?
             .0;
-        if native_count > crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+        if native_count > crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
             return Err(invalid("Streaming world metadata exceeds one package"));
         }
         let mut native_tags = Vec::new();

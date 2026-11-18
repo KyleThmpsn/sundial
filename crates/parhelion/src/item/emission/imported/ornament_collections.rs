@@ -294,6 +294,8 @@ pub(super) fn apply(
         source_acquired_flag: source_unlock as u16,
         acquisition,
         count_selection: selection,
+        // A weapon's own ornament joins its page alone, never a badge.
+        badge_rank: crate::badge::Rank::of(crate::ItemKind::Mod, 0),
     };
     if acquisition.flag().is_some() {
         if weapon_page.is_some() {

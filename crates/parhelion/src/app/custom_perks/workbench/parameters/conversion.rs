@@ -13,7 +13,7 @@ mod tests;
 pub(in crate::app::custom_perks) struct Input {
     index: u16,
     activation: Option<PerkActivation>,
-    values: Vec<WeaponRuntimeValueOverride>,
+    values: Vec<RuntimeValueOverride>,
     action_values: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
     projectiles: Vec<ProjectileSelection>,
 }
@@ -345,7 +345,7 @@ fn effective_action(
 
 fn transfer_values(
     loaded: &PrivatePerkRuntimeGraph,
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
     program: &mut Program,
 ) -> Result<(), String> {
     for value in values {

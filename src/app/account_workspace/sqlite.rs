@@ -78,12 +78,7 @@ pub(super) fn apply_character_updates<D: NativeAccountDocument>(
             update,
         })
         .collect();
-    document
-        .characters_mut()
-        .apply(
-            D::character_capabilities(),
-            domain::CharacterCommand::Batch(commands),
-        )
+    run_command(document, domain::CharacterCommand::Batch(commands))
         .map_err(|error| error.to_string())?;
     if abilities_changed {
         let persisted_selection = {
@@ -294,24 +289,22 @@ pub(super) fn add_inventory_item<D: NativeAccountDocument>(
     let instance_soid = document
         .next_item_identity()
         .map_err(app_inventory_error::<D>)?;
-    document
-        .characters_mut()
-        .apply(
-            D::character_capabilities(),
-            domain::CharacterCommand::AddInventoryItem {
-                character_id,
-                item: domain::ItemInstance {
-                    id: entity_id,
-                    instance_soid,
-                    definition_hash: domain::DefinitionHash::new(item.definition_hash),
-                    level: item.level,
-                    quantity: item.quantity,
-                    plugs: domain::ItemPlugs::NativeDefaults,
-                    flags: None,
-                },
+    run_command(
+        document,
+        domain::CharacterCommand::AddInventoryItem {
+            character_id,
+            item: domain::ItemInstance {
+                id: entity_id,
+                instance_soid,
+                definition_hash: domain::DefinitionHash::new(item.definition_hash),
+                level: item.level,
+                quantity: item.quantity,
+                plugs: domain::ItemPlugs::NativeDefaults,
+                flags: None,
             },
-        )
-        .map_err(domain_inventory_error::<D>)?;
+        },
+    )
+    .map_err(domain_inventory_error::<D>)?;
     document.observe_item_identity(instance_soid);
     // Only once the item is in, so a refused add leaves the account as it was.
     document
@@ -337,10 +330,7 @@ pub(super) fn apply_inventory_item_action<D: NativeAccountDocument>(
             update: domain_item_update(action),
         },
     };
-    document
-        .characters_mut()
-        .apply(D::character_capabilities(), command)
-        .map_err(domain_inventory_error::<D>)?;
+    run_command(document, command).map_err(domain_inventory_error::<D>)?;
     Ok(())
 }
 
@@ -366,12 +356,7 @@ pub(super) fn remove_character_inventory_items<D: NativeAccountDocument>(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let removed = commands.len();
-    document
-        .characters_mut()
-        .apply(
-            D::character_capabilities(),
-            domain::CharacterCommand::Batch(commands),
-        )
+    run_command(document, domain::CharacterCommand::Batch(commands))
         .map_err(domain_inventory_error::<D>)?;
     Ok(removed)
 }
@@ -382,16 +367,14 @@ pub(super) fn swap_inventory_item_with_equipment<D: NativeAccountDocument>(
     slot: &str,
 ) -> Result<bool, InventoryError> {
     let item_id = inventory_item(document, location)?.id;
-    let result = document
-        .characters_mut()
-        .apply(
-            D::character_capabilities(),
-            domain::CharacterCommand::SwapInventoryItemWithEquipment {
-                item_id,
-                slot: domain::EquipmentSlot::new(slot),
-            },
-        )
-        .map_err(domain_inventory_error::<D>)?;
+    let result = run_command(
+        document,
+        domain::CharacterCommand::SwapInventoryItemWithEquipment {
+            item_id,
+            slot: domain::EquipmentSlot::new(slot),
+        },
+    )
+    .map_err(domain_inventory_error::<D>)?;
     match result {
         domain::CharacterCommandResult::EquipmentSwapped { replaced } => Ok(replaced),
         _ => Err(InventoryError::new(
@@ -411,16 +394,14 @@ pub(super) fn move_inventory_item_to_character<D: NativeAccountDocument>(
         character(document, destination_character_index).map_err(app_inventory_error::<D>)?;
     let destination_character_id = destination.id;
     let item_index = destination.inventory.len();
-    document
-        .characters_mut()
-        .apply(
-            D::character_capabilities(),
-            domain::CharacterCommand::MoveInventoryItem {
-                item_id,
-                destination_character_id,
-            },
-        )
-        .map_err(domain_inventory_error::<D>)?;
+    run_command(
+        document,
+        domain::CharacterCommand::MoveInventoryItem {
+            item_id,
+            destination_character_id,
+        },
+    )
+    .map_err(domain_inventory_error::<D>)?;
     Ok(InventoryItemLocation {
         character_index: destination_character_index,
         item_index,
@@ -435,16 +416,14 @@ pub(super) fn move_equipment_item_to_inventory<D: NativeAccountDocument>(
     let character_id = character(document, character_index)
         .map_err(app_inventory_error::<D>)?
         .id;
-    document
-        .characters_mut()
-        .apply(
-            D::character_capabilities(),
-            domain::CharacterCommand::MoveEquipmentItemToInventory {
-                character_id,
-                slot: domain::EquipmentSlot::new(slot),
-            },
-        )
-        .map_err(domain_inventory_error::<D>)?;
+    run_command(
+        document,
+        domain::CharacterCommand::MoveEquipmentItemToInventory {
+            character_id,
+            slot: domain::EquipmentSlot::new(slot),
+        },
+    )
+    .map_err(domain_inventory_error::<D>)?;
     Ok(())
 }
 
@@ -660,11 +639,19 @@ fn apply_character_command<D: NativeAccountDocument>(
     document: &mut D,
     command: domain::CharacterCommand,
 ) -> Result<(), String> {
-    document
-        .characters_mut()
-        .apply(D::character_capabilities(), command)
+    run_command(document, command)
         .map(|_| ())
         .map_err(|error| error.to_string())
+}
+
+/// Applies a character command under the document's own rules, such as the inventory capacity
+/// its schema allows.
+fn run_command<D: NativeAccountDocument>(
+    document: &mut D,
+    command: domain::CharacterCommand,
+) -> Result<domain::CharacterCommandResult, domain::AccountError> {
+    let capabilities = document.character_capabilities();
+    document.characters_mut().apply(capabilities, command)
 }
 
 fn update_equipment<D: NativeAccountDocument>(

@@ -7,18 +7,23 @@
 //! no existing record or pointer moves. The registry layouts of the record classes name every
 //! self-relative field below.
 //!
-//! A game mode's activity lists the maps it plays in a playlist, by activity ordinal, so each
-//! playlist naming a donor row gains an entry for the map's copy of that row. The private match
-//! screen does not read playlists. Its map list is the private match table's.
-use std::collections::{BTreeMap, BTreeSet};
+//! A mod-folder build writes the rows Sunrise merges with other mods' rows, in the layout Sunrise
+//! Studio writes: nothing in the installed bytes changes but the index descriptor, and each new
+//! display record carries its own text block behind it. Any other build moves the display text
+//! blocks to the end of the payload with the maps' own.
+//!
+//! A map joins no mode playlist. A game mode's activity lists the maps it plays in a playlist
+//! inside an installed object, by activity ordinal, and the merge can't describe one growing.
+//! The private match screen does not read playlists. Its map list is the private match table's.
+use std::collections::BTreeSet;
 
 use super::Resolved;
 use crate::{
     AuthoringResult,
     error::invalid,
     tag_payload::{
-        append_native_array, array_at, read_i64, read_u16, read_u32, synchronize_payload_size,
-        write_relative_pointer, write_u16, write_u32,
+        append_native_array, array_at, read_i64, read_u32, synchronize_payload_size,
+        write_relative_pointer, write_u32,
     },
 };
 
@@ -35,16 +40,6 @@ const ACTIVITY_POINTERS: [usize; 17] = [
     0xD0,
 ];
 const ACTIVITY_NAME_FIELD: usize = 0x68;
-/// The record's playlist (class `80807733`): a hash, then at `+0x08` its items.
-const ACTIVITY_PLAYLIST_FIELD: usize = 0x18;
-const PLAYLIST_CLASS: u32 = 0x8080_7733;
-const PLAYLIST_ITEMS: usize = 0x08;
-/// A playlist item (class `80807736`, 56 bytes): a weight at `+4`, the activity ordinal as a
-/// `u16` at `+8`, then mode arrays whose pointers are at `+0x18` and `+0x30`.
-const PLAYLIST_ITEM_CLASS: u32 = 0x8080_7736;
-const PLAYLIST_ITEM_SIZE: usize = 56;
-const PLAYLIST_ITEM_ACTIVITY: usize = 0x08;
-const PLAYLIST_ITEM_POINTERS: [usize; 2] = [0x18, 0x30];
 
 const DISPLAY_ROW_CLASS: u32 = 0x8080_5E15;
 const DISPLAY_RECORD_CLASS: u32 = 0x8080_5E18;
@@ -197,89 +192,6 @@ fn copy_record(
     Ok(copy)
 }
 
-/// Adds an item for each copy of a donor row to every playlist that names the donor row, after
-/// the playlist's own items. Each moved or copied item keeps its arrays' targets.
-fn extend_playlists(
-    data: &mut Vec<u8>,
-    rows: &Rows,
-    copies: &BTreeMap<u16, Vec<u16>>,
-) -> AuthoringResult<()> {
-    for ordinal in 0..rows.count {
-        let record = rows.record(data, ordinal)?;
-        if read_i64(data, record + ACTIVITY_PLAYLIST_FIELD)? == 0 {
-            continue;
-        }
-        let playlist = target(data, record + ACTIVITY_PLAYLIST_FIELD)?;
-        if read_u32(data, playlist - 4)? != PLAYLIST_CLASS {
-            return Err(invalid(format!(
-                "Activity {ordinal} names a playlist that is not class {PLAYLIST_CLASS:08X}"
-            )));
-        }
-        let (count, _, items, class) = array_at(data, playlist + PLAYLIST_ITEMS)?;
-        if count == 0 {
-            continue;
-        }
-        if class != PLAYLIST_ITEM_CLASS {
-            return Err(invalid(format!(
-                "Activity {ordinal}'s playlist items are class {class:08X}"
-            )));
-        }
-        let mut sources = (0..count)
-            .map(|item| (items + item * PLAYLIST_ITEM_SIZE, None))
-            .collect::<Vec<_>>();
-        for item in 0..count {
-            let item = items + item * PLAYLIST_ITEM_SIZE;
-            let activity = read_u16(data, item + PLAYLIST_ITEM_ACTIVITY)?;
-            if let Some(added) = copies.get(&activity) {
-                sources.extend(added.iter().map(|&copy| (item, Some(copy))));
-            }
-        }
-        if sources.len() == count {
-            continue;
-        }
-        let mut bytes = Vec::with_capacity(sources.len() * PLAYLIST_ITEM_SIZE);
-        let mut targets = Vec::with_capacity(sources.len());
-        for &(source, _) in &sources {
-            bytes.extend_from_slice(
-                data.get(source..source + PLAYLIST_ITEM_SIZE)
-                    .ok_or_else(|| invalid("A playlist item leaves its table"))?,
-            );
-            targets.push(
-                PLAYLIST_ITEM_POINTERS
-                    .iter()
-                    .map(|&field| {
-                        Ok(if read_i64(data, source + field)? == 0 {
-                            None
-                        } else {
-                            Some(target(data, source + field)?)
-                        })
-                    })
-                    .collect::<AuthoringResult<Vec<_>>>()?,
-            );
-        }
-        append_native_array(
-            data,
-            playlist + PLAYLIST_ITEMS,
-            PLAYLIST_ITEM_CLASS,
-            sources.len(),
-            &bytes,
-        )?;
-        let (_, _, moved, _) = array_at(data, playlist + PLAYLIST_ITEMS)?;
-        for (index, ((_, copy), fields)) in sources.iter().zip(targets).enumerate() {
-            let item = moved + index * PLAYLIST_ITEM_SIZE;
-            for (&field, target) in PLAYLIST_ITEM_POINTERS.iter().zip(fields) {
-                if let Some(target) = target {
-                    write_relative_pointer(data, item + field, target)?;
-                }
-            }
-            if let Some(copy) = copy {
-                write_u16(data, item + PLAYLIST_ITEM_ACTIVITY, *copy)?;
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Moves the display text blocks to the end of `data` with `added` after the existing ones, and
 /// points every display record at its block's new place. Each of `copies` is a new display record
 /// and the ordinal of its block among `added`.
@@ -363,11 +275,13 @@ fn extend_index(
 pub(super) type RowCopies = Vec<(u16, u16)>;
 
 /// The activity and display tables with every map's rows appended in the same order, so each
-/// display row keeps its activity row's ordinal and hash, and each map's row copies.
+/// display row keeps its activity row's ordinal and hash, and each map's row copies. A `mergeable`
+/// table changes no installed object.
 pub(super) fn append(
     activities: &[u8],
     displays: &[u8],
     maps: &[Resolved],
+    mergeable: bool,
 ) -> AuthoringResult<(Vec<u8>, Vec<u8>, Vec<RowCopies>)> {
     let activity_rows = Rows::read(activities)?;
     let display_rows = Rows::read_class(displays, DISPLAY_ROW_CLASS, "activity display table")?;
@@ -383,8 +297,6 @@ pub(super) fn append(
     // Each map's text block, and each new display record with the ordinal of its block.
     let mut text_blocks = Vec::new();
     let mut texts = Vec::new();
-    // Each donor row's ordinal, with the ordinals its copies take after the stock rows.
-    let mut copies = BTreeMap::<u16, Vec<u16>>::new();
     let mut map_copies = Vec::with_capacity(maps.len());
     for map in maps {
         let mut rows = RowCopies::new();
@@ -427,7 +339,6 @@ pub(super) fn append(
                 narrow(*ordinal)?,
                 narrow(activity_rows.count + added_activities.len())?,
             );
-            copies.entry(pair.0).or_default().push(pair.1);
             rows.push(pair);
             added_activities.push((hash, record));
 
@@ -439,7 +350,7 @@ pub(super) fn append(
                     .get(donor_text..donor_text + TEXT_BLOCK_SIZE)
                     .ok_or_else(|| invalid("A donor display text block leaves its table"))?
                     .to_vec();
-                let bank = u32::try_from(crate::package_profile::localization_table())
+                let bank = u32::try_from(crate::package::profile::localization_table())
                     .map_err(|_| invalid("Localized bank index does not fit 32 bits"))?;
                 crate::tag_payload::write_localized_reference(
                     &mut block,
@@ -462,13 +373,21 @@ pub(super) fn append(
                 DISPLAY_RECORD_SIZE,
                 &DISPLAY_POINTERS,
             )?;
-            texts.push((copy, text));
+            if mergeable {
+                // The record's own block follows it, so the installed text blocks stay put.
+                let block = display.len();
+                display.extend_from_slice(&text_blocks[text]);
+                write_relative_pointer(&mut display, copy + DISPLAY_TEXT_FIELD, block)?;
+            } else {
+                texts.push((copy, text));
+            }
             added_displays.push((hash, copy));
         }
         map_copies.push(rows);
     }
-    extend_text_blocks(&mut display, &display_rows, &text_blocks, &texts)?;
-    extend_playlists(&mut activity, &activity_rows, &copies)?;
+    if !mergeable {
+        extend_text_blocks(&mut display, &display_rows, &text_blocks, &texts)?;
+    }
     extend_index(
         &mut activity,
         &activity_rows,

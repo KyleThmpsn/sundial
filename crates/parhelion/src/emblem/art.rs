@@ -59,7 +59,7 @@ pub(crate) fn resolve(
     container_of: &dyn Fn(u32) -> AuthoringResult<TagHash>,
 ) -> AuthoringResult<ResolvedNameplate> {
     let (template_row, template) = base;
-    let template_payload = crate::icon_edit::read_icon_container(manager, template)?;
+    let template_payload = crate::icon::edit::read_icon_container(manager, template)?;
     let layer_in = |payload: &[u8], part: NameplatePart| -> AuthoringResult<Option<TagHash>> {
         let tag = TagHash(read_u32(payload, part.layer_offset())?);
         Ok(is_valid_package_tag(tag).then_some(tag))
@@ -82,7 +82,7 @@ pub(crate) fn resolve(
                     .parse_u32()
                     .map_err(|error| invalid(error.to_string()))?;
                 let container = container_of(hash)?;
-                let payload = crate::icon_edit::read_icon_container(manager, container)?;
+                let payload = crate::icon::edit::read_icon_container(manager, container)?;
                 let layer = layer_in(&payload, part)?.ok_or_else(|| {
                     invalid(format!(
                         "Emblem 0x{hash:08X} has no {} image",
@@ -119,7 +119,7 @@ pub(crate) fn resolve(
                     None => {
                         let payload = source
                             .map(|container| {
-                                crate::icon_edit::read_icon_container(manager, container)
+                                crate::icon::edit::read_icon_container(manager, container)
                             })
                             .transpose()?;
                         payload
@@ -163,8 +163,8 @@ pub(crate) fn author(
     nodes: &mut Vec<NewTagSpec>,
     references: &mut Vec<NewTagReferenceOverride>,
 ) -> AuthoringResult<TagHash> {
-    let allocator = crate::appended_tags::AppendedTagAllocator::new(package, first);
-    let mut container = crate::icon_edit::read_icon_container(manager, nameplate.template)?;
+    let allocator = crate::package::appended_tags::AppendedTagAllocator::new(package, first);
+    let mut container = crate::icon::edit::read_icon_container(manager, nameplate.template)?;
     let banner_offset = NameplatePart::Banner.layer_offset();
     let banner_copied =
         read_u32(&container, BANNER_COPY_OFFSET)? == read_u32(&container, banner_offset)?;
@@ -176,7 +176,7 @@ pub(crate) fn author(
             Source::Base => continue,
             Source::Layer(layer) => *layer,
             Source::Image { layout, .. } | Source::Artwork { layout, .. } => {
-                let plan = crate::icon_edit::build_layer_repaint_plan(
+                let plan = crate::icon::edit::build_layer_repaint_plan(
                     manager,
                     package,
                     first,
@@ -219,7 +219,7 @@ pub(crate) fn author(
     for offset in ICON_LAYER_REFERENCE_OFFSETS {
         let layer = TagHash(read_u32(&container, offset)?);
         if is_valid_package_tag(layer) && !painted.contains(&layer) {
-            dependencies.extend(crate::watermark::validate_icon_layer(
+            dependencies.extend(crate::icon::watermark::validate_icon_layer(
                 manager,
                 layer,
                 nameplate.template,
@@ -228,7 +228,7 @@ pub(crate) fn author(
         }
     }
     if let Some(source) = nameplate.colors {
-        let colors = crate::icon_edit::read_icon_container(manager, source)?;
+        let colors = crate::icon::edit::read_icon_container(manager, source)?;
         container[COLORS].copy_from_slice(&colors[COLORS]);
     }
     if let Some(colors) = nameplate.custom_colors {
@@ -237,7 +237,7 @@ pub(crate) fn author(
                 .copy_from_slice(&value.to_le_bytes());
         }
     }
-    let fingerprint = crate::watermark::private_icon_fingerprint(&container, &revision);
+    let fingerprint = crate::icon::watermark::private_icon_fingerprint(&container, &revision);
     write_u32(&mut container, FINGERPRINT_OFFSET, fingerprint)?;
     let private_container =
         allocator.assigned_tag(nodes.len(), "Nameplate definition", "emblem nameplate")?;
@@ -271,7 +271,7 @@ pub(crate) fn layer_pixels(
     container: TagHash,
     part: NameplatePart,
 ) -> AuthoringResult<image::RgbaImage> {
-    let payload = crate::icon_edit::read_icon_container(manager, container)?;
+    let payload = crate::icon::edit::read_icon_container(manager, container)?;
     let layer = TagHash(read_u32(&payload, part.layer_offset())?);
     if !is_valid_package_tag(layer) {
         return Err(invalid(format!(
@@ -282,11 +282,11 @@ pub(crate) fn layer_pixels(
     let layer_payload = manager
         .read_tag(layer)
         .map_err(|error| invalid(format!("Could not read nameplate layer {layer}: {error}")))?;
-    let header = crate::icon_edit::texture_reference_offsets(&layer_payload, layer)?
+    let header = crate::icon::edit::texture_reference_offsets(&layer_payload, layer)?
         .first()
         .map(|(_, header)| *header)
         .ok_or_else(|| invalid(format!("Nameplate layer {layer} has no texture")))?;
-    crate::icon_edit::decode_texture(manager, header).map_err(invalid)
+    crate::icon::edit::decode_texture(manager, header).map_err(invalid)
 }
 
 /// Copies rendered artwork into one texture's checked RGBA8 pixels.

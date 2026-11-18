@@ -1,8 +1,10 @@
 //! Weapon-local motion. The weapon root's own lookup animates the weapon model's bones. The arm
 //! clip places the weapon root, and each absolute arm clip takes one weapon-local descriptor for
-//! the bones below it: the weapon state named like the native action, else the descriptor so
-//! named, else the choice another action made for the same arm descriptor by either rule, else
-//! the closing descriptor whose clip length matches the arm clip, else the weapon's idle state.
+//! the bones below it: the weapon state or descriptor the source names for the native action,
+//! bare or behind the weapon's profile lineage, else the choice another action made for the
+//! same arm descriptor by that rule, else the closing descriptor whose clip length matches a
+//! firing, chambering or magazine reload action, else the weapon's idle state. A firing or
+//! chambering clip chosen by length must also end at the idle pose.
 use super::plan::{Routes, Sources};
 use super::*;
 
@@ -14,8 +16,10 @@ pub(super) struct WeaponLocal {
     /// Native control slot and source weapon bone of each bone below the root, in slot order.
     pub(super) bones: Vec<(usize, usize)>,
     pub(super) corrections: Vec<Pose>,
-    /// The weapon-local descriptor by action and source arm descriptor.
+    /// The weapon-local descriptor by request and source arm descriptor.
     pub(super) overlays: BTreeMap<(u32, u32), u32>,
+    /// How each overlay was chosen. An `idle` choice is the absence of a source mechanism.
+    pub(super) chosen: BTreeMap<(u32, u32), &'static str>,
     pub(super) pairings: Vec<(u32, Value)>,
     pub(super) mechanisms: BTreeMap<u32, Mechanism>,
     pub(super) report: Value,
@@ -57,37 +61,26 @@ impl WeaponLocal {
                 source_rest.inverse().then(native_rest)
             })
             .collect::<Vec<_>>();
-        let local_lookups = sources
-            .owners
-            .iter()
-            .filter(|o| o.3 == controller::LOOKUP)
-            .collect::<Vec<_>>();
-        let mut report = json!({"lookup":Value::Null,"bones":bones.len(),"notes":[]});
-        let local = match local_lookups.as_slice() {
-            _ if bones.is_empty() => None,
-            [owner] => {
-                report["lookup"] = json!(owner.0);
-                match controller::Controller::read(source, &owner.1) {
-                    Ok(local) => Some(local),
-                    Err(error) => {
-                        report["notes"] = json!([format!("Weapon lookup: {error:#}")]);
-                        None
-                    }
-                }
-            }
-            [] => None,
-            _ => anyhow::bail!("Source weapon has several action lookups"),
-        };
+        let owner = &sources.weapon_driver.lookup;
+        let mut report = json!({"lookup":owner.0,"driver":sources.weapon_driver.report,
+            "bones":bones.len(),"notes":[]});
+        let local = (!bones.is_empty())
+            .then_some(sources.local_controller.as_ref())
+            .flatten();
+        if let Some(error) = &sources.local_error {
+            report["notes"] = json!([error]);
+        }
         let mut pairing = Self {
             native_handle,
             bones,
             corrections,
             overlays: BTreeMap::new(),
+            chosen: BTreeMap::new(),
             pairings: Vec::new(),
             mechanisms: BTreeMap::new(),
             report,
         };
-        if let Some(local) = &local {
+        if let Some(local) = local {
             pairing.choose(source, sources, routes, local)?;
         }
         Ok(pairing)
@@ -102,7 +95,19 @@ impl WeaponLocal {
         routes: &Routes,
         local: &controller::Controller,
     ) -> Result<()> {
-        let (weapon_rig, profile) = (&sources.weapon_rig, sources.profile);
+        let weapon_rig = &sources.weapon_rig;
+        // Both pairing passes use the same supported inputs as the arm request. A reload's
+        // explicit state cannot seed a shared fallback with a different ammunition state.
+        let inputs_for = |request: u32| {
+            routes.requests[&request]
+                .inputs
+                .iter()
+                .filter(|(builtin, value)| {
+                    ![PROFILE, OPTIC].contains(builtin) || local.declares(**builtin, **value)
+                })
+                .map(|(&builtin, &value)| (builtin, value))
+                .collect::<BTreeMap<_, _>>()
+        };
         let mut timed = Vec::new();
         for (index, entry) in local.descriptors.iter().enumerate() {
             let Some(ordinal) = entry.clip else {
@@ -114,8 +119,10 @@ impl WeaponLocal {
             let clip = source.tag(local.clips[ordinal], Some(0x8080AE01))?;
             let descriptor = u32::try_from(index)?;
             // A clip the weapon rig cannot sample is left out, as choosing it would fail.
-            let Ok(sampled) = mechanism(source, local, descriptor, weapon_rig, &self.bones) else {
-                continue;
+            let sampled = match mechanism(source, local, descriptor, weapon_rig, &self.bones) {
+                Ok(sampled) => sampled,
+                Err(error) if crate::cancellation::is_cancelled(&error) => return Err(error),
+                Err(_) => continue,
             };
             timed.push(Timed {
                 descriptor,
@@ -126,53 +133,77 @@ impl WeaponLocal {
             self.mechanisms.insert(descriptor, sampled);
         }
         let idle = source::fnv("idle");
-        let movement = MOVEMENT
-            .iter()
-            .map(|a| source::fnv(a))
-            .collect::<BTreeSet<_>>();
+        // Timing correspondence is only qualified for these mechanism actions. A transition,
+        // draw or locomotion clip can have the same span as a reload or firing clip without
+        // requesting it. Unknown action names retain explicit/shared selection or idle.
+        let timed_actions = [
+            "fire",
+            "fire_1",
+            "iron_sight_fire",
+            "chamber_1",
+            "reload_full",
+            "reload_empty",
+        ]
+        .iter()
+        .map(|a| source::fnv(a))
+        .collect::<BTreeSet<_>>();
         let reload_order = |action: u32| {
             [source::fnv("reload_empty"), source::fnv("reload_full")]
                 .iter()
                 .position(|r| *r == action)
         };
+        // A shot or a chambering stroke returns the weapon to rest. Reloads are left out: an
+        // empty reload starts and can end away from the idle pose.
+        let resting_actions = ["fire", "fire_1", "iron_sight_fire", "chamber_1"]
+            .iter()
+            .map(|a| source::fnv(a))
+            .collect::<BTreeSet<_>>();
+        // The clips that end at the idle pose, by the idle descriptor the request selects.
+        let mut resting = BTreeMap::<u32, BTreeSet<u32>>::new();
+        // The weapon's profile and its dictionary ancestors prefix its descriptor names.
+        let lineage = sources.controller.lineage(PROFILE, sources.profile);
         // Actions that route one arm descriptor share its best-supported weapon descriptor.
         let rank = |how: &str| {
             ["state", "name", "length", "idle"]
                 .iter()
                 .position(|h| *h == how)
         };
-        let mut shared = BTreeMap::<u32, (u32, &'static str)>::new();
-        for (&action, route) in &routes.routes {
-            let mut inputs = BTreeMap::new();
-            if local.declares(PROFILE, profile) {
-                inputs.insert(PROFILE, profile);
-            }
+        let mut shared = BTreeMap::<(u32, BTreeMap<u8, u32>), (&'static str, BTreeSet<u32>)>::new();
+        for (&request, route) in &routes.routes {
+            let action = routes.requests[&request].action;
+            let inputs = inputs_for(request);
+            let found = explicit(local, &timed, action, &inputs, &lineage)
+                .ok()
+                .flatten();
             for &(descriptor, _) in route {
-                let found = if let Ok(Some(d)) = weapon_state(local, action, &inputs) {
-                    Some((d, "state"))
-                } else {
-                    weapon_named(local, &timed, action).map(|d| (d, "name"))
-                };
-                if let Some(found) = found
-                    && shared
-                        .get(&descriptor)
-                        .is_none_or(|s| rank(found.1) < rank(s.1))
-                {
-                    shared.insert(descriptor, found);
+                if let Some((local_descriptor, how, _)) = found {
+                    let (best, choices) = shared
+                        .entry((descriptor, inputs.clone()))
+                        .or_insert_with(|| (how, BTreeSet::new()));
+                    if rank(how) < rank(best) {
+                        *best = how;
+                        choices.clear();
+                    }
+                    if rank(how) == rank(best) {
+                        choices.insert(local_descriptor);
+                    }
                 }
             }
         }
+        self.report["ambiguous_shared_descriptors"] = json!(
+            shared
+                .iter()
+                .filter(|(_, (_, choices))| choices.len() > 1)
+                .map(
+                    |((descriptor, inputs), (how, choices))| json!({"source_descriptor":descriptor,"inputs":inputs,
+                "chosen_by":how,"weapon_descriptors":choices})
+                )
+                .collect::<Vec<_>>()
+        );
         let mut notes = Vec::new();
-        for (&action, route) in &routes.routes {
-            let mut inputs = BTreeMap::new();
-            if local.declares(PROFILE, profile) {
-                inputs.insert(PROFILE, profile);
-            }
-            if let Some(&value) = routes.reloads.get(&action)
-                && local.declares(RELOAD, value)
-            {
-                inputs.insert(RELOAD, value);
-            }
+        for (&request, route) in &routes.routes {
+            let action = routes.requests[&request].action;
+            let inputs = inputs_for(request);
             for &(descriptor, _) in route {
                 let Some(ordinal) = sources.controller.descriptors[descriptor as usize].clip else {
                     continue;
@@ -182,25 +213,48 @@ impl WeaponLocal {
                     continue;
                 }
                 let frames = arm.u16(0x140)?;
-                let chosen = (|| -> Result<Option<(u32, &'static str)>> {
-                    if let Some(d) = weapon_state(local, action, &inputs)? {
-                        return Ok(Some((d, "state")));
+                let mechanisms = &self.mechanisms;
+                let selected = (|| -> Result<Option<(u32, &'static str, Option<&'static str>)>> {
+                    if let Some(found) = explicit(local, &timed, action, &inputs, &lineage)? {
+                        return Ok(Some(found));
                     }
-                    if let Some(d) = weapon_named(local, &timed, action) {
-                        return Ok(Some((d, "name")));
-                    }
-                    if let Some(&(d, _)) = shared.get(&descriptor) {
-                        return Ok(Some((d, "shared")));
-                    }
-                    if !movement.contains(&action)
-                        && let Some(d) = paired(&timed, frames, reload_order(action))
+                    if let Some((_, choices)) = shared.get(&(descriptor, inputs.clone()))
+                        && choices.len() == 1
                     {
-                        return Ok(Some((d, "length")));
+                        return Ok(Some((*choices.first().unwrap(), "shared", None)));
                     }
-                    Ok(weapon_state(local, idle, &inputs)?.map(|d| (d, "idle")))
-                })()
-                .and_then(|chosen| {
-                    let Some((local_descriptor, how)) = chosen else {
+                    let rest = weapon_state(local, idle, &inputs);
+                    if timed_actions.contains(&action) {
+                        let limit = if resting_actions.contains(&action) {
+                            // Without a sampled idle pose nothing is known to return to it.
+                            let rest = rest.as_ref().ok().copied().flatten();
+                            let idle_pose = rest
+                                .and_then(|d| mechanisms.get(&d))
+                                .and_then(|m| m.frames.first());
+                            Some(
+                                &*resting.entry(rest.unwrap_or(u32::MAX)).or_insert_with(|| {
+                                    timed
+                                        .iter()
+                                        .filter(|t| {
+                                            idle_pose.is_some_and(|pose| {
+                                                rests(&mechanisms[&t.descriptor], pose)
+                                            })
+                                        })
+                                        .map(|t| t.descriptor)
+                                        .collect()
+                                }),
+                            )
+                        } else {
+                            None
+                        };
+                        if let Some(d) = paired(&timed, frames, reload_order(action), limit) {
+                            return Ok(Some((d, "length", None)));
+                        }
+                    }
+                    Ok(rest?.map(|d| (d, "idle", None)))
+                })();
+                let chosen = selected.and_then(|chosen| {
+                    let Some((local_descriptor, how, named)) = chosen else {
                         return Ok(None);
                     };
                     if let std::collections::btree_map::Entry::Vacant(slot) =
@@ -214,16 +268,21 @@ impl WeaponLocal {
                             &self.bones,
                         )?);
                     }
-                    Ok(Some((local_descriptor, how)))
+                    Ok(Some((local_descriptor, how, named)))
                 });
                 match chosen {
-                    Ok(Some((local_descriptor, how))) => {
-                        self.overlays.insert((action, descriptor), local_descriptor);
-                        self.pairings.push((action, json!({"action":format!("{action:08X}"),"source_descriptor":descriptor,
+                    Ok(Some((local_descriptor, how, named))) => {
+                        self.overlays
+                            .insert((request, descriptor), local_descriptor);
+                        self.chosen.insert((request, descriptor), how);
+                        self.pairings.push((request, json!({"action":format!("{action:08X}"),"request":request,"source_descriptor":descriptor,
+                            "inputs":inputs.iter().map(|(b, v)| (b.to_string(), format!("{v:08X}"))).collect::<BTreeMap<_, _>>(),
                             "arm_frames":frames,"weapon_descriptor":format!("{:08X}", self.mechanisms[&local_descriptor].name),
-                            "weapon_frames":self.mechanisms[&local_descriptor].frames.len(),"chosen_by":how})));
+                            "weapon_frames":self.mechanisms[&local_descriptor].frames.len(),"chosen_by":how,
+                            "source_name":named})));
                     }
                     Ok(None) => {}
+                    Err(error) if crate::cancellation::is_cancelled(&error) => return Err(error),
                     Err(error) => notes.push(format!("{action:08X}: {error:#}")),
                 }
             }

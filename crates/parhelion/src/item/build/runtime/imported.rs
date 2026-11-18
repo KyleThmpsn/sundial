@@ -15,10 +15,13 @@ pub(super) struct Runtime {
     equipment: Option<crate::item::custom_runtime::animation::equipment::EquipmentAnimation>,
     crosshair: Option<crate::item::custom_runtime::crosshair::Crosshair>,
     zoom: Option<f32>,
+    magazine_reload: bool,
     /// Source rows for markers the weapon runtime's own marker set also names.
     runtime_markers: Vec<crate::weapon::rig::RuntimeMarker>,
     inputs: Vec<crate::weapon::input::Input>,
     timing: Option<crate::weapon::input::timing::Timing>,
+    /// Source sword attack rows translated against the base's sword owner.
+    sword: Option<crate::weapon::sword::Sword>,
     projectile: Option<crate::weapon::behavior::imported::Prepared>,
 }
 
@@ -34,9 +37,11 @@ impl Runtime {
             || !self.extensions.is_empty()
             || self.crosshair.is_some()
             || self.zoom.is_some()
+            || self.magazine_reload
             || !self.runtime_markers.is_empty()
             || !self.inputs.is_empty()
             || self.timing.is_some()
+            || self.sword.is_some()
             || self.projectile.is_some()
     }
 
@@ -56,9 +61,11 @@ impl Runtime {
             equipment: None,
             crosshair: None,
             zoom: None,
+            magazine_reload: false,
             runtime_markers: Vec::new(),
             inputs: Vec::new(),
             timing: None,
+            sword: None,
             projectile: None,
         };
         let mut directories = BTreeSet::new();
@@ -80,9 +87,11 @@ impl Runtime {
                 equipment: animation::equipment::load(graph)?,
                 crosshair: crosshair::load(graph)?,
                 zoom: crate::weapon::zoom::imported(graph.value())?,
+                magazine_reload: custom_runtime::reload::imported(graph.value())?,
                 runtime_markers: crate::weapon::rig::imported_runtime_markers(graph.value())?,
                 inputs: crate::weapon::input::imported(graph.value())?,
                 timing: crate::weapon::input::timing::imported(graph.value())?,
+                sword: crate::weapon::sword::imported(graph.value())?,
                 projectile: crate::weapon::behavior::imported::load(graph.value())?,
             };
             if let Some(audio) = loaded.audio.as_mut() {
@@ -92,6 +101,18 @@ impl Runtime {
                 fs::canonicalize(&reference.directory)
                     .map_err(|error| invalid(error.to_string()))?,
             );
+            // A translated sword attack's entities are groups inside the graph's folder.
+            if let Some(sword) = &loaded.sword {
+                for (directory, sha256, symbol) in sword.attachments() {
+                    attachments::load_group(
+                        &reference.directory.join(directory),
+                        sha256,
+                        symbol,
+                        &mut directories,
+                        &mut loaded.particles,
+                    )?;
+                }
+            }
             *reads = inputs.fingerprints();
         }
         // Without a runtime pattern there is no entity to author, so the groups these perks name
@@ -277,6 +298,13 @@ impl Runtime {
                     overrides.sword_profile.is_some(),
                 )?);
         }
+        if let Some(sword) = &self.sword {
+            overrides.runtime_resource_patches.extend(sword.patches(
+                manager,
+                entity,
+                overrides.sword_profile.is_some(),
+            )?);
+        }
         if let Some(character) = &self.character {
             character.apply(
                 manager,
@@ -360,6 +388,25 @@ impl Runtime {
         })
     }
 
+    /// The records the imported fire timing adds to the stat translator and the rows the
+    /// imported sword attacks add to the sword owner.
+    pub(super) fn stat_appends(
+        &self,
+        manager: &PackageManager,
+        entity: &[u8],
+        group: u32,
+        symbols: &BTreeMap<String, TagHash>,
+    ) -> AuthoringResult<Vec<RuntimeResourceAppend>> {
+        let mut appends = match &self.timing {
+            Some(timing) => timing.appends(manager, entity, group)?,
+            None => Vec::new(),
+        };
+        if let Some(sword) = &self.sword {
+            appends.extend(sword.appends(manager, entity, symbols)?);
+        }
+        Ok(appends)
+    }
+
     /// The stat translator patches the imported fire timing, inputs, hand targets and zoom make
     /// on `entity`, in the table of translation `group`.
     pub(super) fn stat_patches(
@@ -367,7 +414,7 @@ impl Runtime {
         manager: &PackageManager,
         entity: &[u8],
         group: u32,
-    ) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    ) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
         let mut patches = Vec::new();
         if let Some(timing) = &self.timing {
             patches.extend(timing.patches(manager, entity, group)?);
@@ -377,6 +424,7 @@ impl Runtime {
             entity,
             group,
             &self.inputs,
+            self.magazine_reload,
         )?);
         patches.extend(crate::weapon::rig::runtime_marker_patches(
             manager,
@@ -402,6 +450,9 @@ impl Runtime {
         allocator: AppendedTagAllocator,
         tags: &mut Vec<NewTagSpec>,
     ) -> AuthoringResult<()> {
+        if self.magazine_reload {
+            custom_runtime::reload::apply(manager, entity, allocator, tags)?;
+        }
         crate::item::custom_runtime::extensions::input_callbacks(
             manager,
             &self.extensions,

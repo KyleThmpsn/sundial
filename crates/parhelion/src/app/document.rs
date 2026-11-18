@@ -171,7 +171,11 @@ impl PackageAuthoringApp {
                 })
                 .collect(),
             item_sources: self.item_sources.clone(),
+            #[cfg(not(feature = "dawn"))]
             package_directory: self.packages.clone(),
+            // A Dawn install that composes packages is read through a view of its stock ones.
+            #[cfg(feature = "dawn")]
+            package_directory: self.dawn_source_packages(),
             staging_root: PathBuf::from(self.staging.trim()),
             ignore_installed: self.ignore_installed,
             one_mod: self.one_mod,
@@ -371,7 +375,7 @@ impl BuildInputs {
                         .catalog
                         .as_ref()
                         .and_then(|catalog| catalog.item_definition_tag(*hash))
-                        .is_some_and(crate::package_profile::is_stock_item_definition)
+                        .is_some_and(crate::package::profile::is_stock_item_definition)
             });
             // Shader recipes cannot contain sockets, so these dependencies have no further
             // socket dependencies. Keep one copy even when several items select the shader.

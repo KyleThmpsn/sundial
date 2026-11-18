@@ -13,6 +13,11 @@ pub(crate) use instance::grow as grow_instance;
 pub use ranges::Renumbering;
 pub use validation::{validate_extension, validate_weapon_pair};
 
+/// Point the relative pointer at `field` to `target`.
+fn relative(bytes: &mut [u8], field: usize, target: usize) -> Result<()> {
+    put(bytes, field, &(target as i64 - field as i64).to_le_bytes())
+}
+
 pub struct Bone {
     pub name: u32,
     /// Index in the complete native skeleton as the bones are given: the native bones first,

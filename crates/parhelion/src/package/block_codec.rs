@@ -1,0 +1,240 @@
+//! Package block encoding: raw and compressed block storage through one shared encoder per DLL.
+use std::path::Path;
+use std::{cell::Cell, time::Duration};
+
+use crate::{AuthoringError, AuthoringResult, package::format::BLOCK_SIZE};
+
+pub(crate) const FULL_RAW_FLAGS: u16 = 0;
+const COMPRESSED_FLAGS: u16 = 1;
+
+/// Per-worker native timings. Package readback remains a separate emitted operation.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Timings {
+    pub blocks: usize,
+    pub compression: Duration,
+    pub verification: Duration,
+}
+
+thread_local! {
+    static TIMINGS: Cell<Timings> = Cell::new(Timings::default());
+}
+
+impl Timings {
+    pub(crate) fn take() -> Self {
+        TIMINGS.with(|timings| timings.replace(Self::default()))
+    }
+
+    /// Adds timings another thread recorded to this thread's.
+    fn absorb(other: Self) {
+        TIMINGS.with(|timings| {
+            let mut value = timings.get();
+            value.blocks += other.blocks;
+            value.compression += other.compression;
+            value.verification += other.verification;
+            timings.set(value);
+        });
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    fn record(update: impl FnOnce(&mut Self)) {
+        TIMINGS.with(|timings| {
+            let mut value = timings.get();
+            update(&mut value);
+            timings.set(value);
+        });
+    }
+}
+
+#[cfg(all(windows, target_pointer_width = "64"))]
+mod oodle;
+
+#[cfg(test)]
+mod tests;
+
+#[derive(Clone, Debug)]
+pub(crate) struct EncodedPackageBlock {
+    pub stored: Vec<u8>,
+    pub flags: u16,
+    pub gcm_tag: [u8; 16],
+}
+
+impl EncodedPackageBlock {
+    /// Streamed media is read directly from the package file by Wwise.
+    pub(crate) fn raw(plaintext: &[u8]) -> AuthoringResult<Self> {
+        validate_plaintext(plaintext)?;
+        Ok(Self {
+            stored: plaintext.to_vec(),
+            flags: FULL_RAW_FLAGS,
+            gcm_tag: [0; 16],
+        })
+    }
+}
+
+fn validate_plaintext(plaintext: &[u8]) -> AuthoringResult<()> {
+    if plaintext.is_empty() || plaintext.len() > BLOCK_SIZE {
+        return Err(AuthoringError::InvalidInput(format!(
+            "A package block must contain between 1 and {BLOCK_SIZE} plaintext bytes"
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+pub(crate) struct PackageBlockEncoder {
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    compressor: Option<std::sync::Arc<oodle::Compressor>>,
+}
+
+/// Share one loaded encoder per DLL path while callers still own it.
+///
+/// Every package a build emits opens the same DLL, and opening it is a `LoadLibrary` plus an
+/// ABI check. The path is canonical by the time it reaches here, so it keys the cache.
+#[cfg(all(windows, target_pointer_width = "64"))]
+fn shared_compressor(runtime: &Path) -> AuthoringResult<std::sync::Arc<oodle::Compressor>> {
+    use std::{
+        collections::HashMap,
+        path::PathBuf,
+        sync::{Arc, Mutex, OnceLock, Weak},
+    };
+    static ENCODERS: OnceLock<Mutex<HashMap<PathBuf, Weak<oodle::Compressor>>>> = OnceLock::new();
+    let mut encoders = ENCODERS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| {
+            AuthoringError::InvalidInput("The package encoder cache is poisoned".into())
+        })?;
+    if let Some(compressor) = encoders.get(runtime).and_then(Weak::upgrade) {
+        return Ok(compressor);
+    }
+    encoders.retain(|_, value| value.strong_count() > 0);
+    let compressor =
+        Arc::new(oodle::Compressor::open(runtime).map_err(AuthoringError::InvalidInput)?);
+    encoders.insert(runtime.to_path_buf(), Arc::downgrade(&compressor));
+    Ok(compressor)
+}
+
+impl PackageBlockEncoder {
+    pub(crate) fn open_for_packages(package_directory: &Path) -> AuthoringResult<Self> {
+        if !package_directory.is_dir() {
+            return Err(AuthoringError::InvalidInput(format!(
+                "Package directory does not exist at {}",
+                package_directory.display()
+            )));
+        }
+        #[cfg(all(windows, target_pointer_width = "64"))]
+        {
+            // Shadowkeep's own version-3 runtime is the compatibility boundary. Never
+            // pick an arbitrary DLL from the executable directory, PATH or another game.
+            let runtime = package_directory
+                .canonicalize()
+                .map_err(|error| {
+                    AuthoringError::io("resolve package directory", package_directory, error)
+                })?
+                .parent()
+                .ok_or_else(|| {
+                    AuthoringError::InvalidInput("Package directory has no install parent".into())
+                })?
+                .join("bin/x64/oo2core_3_win64.dll");
+            let compressor = if runtime.is_file() {
+                Some(shared_compressor(&runtime)?)
+            } else {
+                // Synthetic package views and platforms without a compatible encoder
+                // retain the existing valid raw-block representation.
+                None
+            };
+            Ok(Self { compressor })
+        }
+        #[cfg(not(all(windows, target_pointer_width = "64")))]
+        Ok(Self::default())
+    }
+
+    pub(crate) fn encode(
+        &self,
+        _package_id: u16,
+        plaintext: &[u8],
+    ) -> AuthoringResult<EncodedPackageBlock> {
+        validate_plaintext(plaintext)?;
+        #[cfg(all(windows, target_pointer_width = "64"))]
+        let compressed = self
+            .compressor
+            .as_ref()
+            .map(|compressor| compressor.compress(plaintext))
+            .transpose()
+            .map_err(AuthoringError::InvalidInput)?;
+        #[cfg(not(all(windows, target_pointer_width = "64")))]
+        let compressed = None;
+        select_verified_storage(plaintext, compressed)
+    }
+
+    /// Encodes `blocks` in order across the available cores, each kept raw when its flag is set.
+    /// The calling thread's timings include every block.
+    pub(crate) fn encode_all(
+        &self,
+        package_id: u16,
+        blocks: &[(Vec<u8>, bool)],
+    ) -> AuthoringResult<Vec<EncodedPackageBlock>> {
+        let encode = |(plaintext, raw): &(Vec<u8>, bool)| {
+            if *raw {
+                EncodedPackageBlock::raw(plaintext)
+            } else {
+                self.encode(package_id, plaintext)
+            }
+        };
+        let threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .min(blocks.len());
+        if threads <= 1 {
+            return blocks.iter().map(encode).collect();
+        }
+        let share = blocks.len().div_ceil(threads);
+        let parts = std::thread::scope(|scope| {
+            let workers = blocks
+                .chunks(share)
+                .map(|part| {
+                    scope.spawn(move || {
+                        let encoded = part.iter().map(encode).collect::<AuthoringResult<Vec<_>>>();
+                        (encoded, Timings::take())
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|worker| worker.join())
+                .collect::<Vec<_>>()
+        });
+        let mut encoded = Vec::with_capacity(blocks.len());
+        for part in parts {
+            let (part, timings) = part.map_err(|_| {
+                AuthoringError::InvalidInput("A package block encoder thread panicked".into())
+            })?;
+            Timings::absorb(timings);
+            encoded.extend(part?);
+        }
+        Ok(encoded)
+    }
+}
+
+/// The native codec verifies the exact decoded bytes before returning a candidate here.
+fn select_verified_storage(
+    plaintext: &[u8],
+    compressed: Option<Vec<u8>>,
+) -> AuthoringResult<EncodedPackageBlock> {
+    let (stored, flags) = match compressed {
+        Some(bytes) if bytes.is_empty() => {
+            return Err(AuthoringError::InvalidInput(
+                "Package compression returned an empty block".into(),
+            ));
+        }
+        Some(bytes) if bytes.len() < plaintext.len() => (bytes, COMPRESSED_FLAGS),
+        _ => {
+            // Flags-0 blocks store exactly their plaintext range, without padding to the
+            // logical 0x40000-byte span. Incompressible blocks must not grow on disk.
+            (plaintext.to_vec(), FULL_RAW_FLAGS)
+        }
+    };
+    Ok(EncodedPackageBlock {
+        stored,
+        flags,
+        gcm_tag: [0; 16],
+    })
+}

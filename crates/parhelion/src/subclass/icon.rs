@@ -10,7 +10,7 @@ use sundial::investment::SubclassSummary;
 use sundial::package_authoring::{PackageManager, ability_hud};
 use tiger_pkg::TagHash;
 
-use crate::icon_edit::ImportedIcon;
+use crate::icon::edit::ImportedIcon;
 use crate::perk::Icon;
 
 /// A subclass's Generated Icon: its icon drawn as a diamond in the HUD color, with `glyph` at its
@@ -225,13 +225,13 @@ fn glyph_pixels(manager: &PackageManager, icon: &Icon) -> Result<RgbaImage, Stri
     match icon {
         Icon::Texture { tag } => {
             let tag = TagHash(tag.parse_u32().map_err(|error| error.to_string())?);
-            let image = crate::icon_edit::package_icons::load(manager, tag)?;
+            let image = crate::icon::edit::package_icons::load(manager, tag)?;
             let [width, height] = image.size.map(|side| u32::try_from(side).unwrap_or(0));
             Ok(RgbaImage::from_fn(width, height, |x, y| {
                 Rgba(image[(x as usize, y as usize)].to_srgba_unmultiplied())
             }))
         }
-        Icon::Image { image, .. } => Ok(crate::icon_edit::glyph::fit(&image.fit_to(GLYPH, GLYPH))),
+        Icon::Image { image, .. } => Ok(crate::icon::edit::glyph::fit(&image.fit_to(GLYPH, GLYPH))),
     }
 }
 

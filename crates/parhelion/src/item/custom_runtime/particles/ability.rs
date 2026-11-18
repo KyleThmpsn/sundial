@@ -68,12 +68,25 @@ impl ImportedParticles {
         let template = manager
             .read_tag(TagHash(owner.template))
             .map_err(|error| invalid(error.to_string()))?;
+        // The glyph field belongs to the common ability base. A prepared controller may keep
+        // that base under another concrete class than its template, as a retained one does.
+        let same_base = |own: u32, native: u32| {
+            use sundial::package_authoring::runtime::native_type_parent;
+            own == native
+                || native_type_parent(own)
+                    .is_some_and(|base| native_type_parent(native) == Some(base))
+        };
         if site.instance < 4
             || definition < 4
-            || read_u32(&owner.payload, site.instance - 4)?
-                != read_u32(&template, site.instance - 4)?
-            || read_u32(&owner.payload, definition - 4)?
-                != read_u32(&template, site.definition - 4)?
+            || site.definition < 4
+            || !same_base(
+                read_u32(&owner.payload, site.instance - 4)?,
+                read_u32(&template, site.instance - 4)?,
+            )
+            || !same_base(
+                read_u32(&owner.payload, definition - 4)?,
+                read_u32(&template, site.definition - 4)?,
+            )
             || read_u64(&owner.payload, definition + 8)? != site.instance as u64
         {
             return Err(invalid(

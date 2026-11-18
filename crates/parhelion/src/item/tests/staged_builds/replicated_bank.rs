@@ -4,7 +4,6 @@
 use super::*;
 use crate::recipe::{HexHash, WeaponSocketColumnRecipe, WeaponSocketPlugVariantRecipe};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use sundial::package_authoring::{
     loading_index,
     sandbox_perk::{
@@ -15,13 +14,10 @@ use sundial::package_authoring::{
         },
     },
 };
+use sundial::storage::sha256_hex;
 
 const HOST: u32 = 0x80F9F7CF;
 const CASES: [(u32, u32, usize); 2] = [(0x80BB760E, 0x80C3DDE2, 1), (0x80B7CB8B, 0x80C0020A, 2)];
-
-fn sha(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
 
 fn patches(manager: &PackageManager, graph: u32) -> Vec<NativeAssetResourcePatch> {
     let graph = manager.read_tag(TagHash(graph)).unwrap();
@@ -348,7 +344,7 @@ fn persisted_replicated_banks_keep_allocations_providers_and_loading() {
                 &owner,
             )
             .unwrap();
-            owner_records.push(json!({"tag":tag,"allocation":allocation,"sha256":sha(&owner),"allocation_sha256":sha(&allocation_bytes)}));
+            owner_records.push(json!({"tag":tag,"allocation":allocation,"sha256":sha256_hex(&owner),"allocation_sha256":sha256_hex(&allocation_bytes)}));
             assert_eq!(
                 staged.read_tag(TagHash(original)).unwrap(),
                 stock.read_tag(TagHash(original)).unwrap()
@@ -399,8 +395,8 @@ fn persisted_replicated_banks_keep_allocations_providers_and_loading() {
         records.push(
             json!({"rows":row_count,"action":assignment.runtime_tag,"root":root_tag,
             "replication":replication_tag,"companion":companion.0,"owners":owner_records,
-            "action_sha256":sha(&action_bytes),"graph_sha256":sha(&graph),
-            "replication_sha256":sha(&replication),"loading_sha256":sha(loading)}),
+            "action_sha256":sha256_hex(&action_bytes),"graph_sha256":sha256_hex(&graph),
+            "replication_sha256":sha256_hex(&replication),"loading_sha256":sha256_hex(loading)}),
         );
     }
     let mut wrong = recipes[1].clone();
@@ -430,13 +426,13 @@ fn persisted_replicated_banks_keep_allocations_providers_and_loading() {
     let emitted = output.join("packages");
     fs::create_dir(&emitted).unwrap();
     let files = bundle.write_new(&emitted).unwrap().into_iter().map(|path| json!({
-        "file":path.file_name().unwrap().to_string_lossy(),"sha256":sha(&fs::read(&path).unwrap())
+        "file":path.file_name().unwrap().to_string_lossy(),"sha256":sha256_hex(&fs::read(&path).unwrap())
     })).collect::<Vec<_>>();
     fs::write(output.join("readback.json"), serde_json::to_vec_pretty(&json!({
         "native_build":"86657.20.08.23.1800.d2_rc___release","revision":revision,
-        "executable_sha256":sha(&fs::read(std::env::current_exe().unwrap()).unwrap()),
-        "source_packages":packages,"source_graph_sha256":sha(&host),
-        "source_payloads":originals.iter().map(|(tag,bytes)|json!({"tag":tag,"sha256":sha(bytes)})).collect::<Vec<_>>(),
+        "executable_sha256":sha256_hex(&fs::read(std::env::current_exe().unwrap()).unwrap()),
+        "source_packages":packages,"source_graph_sha256":sha256_hex(&host),
+        "source_payloads":originals.iter().map(|(tag,bytes)|json!({"tag":tag,"sha256":sha256_hex(bytes)})).collect::<Vec<_>>(),
         "recipes":recipes,"cases":records,"packages":files,"stock_preserved":true,
         "limits":"Persisted recipe and native package readback. No network initialization or gameplay execution."
     })).unwrap()).unwrap();

@@ -254,7 +254,11 @@ struct LoadedItem {
 }
 
 /// Reads characters with their equipment and inventory, applying Dawn's range and order checks.
-pub(super) fn characters(connection: &Connection) -> Incompatible<CharacterState> {
+///
+/// On a schema that stores ability picks per item, each character takes its equipped subclass's
+/// picks. Dawn reads those and leaves the character row's columns behind once the player
+/// changes a pick in game.
+pub(super) fn characters(connection: &Connection, version: i64) -> Incompatible<CharacterState> {
     let mut statement = connection.prepare(
         "SELECT position,soid,race,gender,class,level,movement_ability,grenade_ability,\
          super_ability,melee_ability,class_ability FROM characters ORDER BY position",
@@ -363,6 +367,45 @@ pub(super) fn characters(connection: &Connection) -> Incompatible<CharacterState
                 return Ok(Err(row(format!(
                     "location {other} is not equipment or inventory"
                 ))));
+            }
+        }
+    }
+
+    if contract::per_item(version) {
+        let mut statement = connection.prepare(
+            "SELECT instance_soid,movement_ability,grenade_ability,super_ability,melee_ability,\
+             class_ability FROM character_items WHERE location=?1",
+        )?;
+        let picks = statement
+            .query_map([contract::EQUIPMENT_LOCATION], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    CharacterAbilities {
+                        movement: row.get(1)?,
+                        grenade: row.get(2)?,
+                        super_ability: row.get(3)?,
+                        melee: row.get(4)?,
+                        class_ability: row.get(5)?,
+                    },
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let subclass = EquipmentSlot::new("subclass");
+        for character in &mut characters {
+            let Some(soid) = character
+                .equipment
+                .get(&subclass)
+                .and_then(Option::as_ref)
+                .map(|item| item.instance_soid.get())
+            else {
+                continue;
+            };
+            let abilities = picks
+                .iter()
+                .find(|(text, _)| contract::parse_soid(text) == Some(soid))
+                .map(|(_, abilities)| *abilities);
+            if let (Some(metadata), Some(abilities)) = (character.metadata.as_mut(), abilities) {
+                metadata.abilities = abilities;
             }
         }
     }

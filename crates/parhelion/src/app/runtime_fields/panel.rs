@@ -11,8 +11,8 @@ pub(in crate::app) struct ValuePanel<'a> {
     pub(in crate::app) scope: egui::Id,
     pub(in crate::app) query: &'a mut String,
     pub(in crate::app) cache: &'a mut Option<RuntimeValuesCache>,
-    pub(in crate::app) text: &'a mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
-    pub(in crate::app) overrides: &'a mut Vec<WeaponRuntimeValueOverride>,
+    pub(in crate::app) text: &'a mut BTreeMap<(RuntimeFieldLocator, u8), String>,
+    pub(in crate::app) overrides: &'a mut Vec<RuntimeValueOverride>,
     pub(in crate::app) show_experimental: bool,
     pub(in crate::app) show_technical: &'a mut bool,
     /// Leads with the values that read as plain words, outside their groups.
@@ -33,7 +33,7 @@ impl ValuePanel<'_> {
         }
     }
 
-    fn field(&mut self, ui: &mut egui::Ui, field: &WeaponRuntimeField) {
+    fn field(&mut self, ui: &mut egui::Ui, field: &RuntimeField) {
         draw_runtime_value_override_field(ui, field, &mut *self.overrides, &mut *self.text);
     }
 }
@@ -42,7 +42,7 @@ impl ValuePanel<'_> {
 /// in a box of its own, so what follows the panel stays in reach.
 pub(in crate::app) fn draw_value_panel(
     ui: &mut egui::Ui,
-    graph: &Arc<WeaponRuntimeGraph>,
+    graph: &Arc<RuntimeGraph>,
     panel: ValuePanel<'_>,
 ) {
     draw_panel(ui, graph, panel, true);
@@ -52,7 +52,7 @@ pub(in crate::app) fn draw_value_panel(
 /// in a second one inside it.
 pub(in crate::app) fn draw_page_value_panel(
     ui: &mut egui::Ui,
-    graph: &Arc<WeaponRuntimeGraph>,
+    graph: &Arc<RuntimeGraph>,
     panel: ValuePanel<'_>,
 ) {
     draw_panel(ui, graph, panel, false);
@@ -60,7 +60,7 @@ pub(in crate::app) fn draw_page_value_panel(
 
 fn draw_panel(
     ui: &mut egui::Ui,
-    graph: &Arc<WeaponRuntimeGraph>,
+    graph: &Arc<RuntimeGraph>,
     mut panel: ValuePanel<'_>,
     boxed: bool,
 ) {
@@ -134,7 +134,7 @@ fn draw_panel(
 
 fn draw_value_list(
     ui: &mut egui::Ui,
-    graph: &WeaponRuntimeGraph,
+    graph: &RuntimeGraph,
     panel: &mut ValuePanel<'_>,
     cache: &mut RuntimeValuesCache,
 ) {
@@ -306,7 +306,7 @@ fn draw_value_list(
 /// group and the hover.
 fn draw_readable(
     ui: &mut egui::Ui,
-    graph: &WeaponRuntimeGraph,
+    graph: &RuntimeGraph,
     view: &RuntimeValuesView,
     panel: &mut ValuePanel<'_>,
 ) {
@@ -371,16 +371,16 @@ fn draw_readable(
 
 /// Whether a field reads as plain words: a verified name of its own, holding a number or a
 /// switch. Unnamed and inferred fields, identifiers, flags and raw bytes stay in groups.
-fn readable_field(field: &WeaponRuntimeField) -> bool {
+fn readable_field(field: &RuntimeField) -> bool {
     !field.name_inferred
-        && field.source != WeaponRuntimeFieldSource::OpaqueNativeType
+        && field.source != RuntimeFieldSource::OpaqueNativeType
         && matches!(
             field.kind,
-            WeaponRuntimeValueKind::Boolean
-                | WeaponRuntimeValueKind::SignedInteger { .. }
-                | WeaponRuntimeValueKind::UnsignedInteger { .. }
-                | WeaponRuntimeValueKind::Float32
-                | WeaponRuntimeValueKind::Float64
+            RuntimeValueKind::Boolean
+                | RuntimeValueKind::SignedInteger { .. }
+                | RuntimeValueKind::UnsignedInteger { .. }
+                | RuntimeValueKind::Float32
+                | RuntimeValueKind::Float64
         )
         && ![
             "Unnamed Field",

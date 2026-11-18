@@ -34,9 +34,9 @@ pub(super) fn read_component_owner(
 pub(super) fn decode_component_resource(
     manager: &PackageManager,
     owner_payload: &[u8],
-    binding: &WeaponRuntimeBinding,
+    binding: &RuntimeBinding,
     registry: &RuntimeRegistry,
-) -> Result<WeaponRuntimeResource, String> {
+) -> Result<RuntimeResource, String> {
     let start = usize::try_from(binding.resource_offset).map_err(|_| {
         format!(
             "Runtime binding 0x{:08X} resource {} offset does not fit this platform",
@@ -55,7 +55,7 @@ pub(super) fn decode_component_resource(
         manager,
         owner_payload,
         binding,
-        WeaponRuntimeRootKind::ComponentInstance,
+        RuntimeRootKind::ComponentInstance,
         start,
         binding.concrete_class,
         instance_limit,
@@ -67,7 +67,7 @@ pub(super) fn decode_component_resource(
                 manager,
                 owner_payload,
                 binding,
-                WeaponRuntimeRootKind::ComponentDefinition,
+                RuntimeRootKind::ComponentDefinition,
                 definition_start,
                 definition_class,
                 inferred_definition_limit(owner_payload, definition_start)?,
@@ -75,7 +75,7 @@ pub(super) fn decode_component_resource(
             )
         })
         .transpose()?;
-    Ok(WeaponRuntimeResource {
+    Ok(RuntimeResource {
         binding_hash: binding.binding_hash,
         binding_label: binding.binding_label.clone(),
         resource_index: binding.resource_index,
@@ -92,13 +92,13 @@ pub(super) fn decode_component_resource(
 pub(super) fn decode_component_root(
     manager: &PackageManager,
     owner_payload: &[u8],
-    binding: &WeaponRuntimeBinding,
-    kind: WeaponRuntimeRootKind,
+    binding: &RuntimeBinding,
+    kind: RuntimeRootKind,
     start: usize,
     schema: u32,
     inferred_limit: usize,
     registry: &RuntimeRegistry,
-) -> Result<WeaponRuntimeRoot, String> {
+) -> Result<RuntimeRoot, String> {
     let generated_schema = manager
         .get_entry(TagHash(schema))
         .is_some_and(|entry| entry.reference == GENERATED_SCHEMA_CLASS);
@@ -195,7 +195,7 @@ pub(super) fn decode_component_root(
             field.path_label.clone(),
         )
     });
-    Ok(WeaponRuntimeRoot {
+    Ok(RuntimeRoot {
         kind,
         schema,
         owner_offset: u32::try_from(start)
@@ -211,7 +211,7 @@ pub(super) fn decode_component_root(
 pub(super) fn append_uncovered_runtime_ranges(
     owner_payload: &[u8],
     root: OwnerRootDescriptor,
-    fields: &mut Vec<WeaponRuntimeField>,
+    fields: &mut Vec<RuntimeField>,
     binding_hash: u32,
     resource_index: u16,
     excluded_owner_ranges: &[(usize, usize)],
@@ -276,14 +276,14 @@ pub(super) fn append_uncovered_runtime_ranges(
                     value_offset + byte_size
                 )
             };
-            fields.push(WeaponRuntimeField {
-                locator: WeaponRuntimeFieldLocator {
+            fields.push(RuntimeField {
+                locator: RuntimeFieldLocator {
                     graph_tag: None,
                     binding_hash: binding_hash.into(),
                     resource_index,
                     root: root.kind,
                     root_schema: root.schema.into(),
-                    path: vec![WeaponRuntimePathElement {
+                    path: vec![RuntimePathElement {
                         name_hash: TECHNICAL_BYTES_PATH_HASH,
                         type_handle: root.schema.into(),
                         byte_offset: value_offset,
@@ -296,9 +296,9 @@ pub(super) fn append_uncovered_runtime_ranges(
                     .map_err(|_| "Technical runtime owner offset exceeds 32 bits")?,
                 name: label.clone(),
                 path_label: label,
-                kind: WeaponRuntimeValueKind::FixedBytes { size: byte_size },
-                value: WeaponRuntimeValue::Bytes(bytes),
-                source: WeaponRuntimeFieldSource::OpaqueNativeType,
+                kind: RuntimeValueKind::FixedBytes { size: byte_size },
+                value: RuntimeValue::Bytes(bytes),
+                source: RuntimeFieldSource::OpaqueNativeType,
                 generated_kind: None,
                 name_inferred: false,
             });
@@ -312,7 +312,7 @@ pub(super) fn append_uncovered_runtime_ranges(
 /// Completes the editor and resolver's shared-owner view without exposing component bytes twice.
 pub(super) fn prepare_shared_owner_roots(
     owner_payload: &[u8],
-    roots: &mut [WeaponRuntimeRoot],
+    roots: &mut [RuntimeRoot],
     binding_hash: u32,
     resource_index: u16,
     resource_ranges: &[(usize, usize)],
@@ -349,7 +349,7 @@ pub(super) fn prepare_shared_owner_roots(
 
 pub(super) fn component_definition_reference(
     owner_payload: &[u8],
-    binding: &WeaponRuntimeBinding,
+    binding: &RuntimeBinding,
     manager: &PackageManager,
     registry: &RuntimeRegistry,
 ) -> Result<Option<(usize, u32)>, String> {
@@ -378,7 +378,7 @@ pub(super) fn component_definition_reference(
 
 pub(super) fn native_component_definition_reference(
     owner_payload: &[u8],
-    binding: &WeaponRuntimeBinding,
+    binding: &RuntimeBinding,
 ) -> Result<Option<(usize, u32)>, String> {
     let start = usize::try_from(binding.resource_offset)
         .map_err(|_| "Runtime resource offset does not fit this platform")?;
@@ -415,7 +415,7 @@ pub(super) fn native_component_definition_reference(
 
 pub(super) fn inferred_resource_limit(
     owner_payload: &[u8],
-    binding: &WeaponRuntimeBinding,
+    binding: &RuntimeBinding,
 ) -> Result<usize, String> {
     let start = usize::try_from(binding.resource_offset)
         .map_err(|_| "Runtime resource offset does not fit this platform")?;
@@ -471,11 +471,11 @@ pub(super) fn decode_owner_roots(
     anchor_binding_hash: u32,
     anchor_resource_index: u16,
     registry: &RuntimeRegistry,
-) -> Result<Vec<WeaponRuntimeRoot>, String> {
+) -> Result<Vec<RuntimeRoot>, String> {
     let mut descriptors = Vec::new();
     for (kind, pointer) in [
-        (WeaponRuntimeRootKind::Instance, OWNER_INSTANCE_POINTER),
-        (WeaponRuntimeRootKind::Definition, OWNER_DEFINITION_POINTER),
+        (RuntimeRootKind::Instance, OWNER_INSTANCE_POINTER),
+        (RuntimeRootKind::Definition, OWNER_DEFINITION_POINTER),
     ] {
         if read_i64(payload, pointer)? == 0 {
             continue;
@@ -577,7 +577,7 @@ pub(super) fn decode_owner_roots(
             )
         });
         fields.dedup_by(|left, right| left.locator == right.locator);
-        roots.push(WeaponRuntimeRoot {
+        roots.push(RuntimeRoot {
             kind: descriptor.kind,
             schema: descriptor.schema,
             owner_offset: u32::try_from(descriptor.target)
@@ -609,9 +609,9 @@ struct RuntimeNode {
     absolute: usize,
     type_handle: u32,
     generated_kind: Option<u8>,
-    path: Vec<WeaponRuntimePathElement>,
+    path: Vec<RuntimePathElement>,
     labels: Vec<String>,
-    source: WeaponRuntimeFieldSource,
+    source: RuntimeFieldSource,
 }
 
 pub(super) fn decode_generated_root_fields(
@@ -622,7 +622,7 @@ pub(super) fn decode_generated_root_fields(
     anchor_binding_hash: u32,
     anchor_resource_index: u16,
     registry: &RuntimeRegistry,
-) -> Result<Vec<WeaponRuntimeField>, String> {
+) -> Result<Vec<RuntimeField>, String> {
     let generated = generated_schema_fields(schema_payload, root_size, registry)?;
     let walk = RuntimeWalk {
         owner_payload,
@@ -634,7 +634,7 @@ pub(super) fn decode_generated_root_fields(
     };
     let mut fields = Vec::new();
     for field in generated {
-        let path = vec![WeaponRuntimePathElement {
+        let path = vec![RuntimePathElement {
             name_hash: field.name_hash,
             type_handle: field.type_handle.into(),
             byte_offset: field.value_offset,
@@ -650,7 +650,7 @@ pub(super) fn decode_generated_root_fields(
             generated_kind: Some((field.metadata & 0xFF) as u8),
             path,
             labels,
-            source: WeaponRuntimeFieldSource::GeneratedSchema,
+            source: RuntimeFieldSource::GeneratedSchema,
         };
         flatten_runtime_type(&walk, node, &mut BTreeSet::new(), &mut fields, 0)?;
     }
@@ -664,7 +664,7 @@ pub(super) fn decode_registry_root_fields(
     anchor_binding_hash: u32,
     anchor_resource_index: u16,
     registry: &RuntimeRegistry,
-) -> Result<Vec<WeaponRuntimeField>, String> {
+) -> Result<Vec<RuntimeField>, String> {
     let walk = RuntimeWalk {
         owner_payload,
         root,
@@ -679,7 +679,7 @@ pub(super) fn decode_registry_root_fields(
         generated_kind: None,
         path: Vec::new(),
         labels: Vec::new(),
-        source: WeaponRuntimeFieldSource::NativeMember,
+        source: RuntimeFieldSource::NativeMember,
     };
     let mut fields = Vec::new();
     flatten_runtime_type(&walk, node, &mut BTreeSet::new(), &mut fields, 0)?;
@@ -690,7 +690,7 @@ fn flatten_runtime_type(
     walk: &RuntimeWalk<'_>,
     node: RuntimeNode,
     active_types: &mut BTreeSet<u32>,
-    output: &mut Vec<WeaponRuntimeField>,
+    output: &mut Vec<RuntimeField>,
     depth: usize,
 ) -> Result<(), String> {
     if depth >= MAX_RUNTIME_SCHEMA_DEPTH {
@@ -759,7 +759,7 @@ fn member_node(
     member: &RegistryMember,
 ) -> Result<RuntimeNode, String> {
     let mut path = node.path.clone();
-    path.push(WeaponRuntimePathElement {
+    path.push(RuntimePathElement {
         name_hash: member.name_hash,
         type_handle: member.type_handle.into(),
         byte_offset: member.byte_offset,
@@ -775,7 +775,7 @@ fn member_node(
         generated_kind: None,
         path,
         labels,
-        source: WeaponRuntimeFieldSource::NativeMember,
+        source: RuntimeFieldSource::NativeMember,
     })
 }
 
@@ -784,25 +784,20 @@ fn push_opaque_leaf(
     walk: &RuntimeWalk<'_>,
     node: RuntimeNode,
     size: u32,
-    output: &mut Vec<WeaponRuntimeField>,
+    output: &mut Vec<RuntimeField>,
 ) -> Result<(), String> {
     let opaque = RuntimeNode {
-        source: WeaponRuntimeFieldSource::OpaqueNativeType,
+        source: RuntimeFieldSource::OpaqueNativeType,
         ..node
     };
-    push_runtime_leaf(
-        walk,
-        opaque,
-        WeaponRuntimeValueKind::FixedBytes { size },
-        output,
-    )
+    push_runtime_leaf(walk, opaque, RuntimeValueKind::FixedBytes { size }, output)
 }
 
 fn push_runtime_leaf(
     walk: &RuntimeWalk<'_>,
     node: RuntimeNode,
-    kind: WeaponRuntimeValueKind,
-    output: &mut Vec<WeaponRuntimeField>,
+    kind: RuntimeValueKind,
+    output: &mut Vec<RuntimeField>,
 ) -> Result<(), String> {
     let RuntimeNode {
         absolute,
@@ -834,8 +829,8 @@ fn push_runtime_leaf(
         .last()
         .cloned()
         .unwrap_or_else(|| format_runtime_path(&path, walk.registry));
-    output.push(WeaponRuntimeField {
-        locator: WeaponRuntimeFieldLocator {
+    output.push(RuntimeField {
+        locator: RuntimeFieldLocator {
             graph_tag: None,
             binding_hash: walk.anchor_binding_hash.into(),
             resource_index: walk.anchor_resource_index,

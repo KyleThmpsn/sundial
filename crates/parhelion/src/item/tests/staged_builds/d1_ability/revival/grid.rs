@@ -4,7 +4,7 @@
 //! icon cut to a diamond, and no lore tab. A dropped step, a placed step showing another step's
 //! icon, a native step without a reason, a donor lore tab or an uncut item icon is a failure.
 use super::*;
-use crate::icon_edit::ImportedIcon;
+use crate::icon::edit::ImportedIcon;
 use crate::subclass::{EntryEdits, EntryIcon};
 use parhelion_import::d1_roi::ability::SubclassCatalog;
 

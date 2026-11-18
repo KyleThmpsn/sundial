@@ -63,7 +63,7 @@ fn a_large_batch_keeps_its_records_and_artwork_readable_across_packages() {
     // The item pairs and private plug leave fourteen slots for the six watermark texture
     // pairs and layer. The first icon owner would occupy the last slot, stranding its companion
     // in the next package. Legacy records already overflow before the artwork starts.
-    for index in 0..crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT / 2 - 9 {
+    for index in 0..crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT / 2 - 9 {
         let mut item = crate::WeaponRecipe::new_unbound_kind(crate::ItemKind::Mod).unwrap();
         item.set_donor(BOSS_SPEC, "Boss Spec");
         item.rename_authored_item(format!("Overflow Mod {index:04}"))
@@ -81,7 +81,7 @@ fn a_large_batch_keeps_its_records_and_artwork_readable_across_packages() {
             });
             item_perk.icon = Some(crate::perk::Icon::Image {
                 name: "capacity.png".into(),
-                image: crate::icon_edit::ImportedIcon::from_normalized(pixels).unwrap(),
+                image: crate::icon::edit::ImportedIcon::from_normalized(pixels).unwrap(),
             });
         }
         item.overrides.socket_plug_variants = vec![item_perk.at_socket(0, 0)];
@@ -202,7 +202,7 @@ fn a_large_batch_keeps_its_records_and_artwork_readable_across_packages() {
             );
             records.insert(icon.pkg_id());
             if checked_icons.insert(icon) && !asset_ids.contains(&icon.pkg_id()) {
-                crate::watermark::validate_icon_definition_graph(&manager, icon).unwrap();
+                crate::icon::watermark::validate_icon_definition_graph(&manager, icon).unwrap();
                 let icon_payload = manager.read_tag(icon).unwrap();
                 let layer = TagHash(
                     read_u32(
@@ -236,6 +236,18 @@ fn a_large_batch_keeps_its_records_and_artwork_readable_across_packages() {
             records.len() > 1,
             "item records and artwork must cross a package boundary"
         );
+        // Custom perk icon art loads through its icon's own companion when a screen names the
+        // icon row, so it is not in the investment loading index. Each authored package that
+        // holds it must still be registered, which the client does only through an index.
+        let standalone = layout
+            .iter()
+            .filter(|(_, _, _, stock)| stock.is_none())
+            .map(|(_, id, _, _)| *id)
+            .collect::<BTreeSet<_>>();
+        let registered = loaded
+            .iter()
+            .map(|(package, _)| *package)
+            .collect::<BTreeSet<_>>();
         let mut artwork_containers = BTreeSet::new();
         for row in 0..icon_count {
             let container = TagHash(
@@ -248,7 +260,7 @@ fn a_large_batch_keeps_its_records_and_artwork_readable_across_packages() {
             if !asset_ids.contains(&container.pkg_id()) || !artwork_containers.insert(container) {
                 continue;
             }
-            crate::watermark::validate_icon_definition_graph(&manager, container).unwrap();
+            crate::icon::watermark::validate_icon_definition_graph(&manager, container).unwrap();
             let companion = crate::shared_tag_memory::adjacent_companion_tag(container).unwrap();
             let dependencies = crate::shared_tag_memory::validate_shared_tag_companion_payload(
                 &manager.read_tag(companion).unwrap(),
@@ -259,8 +271,12 @@ fn a_large_batch_keeps_its_records_and_artwork_readable_across_packages() {
             for tag in dependencies.into_iter().map(TagHash) {
                 let payload = manager.read_tag(tag).unwrap();
                 assert!(!payload.is_empty());
-                if checked_icons.contains(&container) {
-                    assert!(loaded.contains(&(tag.pkg_id(), tag.entry_index())));
+                if checked_icons.contains(&container) && standalone.contains(&tag.pkg_id()) {
+                    assert!(
+                        registered.contains(&tag.pkg_id()),
+                        "icon art {tag} of {container} is in package {:04X}, which no loading index registers",
+                        tag.pkg_id()
+                    );
                 }
                 let entry = manager.get_entry(tag).unwrap();
                 if entry.file_type == 32

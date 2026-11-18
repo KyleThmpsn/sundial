@@ -4,14 +4,10 @@
 use super::*;
 use crate::subclass::{EntryEdits, Place, SubclassAbilities};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use sundial::package_authoring::sandbox_perk::program::{
     Action, Asset, ImportedAsset, Position, Program, Trigger,
 };
-
-fn sha(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
+use sundial::storage::sha256_hex;
 
 #[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES, SUNDIAL_TEST_ARTIFACTS and SUNDIAL_TEST_REVISION"]
@@ -22,7 +18,7 @@ fn persisted_subclass_attachments_follow_private_pool_actions() {
     fs::create_dir_all(output.parent().unwrap()).unwrap();
     fs::create_dir(&output).expect("use a fresh artifact directory for each run");
     let revision = std::env::var("SUNDIAL_TEST_REVISION").expect("source revision");
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
@@ -32,7 +28,7 @@ fn persisted_subclass_attachments_follow_private_pool_actions() {
     let catalog_path = output.join("catalog.json");
     let catalog =
         InvestmentCatalog::load_with_cache_path(install, &catalog_path, true, |_| {}).unwrap();
-    let bases = catalog.subclasses(crate::package_profile::is_stock_item_definition);
+    let bases = catalog.subclasses(crate::package::profile::is_stock_item_definition);
     let base = bases
         .iter()
         .find(|base| base.name == "Stormcaller")
@@ -193,8 +189,8 @@ fn persisted_subclass_attachments_follow_private_pool_actions() {
         )
         .unwrap();
         receipt.push(json!({"item":subclass.hash,"perk":perks[0],"root":root,
-            "owner":owner_tag,"action_sha256":sha(&action.action_payload),
-            "graph_sha256":sha(&bytes),"owner_sha256":sha(&owner_bytes)}));
+            "owner":owner_tag,"action_sha256":sha256_hex(&action.action_payload),
+            "graph_sha256":sha256_hex(&bytes),"owner_sha256":sha256_hex(&owner_bytes)}));
     }
     assert_eq!(staged.read_tag(TagHash(source_root)).unwrap(), graph);
     assert_eq!(staged.read_tag(TagHash(source_owner)).unwrap(), owner);
@@ -216,9 +212,9 @@ fn persisted_subclass_attachments_follow_private_pool_actions() {
         output.join("readback.json"),
         serde_json::to_vec_pretty(&json!({
             "revision":revision,"source_packages":packages,"manifest":build.manifest_path,
-            "source_graph_sha256":sha(&graph),"source_owner_sha256":sha(&owner),
+            "source_graph_sha256":sha256_hex(&graph),"source_owner_sha256":sha256_hex(&owner),
             "readback":receipt,"stock_unchanged":true,"changed_asset_rejected":true,
-            "executable_sha256":sha(&fs::read(std::env::current_exe().unwrap()).unwrap()),
+            "executable_sha256":sha256_hex(&fs::read(std::env::current_exe().unwrap()).unwrap()),
             "installed":false,"gameplay_verified":false
         }))
         .unwrap(),

@@ -5,11 +5,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod early;
+pub mod held;
 mod linked;
 pub(crate) mod looping;
 mod one_shot;
 pub(crate) use one_shot::{Attenuation, Layer as ShotLayer};
 mod params;
+pub mod route;
 pub use early::{upgrade, upgrade_with_settings};
 pub use linked::Namespace;
 pub mod settings;
@@ -153,6 +155,11 @@ struct Convert {
     source_plugins: BTreeMap<u32, u32>,
     extra: Vec<(u8, Write)>,
     dependencies: settings::Dependencies,
+    omit_modulators: bool,
+    inserted_property: bool,
+    omit_diffraction: bool,
+    output_bus: Option<u32>,
+    held: Option<held::Plan>,
 }
 impl Convert {
     fn state_id(&mut self, owner: u32, group: u32, state: u32) -> u32 {
@@ -172,7 +179,7 @@ pub fn hash(name: &str) -> u32 {
 /// Convert a complete source bank, retaining its hierarchy, actions and curves.
 /// Unsupported active features are errors, never silently flattened or dropped.
 pub fn lower(bytes: &[u8]) -> Result<Bank> {
-    lower_inner(bytes, None)
+    lower_inner(bytes, None, Dialect::MONUMENT_OF_TRIUMPH, None)
 }
 
 /// Inspect framed object types without interpreting an unsupported object's
@@ -229,18 +236,86 @@ pub fn object_types(bytes: &[u8]) -> Result<BTreeSet<u8>> {
     Ok(types)
 }
 
+/// The Wwise System Output Settings metadata plugin.
+const SYSTEM_OUTPUT_SETTINGS: u32 = 0x0384_0009;
+
+/// What a lowering does with modulators: LFO, envelope and time objects and the property curves
+/// they drive. This route translates none of them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Modulators {
+    /// A bank that uses one does not lower.
+    Refuse,
+    /// The objects and the curves they drive are left out, so each driven property keeps its
+    /// unmodulated value and the sound loses that automation over time.
+    Omit,
+}
+
+/// How the games that ship version 150 banks differ.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Dialect {
+    /// Whether property identities from 0x39 sit one above the stock numbering, after a
+    /// property the game's own build adds at 0x38.
+    pub inserted_property: bool,
+    pub modulators: Modulators,
+    /// Whether a sound that asks for geometry diffraction lowers as a plain positioned sound.
+    pub omit_diffraction: bool,
+    /// The native bus every node with a bus of its own outputs to instead. A game whose Init
+    /// shares no bus with the native one sets it, since the native loader needs each named bus.
+    /// Auxiliary sends to that game's own buses are then left out as well. The source's bus
+    /// volumes, effects and ducking are not carried.
+    pub output_bus: Option<u32>,
+}
+
+impl Dialect {
+    pub const MONUMENT_OF_TRIUMPH: Self = Self {
+        inserted_property: true,
+        modulators: Modulators::Refuse,
+        omit_diffraction: false,
+        output_bus: None,
+    };
+    /// Stock property numbering: attenuation is 0x55 and names attenuation objects of the same
+    /// bank, and 0x38 is the priority distance offset. Its buses are its own, so a conversion
+    /// supplies `output_bus`.
+    pub const MARATHON: Self = Self {
+        inserted_property: false,
+        modulators: Modulators::Omit,
+        omit_diffraction: true,
+        output_bus: None,
+    };
+}
+
 /// Include source globals absent from the target Init bank before loading HIRC.
 pub fn lower_with_settings(
     bytes: &[u8],
     source: &settings::Settings,
     native: &settings::Settings,
 ) -> Result<Bank> {
-    lower_inner(bytes, Some((source, native)))
+    lower_inner(
+        bytes,
+        Some((source, native)),
+        Dialect::MONUMENT_OF_TRIUMPH,
+        None,
+    )
+}
+
+/// As [`lower_with_settings`], for the named game's banks. With `held`, the elements that
+/// source event plays repeat at the carrier's cadence until the bank's added stop event,
+/// [`held::stop_event`], breaks them.
+pub fn lower_dialect(
+    bytes: &[u8],
+    source: &settings::Settings,
+    native: &settings::Settings,
+    dialect: Dialect,
+    held: Option<&held::Held>,
+) -> Result<Bank> {
+    lower_inner(bytes, Some((source, native)), dialect, held)
 }
 
 fn lower_inner(
     bytes: &[u8],
     settings: Option<(&settings::Settings, &settings::Settings)>,
+    dialect: Dialect,
+    held: Option<&held::Held>,
 ) -> Result<Bank> {
     ensure!(bytes.len() <= 64 * 1024 * 1024, "source bank exceeds limit");
     let mut r = Read { bytes, at: 0 };
@@ -316,20 +391,46 @@ fn lower_inner(
             Ok((*id, r.u32()?))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
+    let held = held
+        .map(|held| held::Plan::read(held, &entries, &mut ids))
+        .transpose()?;
     let mut convert = Convert {
+        held,
         objects: ids,
         source_plugins,
         extra: Vec::new(),
         dependencies: settings::Dependencies::default(),
+        omit_modulators: dialect.modulators == Modulators::Omit,
+        inserted_property: dialect.inserted_property,
+        omit_diffraction: dialect.omit_diffraction,
+        output_bus: dialect.output_bus,
     };
     let mut converted = Vec::new();
+    let mut failures = BTreeMap::<String, (String, usize)>::new();
     for (kind, id, mut r) in entries {
+        // LFO, envelope and time modulator objects.
+        if convert.omit_modulators && matches!(kind, 19 | 20 | 22) {
+            convert.objects.remove(&id);
+            continue;
+        }
+        // A share set of the metadata plugin that nodes leave out.
+        if matches!(kind, 16 | 17)
+            && convert.source_plugins.get(&id) == Some(&SYSTEM_OUTPUT_SETTINGS)
+        {
+            convert.objects.remove(&id);
+            continue;
+        }
         let mut w = Write::default();
         w.reference(id, Kind::Object);
-        object(kind, id, &mut r, &mut w, &mut convert)
-            .with_context(|| format!("bank object {id:08X} type {kind} at {}", r.at))?;
-        r.end()
-            .with_context(|| format!("bank object {id:08X} type {kind}"))?;
+        // Objects are framed apart, so one that does not lower leaves the rest readable. Each
+        // distinct cause is reported once, with its first object and how many share it.
+        if let Err(error) = object(kind, id, &mut r, &mut w, &mut convert).and_then(|()| r.end()) {
+            let (_, count) = failures
+                .entry(format!("{error:#}"))
+                .or_insert_with(|| (format!("bank object {id:08X} type {kind} at {}", r.at), 0));
+            *count += 1;
+            continue;
+        }
         // Feedback objects occupied 16 and 17 before Wwise 2017. Effects moved
         // down two slots when those objects were removed.
         converted.push((
@@ -340,6 +441,30 @@ fn lower_inner(
             },
             w,
         ));
+        // The repeating container follows its element, as a parent follows its children.
+        if let Some(plan) = &convert.held
+            && plan.wraps.contains_key(&id)
+        {
+            converted.push((5, plan.container(id)?));
+        }
+    }
+    if failures.is_empty()
+        && let Some(plan) = &convert.held
+    {
+        converted.extend(plan.stop(&convert.objects)?);
+    }
+    if !failures.is_empty() {
+        bail!(
+            "{}",
+            failures
+                .iter()
+                .map(|(cause, (first, count))| match count {
+                    1 => format!("{first}: {cause}"),
+                    _ => format!("{first} and {} more: {cause}", count - 1),
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
     }
     // Native nodes resolve State objects immediately while reading their state
     // chunks. Register generated states before any node can reference them.
@@ -495,6 +620,29 @@ fn children(r: &mut Read<'_>, w: &mut Write) -> Result<()> {
     }
     Ok(())
 }
+
+/// A node's child list. A `mixer` that lists a held element lists its repeating container
+/// instead. Any other parent keeps lists of its own that name the element, so it does not lower.
+fn listed(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, mixer: bool) -> Result<()> {
+    let count = r.count()?;
+    w.u32(count as u32);
+    for _ in 0..count {
+        let child = r.u32()?;
+        match c.held.as_mut().and_then(|plan| plan.wraps.get_mut(&child)) {
+            Some(wrap) => {
+                ensure!(
+                    mixer,
+                    "held element {child:08X} plays under a container, which a repeating \
+                     container cannot join"
+                );
+                wrap.adopted = true;
+                w.reference(wrap.container, Kind::Object);
+            }
+            None => w.reference(child, Kind::Object),
+        }
+    }
+    Ok(())
+}
 fn exceptions(r: &mut Read<'_>, w: &mut Write) -> Result<()> {
     let count = r.vcount()?;
     w.u32(count as u32);
@@ -505,8 +653,9 @@ fn exceptions(r: &mut Read<'_>, w: &mut Write) -> Result<()> {
     Ok(())
 }
 
-/// Convert an action body after its kind and ID.
-fn action(r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<()> {
+/// Convert an action body after its kind and ID. A play action of a held event starts the
+/// repeating container of the element it names.
+fn action(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, id: u32) -> Result<()> {
     let action = r.u16()?;
     w.u16(if matches!(action >> 8, 0x1A | 0x1B) {
         action + 0x200
@@ -522,15 +671,22 @@ fn action(r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<()> {
             c.dependencies.params.insert(target);
         }
     } else {
-        w.object(r)?;
+        let target = r.u32()?;
+        let started = c
+            .held
+            .as_ref()
+            .filter(|plan| plan.actions.contains(&id))
+            .and_then(|plan| plan.wraps.get(&target))
+            .map_or(target, |wrap| wrap.container);
+        w.reference(started, Kind::Object);
     }
     w.copy(r, 1)?;
-    let properties = params::props(r, w, false)?;
+    let properties = params::props(r, w, false, c.inserted_property)?;
     ensure!(
         properties.attenuation.is_none() && !properties.position_switch,
         "action has positioning properties"
     );
-    params::props(r, w, true)?;
+    params::props(r, w, true, c.inserted_property)?;
     match action >> 8 {
         4 => {
             w.copy(r, 1)?;
@@ -615,50 +771,83 @@ fn layers(r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<()> {
     Ok(())
 }
 
+/// A sound (kind 2): a silence generator, or a fully streamed medium of a supported plugin,
+/// which is written as plugin `00010001`.
+fn sound(id: u32, r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<()> {
+    let plugin = r.u32()?;
+    if plugin == 0x00650002 {
+        w.u32(plugin);
+        ensure!(r.u8()? == 0, "silence generator cannot stream media");
+        w.u8(0);
+        let source = r.u32()?;
+        w.reference(source, Kind::Object);
+        ensure!(r.u32()? == 0, "silence generator has media bytes");
+        w.u32(0);
+        w.copy(r, 1)?;
+        let size = r.u32()?;
+        ensure!(
+            size == 12 || (size == 0 && c.source_plugins.get(&source) == Some(&plugin)),
+            "silence source needs inline parameters or a matching shared preset"
+        );
+        w.u32(size);
+        w.copy(r, size as usize)?;
+        return node(r, w, c, id);
+    }
+    ensure!(
+        matches!(
+            plugin,
+            0x00010001 | 0x00040001 | 0x00110001 | 0x00130001 | 0x00140001
+        ),
+        "unsupported media plugin {plugin:08X}"
+    );
+    w.u32(0x00010001);
+    let stream = r.u8()?;
+    ensure!(stream == 2, "source medium is not fully streamed");
+    w.u8(2);
+    let media = r.u32()?;
+    w.reference(media, Kind::Media);
+    r.u32()?;
+    w.reference(media, Kind::MediaSize);
+    let bits = r.u8()?;
+    ensure!(bits & !8 == 0, "source has embedded or prefetched media");
+    w.u8(bits);
+    node(r, w, c, id)
+}
+
+/// A switch container (kind 6), whose switch or state group becomes a dependency.
+fn switch(id: u32, r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<()> {
+    node(r, w, c, id)?;
+    let kind = r.u8()?;
+    let group = r.u32()?;
+    ensure!(kind <= 1, "unsupported switch group kind {kind}");
+    if kind == 0 {
+        c.dependencies.switches.insert(group);
+    } else {
+        c.dependencies.groups.insert(group);
+    }
+    w.u8(kind);
+    w.u32(group);
+    w.copy(r, 5)?;
+    listed(r, w, c, false)?;
+    let count = r.count()?;
+    w.u32(count as u32);
+    for _ in 0..count {
+        w.copy(r, 4)?;
+        children(r, w)?;
+    }
+    let count = r.count()?;
+    w.u32(count as u32);
+    for _ in 0..count {
+        w.object(r)?;
+        w.copy(r, 10)?;
+    }
+    Ok(())
+}
+
 fn object(kind: u8, id: u32, r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<()> {
     match kind {
-        2 => {
-            let plugin = r.u32()?;
-            if plugin == 0x00650002 {
-                w.u32(plugin);
-                ensure!(r.u8()? == 0, "silence generator cannot stream media");
-                w.u8(0);
-                let source = r.u32()?;
-                w.reference(source, Kind::Object);
-                ensure!(r.u32()? == 0, "silence generator has media bytes");
-                w.u32(0);
-                w.copy(r, 1)?;
-                let size = r.u32()?;
-                ensure!(
-                    size == 12 || (size == 0 && c.source_plugins.get(&source) == Some(&plugin)),
-                    "silence source needs inline parameters or a matching shared preset"
-                );
-                w.u32(size);
-                w.copy(r, size as usize)?;
-                node(r, w, c, id)?;
-                return Ok(());
-            }
-            ensure!(
-                matches!(
-                    plugin,
-                    0x00010001 | 0x00040001 | 0x00110001 | 0x00130001 | 0x00140001
-                ),
-                "unsupported media plugin {plugin:08X}"
-            );
-            w.u32(0x00010001);
-            let stream = r.u8()?;
-            ensure!(stream == 2, "source medium is not fully streamed");
-            w.u8(2);
-            let media = r.u32()?;
-            w.reference(media, Kind::Media);
-            r.u32()?;
-            w.reference(media, Kind::MediaSize);
-            let bits = r.u8()?;
-            ensure!(bits & !8 == 0, "source has embedded or prefetched media");
-            w.u8(bits);
-            node(r, w, c, id)?;
-        }
-        3 => action(r, w, c)?,
+        2 => sound(id, r, w, c)?,
+        3 => action(r, w, c, id)?,
         4 => {
             let count = r.vcount()?;
             w.u32(count as u32);
@@ -669,7 +858,7 @@ fn object(kind: u8, id: u32, r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -
         5 => {
             node(r, w, c, id)?;
             w.copy(r, 24)?;
-            children(r, w)?;
+            listed(r, w, c, false)?;
             let count = r.u16()?;
             w.u16(count);
             for _ in 0..count {
@@ -677,40 +866,14 @@ fn object(kind: u8, id: u32, r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -
                 w.copy(r, 4)?;
             }
         }
-        6 => {
-            node(r, w, c, id)?;
-            let kind = r.u8()?;
-            let group = r.u32()?;
-            ensure!(kind <= 1, "unsupported switch group kind {kind}");
-            if kind == 0 {
-                c.dependencies.switches.insert(group);
-            } else {
-                c.dependencies.groups.insert(group);
-            }
-            w.u8(kind);
-            w.u32(group);
-            w.copy(r, 5)?;
-            children(r, w)?;
-            let count = r.count()?;
-            w.u32(count as u32);
-            for _ in 0..count {
-                w.copy(r, 4)?;
-                children(r, w)?;
-            }
-            let count = r.count()?;
-            w.u32(count as u32);
-            for _ in 0..count {
-                w.object(r)?;
-                w.copy(r, 10)?;
-            }
-        }
+        6 => switch(id, r, w, c)?,
         7 => {
             node(r, w, c, id)?;
-            children(r, w)?;
+            listed(r, w, c, true)?;
         }
         9 => {
             node(r, w, c, id)?;
-            children(r, w)?;
+            listed(r, w, c, false)?;
             layers(r, w, c)?;
         }
         14 => {
@@ -722,26 +885,62 @@ fn object(kind: u8, id: u32, r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -
             if cone == 1 {
                 w.copy(r, 20)?;
             }
+            // Slots 7 to 18 are the obstruction, occlusion, diffraction and transmission curves.
+            // Version 113 keeps those project-wide and has no slot for them, so a source
+            // attenuation's own are left out together with each curve only they name.
             let indices = r.take(19)?;
-            ensure!(
-                indices[7..].iter().all(|b| (*b as i8) < 0),
-                "active modern-only attenuation curve"
-            );
-            w.bytes.extend(&indices[..7]);
+            let (kept, newer) = indices.split_at(7);
             let count = r.u8()?;
-            w.u8(count);
+            let mut curves = Vec::with_capacity(usize::from(count));
             for _ in 0..count {
-                w.copy(r, 1)?;
+                let scaling = r.u8()?;
                 let points = r.u16()?;
-                w.u16(points);
-                w.copy(r, usize::from(points) * 12)?;
+                curves.push((scaling, points, r.take(usize::from(points) * 12)?));
+            }
+            let names = |slots: &[u8], curve: usize| {
+                slots
+                    .iter()
+                    .any(|slot| (*slot as i8) >= 0 && usize::from(*slot) == curve)
+            };
+            ensure!(
+                indices
+                    .iter()
+                    .all(|slot| (*slot as i8) < 0 || *slot < count),
+                "attenuation names a curve outside its list"
+            );
+            let mut renumbered = vec![None; curves.len()];
+            let mut next = 0u8;
+            for (curve, slot) in renumbered.iter_mut().enumerate() {
+                if names(kept, curve) || !names(newer, curve) {
+                    *slot = Some(next);
+                    next += 1;
+                }
+            }
+            for slot in kept {
+                w.u8(match *slot as i8 {
+                    index if index < 0 => *slot,
+                    _ => renumbered[usize::from(*slot)].context("kept attenuation curve")?,
+                });
+            }
+            w.u8(next);
+            for ((scaling, points, body), _) in curves
+                .iter()
+                .zip(&renumbered)
+                .filter(|(_, slot)| slot.is_some())
+            {
+                w.u8(*scaling);
+                w.u16(*points);
+                w.bytes.extend(*body);
             }
             rtpcs(r, w, c)?;
         }
         16 | 17 => {
             let plugin = r.u32()?;
             let size = r.u32()? as usize;
-            if plugin == 0x006E1003 && size == 159 {
+            // Curves and initial values name the plugin's own parameters, which hold only
+            // while both versions share the parameter block.
+            let reshaped = plugin == 0x006E1003 && size == 159;
+            if reshaped {
                 // The source FutzBox preset extends the legacy 139-byte block
                 // with four zero-valued controls and a trailing mode value 1.
                 // Shared presets in both package sets are byte-identical after
@@ -776,20 +975,29 @@ fn object(kind: u8, id: u32, r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -
             let media = r.u8()?;
             ensure!(media == 0, "effect media dependency requires conversion");
             w.u8(0);
-            ensure!(
-                r.u16()? == 0,
-                "effect plugin RTPC conversion is unsupported"
-            );
-            w.u16(0);
+            params::effect_curves(r, w, c, !reshaped)?;
             ensure!(
                 r.vcount()? == 0 && r.vcount()? == 0,
                 "effect state conversion is unsupported"
             );
+            // The source lists each curve-driven parameter's own value with its accumulation.
+            // Version 113 lists the value alone and keeps the accumulation on the curve.
+            let values = r.u16()?;
             ensure!(
-                r.u16()? == 0,
+                !reshaped || values == 0,
                 "effect initial property conversion is unsupported"
             );
-            w.u16(0);
+            w.u16(values);
+            for _ in 0..values {
+                let parameter = r.var()?;
+                let accumulation = r.u8()?;
+                ensure!(
+                    parameter < 256 && (1..=3).contains(&accumulation),
+                    "unsupported effect property {parameter:02X} or accumulation {accumulation}"
+                );
+                w.u8(parameter as u8);
+                w.copy(r, 4)?;
+            }
         }
         other => bail!("unsupported HIRC object type {other}"),
     }

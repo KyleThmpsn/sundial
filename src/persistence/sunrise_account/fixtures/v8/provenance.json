@@ -1,0 +1,25 @@
+{
+  "upstream": "https://github.com/stanuwu/Sunrise",
+  "revision": "f5a4c6763a2cd7a69653d034269cbb07d7fa6e18",
+  "resources": {
+    "investment_schema.sql": {
+      "sha256": "d093ad6f2fad3d8f0872e303fbab7b01acd21a97b391d302977998cec0bda400",
+      "upstream_path": "Sunrise/resources/database/investment_schema.sql",
+      "file": "../v7/investment_schema.sql",
+      "note": "Unchanged since the schema 7 revision and still stamped user_version 7, so schema 8 reads the schema 7 copy. Sunrise stamps a new save 8 after it adds mission_flags."
+    },
+    "character_starter.sql": {
+      "sha256": "6924aec666d48d2c7ca7a87db8322d0f7faf6cec0110defebebbfe0f6bef8ed5",
+      "upstream_path": "Sunrise/resources/database/character_starter.sql",
+      "file": "../v5/character_starter.sql",
+      "note": "Unchanged since the schema 5 revision, so schema 8 reads the schema 5 copy."
+    }
+  },
+  "code_tables": {
+    "file": "code_tables.sql",
+    "sha256": "aaae61f3ec6da5aae288fd444cf8f2d0be6451c606eb356c0e7bcd680e5d5b35",
+    "source": "Sunrise/src/state/investment/investment_database.cpp",
+    "source_sha256": "3f99530bdf52e15aee365cf39b760c0f0a5b1926859b912c1584d434f00968f2",
+    "extraction": "The seven schema 7 statements of ../v7/code_tables.sql, which this revision leaves unchanged, followed by the string literals of kMissionFlagsTable joined on one line. Sunrise runs kMissionFlagsTable last when it creates a save, after the default rows and the account settings SQL, and alone when it upgrades a schema 7 save. The statement reads no other table."
+  }
+}

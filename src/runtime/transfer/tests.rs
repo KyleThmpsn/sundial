@@ -1,14 +1,14 @@
 use super::*;
 
-fn field(schema: u32) -> WeaponRuntimeField {
-    WeaponRuntimeField {
-        locator: WeaponRuntimeFieldLocator {
+fn field(schema: u32) -> RuntimeField {
+    RuntimeField {
+        locator: RuntimeFieldLocator {
             graph_tag: None,
             binding_hash: BindingHash::new(1),
             resource_index: 0,
-            root: WeaponRuntimeRootKind::ComponentDefinition,
+            root: RuntimeRootKind::ComponentDefinition,
             root_schema: schema.into(),
-            path: vec![WeaponRuntimePathElement {
+            path: vec![RuntimePathElement {
                 name_hash: 7,
                 type_handle: SchemaHandle::new(9),
                 byte_offset: 16,
@@ -20,9 +20,9 @@ fn field(schema: u32) -> WeaponRuntimeField {
         owner_offset: 100,
         name: "Setting".into(),
         path_label: "Setting".into(),
-        kind: WeaponRuntimeValueKind::Float32,
-        value: WeaponRuntimeValue::Float32Bits(1.0_f32.to_bits()),
-        source: WeaponRuntimeFieldSource::NativeMember,
+        kind: RuntimeValueKind::Float32,
+        value: RuntimeValue::Float32Bits(1.0_f32.to_bits()),
+        source: RuntimeFieldSource::NativeMember,
         generated_kind: None,
         name_inferred: false,
     }
@@ -76,9 +76,9 @@ fn opaque_data_references_and_ambiguous_inheritance_are_not_portable_settings() 
     let mut source = field(2);
     let mut target = field(3);
     for kind in [
-        WeaponRuntimeValueKind::FixedBytes { size: 4 },
-        WeaponRuntimeValueKind::HexIdentifier { bits: 32 },
-        WeaponRuntimeValueKind::Enum { bits: 32 },
+        RuntimeValueKind::FixedBytes { size: 4 },
+        RuntimeValueKind::HexIdentifier { bits: 32 },
+        RuntimeValueKind::Enum { bits: 32 },
     ] {
         source.kind = kind.clone();
         target.kind = kind;

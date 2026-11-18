@@ -14,7 +14,13 @@ pub(super) fn check(
         assert_eq!(source.u8(s + a)?, native.u8(n + b)?);
     }
     assert_eq!(source.u32(s + 0x98)?, native.u32(n + 0xA0)?);
-    assert_eq!(native.u32(n + 0x9C)?, 0x811C9DC5);
+    if source.u8(s + 0x175)? == 0 {
+        assert_eq!(native.u32(n + 0x9C)?, 0x811C9DC5);
+    } else {
+        // The choice-level readback follows this key to the timed marker on the victim.
+        assert_eq!(source.u8(s + 0x175)?, 1);
+        assert_ne!(native.u32(n + 0x9C)?, 0x811C9DC5);
+    }
     assert_eq!(native.bytes::<3>(n + 0xC2)?, [0; 3]);
     if source.u64(s + 0x188)? == 0 {
         assert_eq!(native.u64(n + 0xC8)?, 0);

@@ -174,7 +174,7 @@ fn graded_program(
 }
 
 /// The resource patches that make each graph of a tree name private copies, by graph.
-pub(in crate::item) type ColorPatches = BTreeMap<u32, Vec<WeaponRuntimeResourcePatch>>;
+pub(in crate::item) type ColorPatches = BTreeMap<u32, Vec<RuntimeResourcePatch>>;
 
 /// A place in a graph's bound resources: its binding, resource index and byte offset.
 type Place = (u32, u16, u32);
@@ -509,7 +509,7 @@ pub(in crate::item) fn author(
         }) {
             continue;
         }
-        graph.push(WeaponRuntimeResourcePatch {
+        graph.push(RuntimeResourcePatch {
             binding_hash,
             resource_index,
             offset,

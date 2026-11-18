@@ -52,7 +52,7 @@ fn base_bullets_per_shot(type_name: &str) -> f32 {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FiringRecord {
     /// Locates the record's amount inside the graph the perk attaches.
-    pub(crate) amount: sundial::package_authoring::runtime::WeaponRuntimeFieldLocator,
+    pub(crate) amount: sundial::package_authoring::runtime::RuntimeFieldLocator,
     /// The component interface the record changes, the barrel or the magazine.
     pub(crate) component: i64,
     /// The input the record changes within that component.
@@ -122,11 +122,11 @@ pub(crate) fn firing_records(
     manager: &PackageManager,
     graph: u32,
 ) -> AuthoringResult<Vec<FiringRecord>> {
-    use sundial::package_authoring::runtime::load_weapon_runtime_graph_for_entity;
+    use sundial::package_authoring::runtime::load_runtime_graph_for_entity;
     let payload = manager
         .read_tag(TagHash(graph))
         .map_err(|error| invalid(format!("Attached entity 0x{graph:08X}: {error}")))?;
-    let loaded = load_weapon_runtime_graph_for_entity(manager, 0, 0, graph, &payload)
+    let loaded = load_runtime_graph_for_entity(manager, 0, 0, graph, &payload)
         .map_err(|error| invalid(format!("Attached entity 0x{graph:08X}: {error}")))?;
     Ok(modifier_fields(&loaded)
         .values()
@@ -135,11 +135,11 @@ pub(crate) fn firing_records(
 }
 
 /// The amount, operation, input and component fields of one stored modifier record.
-type ModifierFields<'a> = [Option<&'a sundial::package_authoring::runtime::WeaponRuntimeField>; 4];
+type ModifierFields<'a> = [Option<&'a sundial::package_authoring::runtime::RuntimeField>; 4];
 
 /// Every modifier record's fields, keyed by the owner and offset the record starts at.
 fn modifier_fields(
-    loaded: &sundial::package_authoring::runtime::WeaponRuntimeGraph,
+    loaded: &sundial::package_authoring::runtime::RuntimeGraph,
 ) -> std::collections::BTreeMap<(u32, u32), ModifierFields<'_>> {
     use sundial::package_authoring::runtime::modifiers;
     let mut records = std::collections::BTreeMap::<(u32, u32), ModifierFields<'_>>::new();
@@ -166,10 +166,10 @@ fn modifier_fields(
 
 /// One record as a barrel firing or magazine change, when it is one and every field decodes.
 fn firing_record(graph: u32, fields: &ModifierFields<'_>) -> Option<FiringRecord> {
-    use sundial::package_authoring::runtime::{WeaponRuntimeValue, modifiers};
-    let number = |value: &WeaponRuntimeValue| match value {
-        WeaponRuntimeValue::Signed(value) => Some(*value),
-        WeaponRuntimeValue::Unsigned(value) => i64::try_from(*value).ok(),
+    use sundial::package_authoring::runtime::{RuntimeValue, modifiers};
+    let number = |value: &RuntimeValue| match value {
+        RuntimeValue::Signed(value) => Some(*value),
+        RuntimeValue::Unsigned(value) => i64::try_from(*value).ok(),
         _ => None,
     };
     let [Some(amount), Some(operation), Some(input), Some(component)] = *fields else {
@@ -183,7 +183,7 @@ fn firing_record(graph: u32, fields: &ModifierFields<'_>) -> Option<FiringRecord
     if !fires && component != modifiers::MAGAZINE_COMPONENT {
         return None;
     }
-    let WeaponRuntimeValue::Float32Bits(bits) = amount.value else {
+    let RuntimeValue::Float32Bits(bits) = amount.value else {
         return None;
     };
     let mut locator = amount.locator.clone();
@@ -308,10 +308,10 @@ fn firing_edits(
     landing: Landing,
 ) -> Vec<(
     u16,
-    sundial::package_authoring::runtime::WeaponRuntimeValueOverride,
+    sundial::package_authoring::runtime::RuntimeValueOverride,
 )> {
     use sundial::package_authoring::runtime::{
-        WeaponRuntimeValue, WeaponRuntimeValueOverride, modifiers::BARREL_BULLETS_PER_SHOT,
+        RuntimeValue, RuntimeValueOverride, modifiers::BARREL_BULLETS_PER_SHOT,
     };
     let records = perks
         .iter()
@@ -349,9 +349,9 @@ fn firing_edits(
         .map(|((perk, record), value)| {
             (
                 *perk,
-                WeaponRuntimeValueOverride {
+                RuntimeValueOverride {
                     locator: record.amount.clone(),
-                    value: WeaponRuntimeValue::Float32Bits(value.to_bits()),
+                    value: RuntimeValue::Float32Bits(value.to_bits()),
                 },
             )
         })
@@ -480,7 +480,7 @@ fn edited_perks(
     perks: &[PerkFiring],
     edits: &[(
         u16,
-        sundial::package_authoring::runtime::WeaponRuntimeValueOverride,
+        sundial::package_authoring::runtime::RuntimeValueOverride,
     )],
 ) -> Vec<crate::item::WeaponSandboxPerkRuntimeOverride> {
     perks

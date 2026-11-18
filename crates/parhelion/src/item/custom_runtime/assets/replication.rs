@@ -232,7 +232,7 @@ impl Loading {
             // Include sparse package descriptors as well as indices for the private graph.
             bound: payload
                 .len()
-                .checked_add(crate::format::BLOCK_SIZE)
+                .checked_add(crate::package::format::BLOCK_SIZE)
                 .and_then(|size| {
                     nodes
                         .len()

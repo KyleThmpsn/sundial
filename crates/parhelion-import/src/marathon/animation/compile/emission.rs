@@ -9,8 +9,8 @@ use super::*;
 pub(super) struct Clips {
     /// The first native descriptor ordinal the translated rows take, after the carrier's.
     pub(super) first: usize,
-    /// The native descriptor of each source descriptor with its weapon-local descriptor.
-    descriptors: BTreeMap<(u32, Option<u32>), u32>,
+    /// Each complete authored variant has its own native descriptor.
+    descriptors: BTreeMap<Key, u32>,
     keys: BTreeMap<(u32, u32), Key>,
     /// Clip placeholders the linker replaces, in bank order.
     pub(super) clips: Vec<u32>,
@@ -34,17 +34,17 @@ impl Clips {
     ) -> Result<Self> {
         let (controller, keys) = (&sources.controller, &translation.keys);
         let first = sources.carrier.descriptors()?;
-        let mut descriptors = BTreeMap::<(u32, Option<u32>), u32>::new();
+        let mut descriptors = BTreeMap::<Key, u32>::new();
         let mut converted = BTreeMap::<Key, (usize, u16, u8)>::new();
         let mut clips = Vec::new();
         let mut rows = Vec::new();
         let mut extra = Vec::new();
         let mut reports = Vec::new();
         let mut used_targets = BTreeSet::new();
-        for (&action, route) in &routes.routes {
+        for (&request, route) in &routes.routes {
             for &(descriptor, _) in route {
-                let key = keys[&(action, descriptor)];
-                if descriptors.contains_key(&(descriptor, key.1)) {
+                let key = keys[&(request, descriptor)];
+                if descriptors.contains_key(&key) {
                     continue;
                 }
                 let entry = &controller.descriptors[descriptor as usize];
@@ -59,28 +59,33 @@ impl Clips {
                     };
                     let file = match key.1 {
                         Some(weapon) => format!(
-                            "animation/source-clip-{tag:08X}-{:08X}.bin",
-                            local.mechanisms[&weapon].name
+                            "animation/source-clip-{tag:08X}-{:08X}-{:08X}-{:08X}-{:08X}.bin",
+                            weapon, key.3, key.4, key.2
                         ),
-                        None => format!("animation/source-clip-{tag:08X}.bin"),
+                        None => format!(
+                            "animation/source-clip-{tag:08X}-{:08X}-{:08X}-{:08X}.bin",
+                            key.3, key.4, key.2
+                        ),
                     };
                     // The linker replaces each placeholder word in the bank. A second variant of
                     // one source clip takes a placeholder derived from its weapon-local descriptor.
                     let placeholder = if clips.contains(&tag) {
-                        let weapon = key.1.map_or(0, |weapon| local.mechanisms[&weapon].name);
-                        source::fnv(&format!("{tag:08X}-{weapon:08X}"))
+                        source::fnv(&format!(
+                            "{tag:08X}-{:?}-{:08X}-{:08X}-{:08X}",
+                            key.1, key.2, key.3, key.4
+                        ))
                     } else {
                         tag
                     };
+                    ensure!(
+                        !clips.contains(&placeholder),
+                        "Translated clip placeholder collision"
+                    );
                     // Source cues native audio cannot resolve give way to the carrier's cues for
                     // the same action, timed by the weapon mechanism this clip carries.
                     let mut payload = result.payload;
                     if omitted_cues(&report["lowering"]) {
-                        let actions = keys
-                            .iter()
-                            .filter(|(pair, k)| **k == key && routes.routes.contains_key(&pair.0))
-                            .map(|(pair, _)| pair.0)
-                            .collect::<BTreeSet<_>>();
+                        let actions = BTreeSet::from([key.2]);
                         let timing =
                             cue::authored(&payload, &sources.native_rig, local.native_handle)?;
                         report["cues"] = match donors.choose(
@@ -96,7 +101,17 @@ impl Clips {
                                     "records":clip::carry_cues(&mut payload, &donor.payload, &map)?})
                             }
                             None => {
-                                json!({"carrier_clip":null,"reason":"No carrier clip of these actions carries cues"})
+                                let named = cue::source_timed(
+                                    &report["lowering"],
+                                    &sources.carrier.vocabulary,
+                                    key.2,
+                                );
+                                if named.is_empty() {
+                                    json!({"carrier_clip":null,"reason":"No carrier clip of these actions carries cues"})
+                                } else {
+                                    json!({"carrier_clip":null,"timing":"source cue frames",
+                                        "records":clip::name_cues(&mut payload, &named)?})
+                                }
                             }
                         };
                     }
@@ -112,7 +127,7 @@ impl Clips {
                     converted.insert(key, found);
                     found
                 };
-                descriptors.insert((descriptor, key.1), u32::try_from(first + rows.len())?);
+                descriptors.insert(key, u32::try_from(first + rows.len())?);
                 rows.push(native::Row {
                     source: descriptor,
                     name: entry.name,
@@ -137,8 +152,9 @@ impl Clips {
     }
 
     /// The native descriptor `action`'s route plays for source `descriptor`.
-    pub(super) fn native_descriptor(&self, action: u32, descriptor: u32) -> u32 {
-        self.descriptors[&(descriptor, self.keys[&(action, descriptor)].1)]
+    pub(super) fn native_descriptor(&self, request: u32, descriptor: u32) -> u32 {
+        let key = self.keys[&(request, descriptor)];
+        self.descriptors[&key]
     }
 }
 
@@ -148,6 +164,7 @@ pub(super) struct Tables {
     pub(super) consumers: Vec<Value>,
     pub(super) rigs: Vec<Value>,
     pub(super) layer_routes: Vec<Value>,
+    pub(super) layer_policy: Value,
     /// Actions that keep the carrier's state.
     pub(super) fallback: BTreeSet<String>,
 }
@@ -165,31 +182,47 @@ impl Tables {
     ) -> Result<Self> {
         let carrier = &sources.carrier;
         let native_routes = routes
-            .routes
+            .actions
             .iter()
-            .map(|(action, route)| {
+            .map(|(action, tree)| {
                 (
                     *action,
-                    route
-                        .iter()
-                        .map(|(descriptor, weight)| {
-                            (clips.native_descriptor(*action, *descriptor), *weight)
-                        })
-                        .collect(),
+                    tree.map(&mut |request| {
+                        routes.routes[request]
+                            .iter()
+                            .map(|(descriptor, weight)| {
+                                (clips.native_descriptor(*request, *descriptor), *weight)
+                            })
+                            .collect()
+                    })
+                    .reduced(),
                 )
             })
             .collect::<native::Routes>();
+        if sources.magazine_reload {
+            ensure!(
+                RELOADS
+                    .iter()
+                    .all(|(name, _)| native_routes.contains_key(&source::fnv(name))),
+                "Magazine reload requires both translated source reload actions"
+            );
+        }
         let bank = native::bank(carrier, &clips.clips, &clips.rows)?;
         // Source supplemental layers are untranslated, and source loops such as `sprint_loop`
         // are held poses that rely on them. Each absolute translated descriptor therefore takes
         // the carrier's layer route for the actions that select it, the additive sway and
-        // locomotion the carrier plays with its own clip for that action. Actions that disagree,
+        // locomotion the carrier plays with its own clip for that action. Firing and settle
+        // offsets authored against the donor's own actions are removed below. Actions that disagree,
         // additive rows and actions the carrier routes to no layer leave the descriptor without
         // one.
         let mut selecting = BTreeMap::<u32, BTreeSet<u32>>::new();
-        for (&action, route) in &native_routes {
-            for &(descriptor, _) in route {
-                selecting.entry(descriptor).or_default().insert(action);
+        for (&action, tree) in &native_routes {
+            let mut choices = Vec::new();
+            tree.leaves(&mut choices);
+            for route in choices {
+                for &(descriptor, _) in route {
+                    selecting.entry(descriptor).or_default().insert(action);
+                }
             }
         }
         let mut dispatch = Vec::with_capacity(clips.rows.len());
@@ -206,12 +239,39 @@ impl Tables {
                 [Some(entry)] => *entry,
                 _ => u16::MAX,
             };
-            if entry != u16::MAX {
-                layer_routes.push(json!({"descriptor":ordinal,"layer_route":entry}));
-            }
             dispatch.push(entry);
         }
         let layers = native::layers(carrier, &dispatch)?;
+        let independent = clips
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.mode == 1)
+            .map(|(index, _)| (clips.first + index, None))
+            .collect();
+        // Source actions are complete independent motion. The donor's settle, charge-fire and
+        // firing offsets couple its own endpoints and must not displace these poses. Sprint and
+        // procedural motion remain because source locomotion layers are not translated. The
+        // shared writer preserves any layer that includes an absolute or replacement clip.
+        let (layers, omitted, _, added) = crate::tiger::animation::layer::omit_coupled(
+            native,
+            &layers,
+            &carrier.bank.1,
+            &independent,
+            &[0xFC23AA50, 0xD3B8D0AC, 0xE4E61EE3],
+        )?;
+        let written = layers.array(40, 2, Some(0x80800006))?;
+        for (index, &original) in dispatch.iter().enumerate() {
+            let ordinal = clips.first + index;
+            let entry = layers.u16(written[ordinal])?;
+            if entry != u16::MAX {
+                layer_routes.push(
+                    json!({"descriptor":ordinal,"layer_route":entry,"carrier_route":original}),
+                );
+            }
+        }
+        let layer_policy = json!({"omitted_additive_layers":omitted.iter().map(|n|format!("{n:08X}")).collect::<Vec<_>>(),
+            "private_routes":added,"retained_sprint_layer":"4D467CC1","non_additive_layers_retained":true});
         let states = native::states(carrier, &native_routes)?;
         // Actions the source leaves untranslated keep the carrier's state.
         let fallback = routes
@@ -235,6 +295,7 @@ impl Tables {
             carrier,
             &sources.placement,
             &sources.weapon_rig,
+            &sources.extension.equipment_skeleton,
             &appended,
             graph,
         )?;
@@ -295,6 +356,7 @@ impl Tables {
             consumers,
             rigs,
             layer_routes,
+            layer_policy,
             fallback,
         })
     }
@@ -331,7 +393,7 @@ impl Receipt<'_> {
             .iter()
             .map(|r| json!({"source":r.source,"name":format!("{:08X}",r.name),"clip":clips.clips[r.clip],"duration":r.duration,"mode":r.mode}))
             .collect::<Vec<_>>();
-        json!({
+        let mut section = json!({
             "first_person_status": "linked",
             "runtime_entity": carrier.runtime,
             "first_person": {
@@ -359,11 +421,15 @@ impl Receipt<'_> {
                     "arm_skeleton": sources.arm_skeleton_tag,
                     "arm_controls": sources.arm_controls_tag,
                     "action_lookup": sources.lookup_tag,
+                    "driver": sources.arm_driver,
                     "bank": controller.bank_tag,
                     "fixed_builtins": sources.fixed.iter().map(|(b, v)| (b.to_string(), format!("{v:08X}"))).collect::<BTreeMap<_, _>>(),
                     "control_extensions": sources.arms.extensions,
                 },
-                "routes": routes.routes.iter().map(|(action, route)| (format!("{action:08X}"), route.iter().map(|(d, w)| json!({"source_descriptor":d,"native_descriptor":clips.native_descriptor(*action, *d),"weight":w})).collect::<Vec<_>>())).collect::<BTreeMap<_, _>>(),
+                "routes": routes.actions.iter().map(|(action, tree)| (format!("{action:08X}"), tree.map(&mut |request| routes.routes[request].iter().map(|(d,w)| json!({"source_descriptor":d,"native_descriptor":clips.native_descriptor(*request,*d),"weight":w})).collect::<Vec<_>>()).reduced())).collect::<BTreeMap<_, _>>(),
+                "input_adaptation": {"dynamic_builtins":[1,10,12,18],
+                    "policy":"Shadowkeep stance, awareness, sprint and ammunition names select source dictionary routes. Unknown native names and untranslated source inputs use the unset source value. Named reload actions retain their explicit ammunition input.",
+                    "source_producers_verified":false},
                 "absent_native_actions": routes.absent,
                 // A shell-fed carrier requests reload_enter, a shell insert and chamber_1, so a
                 // source weapon that reloads by magazine never plays its reload on it.
@@ -376,6 +442,7 @@ impl Receipt<'_> {
                 "retarget": retarget.report,
                 "framing": framing,
                 "carrier_layer_routes": tables.layer_routes,
+                "layer_policy": tables.layer_policy,
                 "weapon_section": sources.extension.report,
                 "arm_coverage": sources.coverage,
                 "weapon_local": local.report,
@@ -390,15 +457,19 @@ impl Receipt<'_> {
                     "Pose controller numeric parameters at +110, read by the native pose layers"
                 ],
                 "untranslated_source": [
-                    "Supplemental pose layers and their numeric parameter programs. Absolute translated descriptors take the carrier's layer route for their actions, listed under carrier_layer_routes",
+                    "Supplemental pose layers and their numeric parameter programs. Absolute translated descriptors retain carrier locomotion and procedural layers, omitting incompatible additive firing offsets. Routes are listed under carrier_layer_routes",
                     "Weapon-local descriptors no named state, clip length or idle state reaches, listed under weapon_local. Length pairings rest on timing, not a source selection record",
                     "Attachment-local controllers and weapon-local clip events",
-                    "Hand targets on moving weapon bones, which are appended at their rest place",
+                    "Live hand contact and equipment pose timing for bone-local hand targets",
                     "Constraint rows with a target mode other than 3, which are disabled and listed per clip",
                     "Audio, effect and sequence-selector clip events, recorded per clip. A clip that omitted them carries the carrier's cues for its action, listed per clip under cues"
                 ],
             },
             "gameplay_verified": false,
-        })
+        });
+        if sources.magazine_reload {
+            section["reload"] = json!("magazine");
+        }
+        section
     }
 }

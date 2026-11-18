@@ -434,6 +434,46 @@
               "operation": "ability_property",
               "target": 2,
               "key": "0x509AF1A2"
+            },
+            {
+              "operation": "attach",
+              "asset": {
+                "graph": 2160169461
+              },
+              "mode": 0
+            }
+          ],
+          "native_asset_patches": [
+            {
+              "action_index": 4,
+              "source_graph": 2160169461,
+              "patches": [],
+              "programs": [
+                {
+                  "binding_hash": 2510688041,
+                  "resource_index": 0,
+                  "offset": 152,
+                  "expected_action": 2160169457,
+                  "program": {
+                    "name": "Weapon Melee Energy",
+                    "trigger": "always",
+                    "duration_ms": 0,
+                    "cooldown_ms": 250,
+                    "chance_permyriad": 10000,
+                    "actions": [
+                      {
+                        "operation": "native",
+                        "kind": 9,
+                        "bytes": "0x090002000000403F"
+                      }
+                    ],
+                    "native_removal": {
+                      "kind": 0,
+                      "bytes": "0x0000803FFF000001"
+                    }
+                  }
+                }
+              ]
             }
           ],
           "ability_inputs": [

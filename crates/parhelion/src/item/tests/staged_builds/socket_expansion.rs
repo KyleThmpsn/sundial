@@ -161,7 +161,7 @@ fn verify_expanded_weapon(
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_added_sockets_stage_and_rescan_with_private_plugs_and_unchanged_stock() {
     let packages = crate::test_support::stock_packages();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
@@ -239,7 +239,7 @@ fn real_added_sockets_stage_and_rescan_with_private_plugs_and_unchanged_stock() 
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_removed_socket_stages_and_rescans_without_shifting_neighbors() {
     let packages = crate::test_support::stock_packages();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();

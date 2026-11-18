@@ -47,6 +47,7 @@ use crate::{
 use super::{
     chain,
     encounters::{Encounter, Templates},
+    placed::words,
     world::{BubbleName, Owner},
 };
 
@@ -73,6 +74,15 @@ const DESCRIPTOR_MARK: usize = 0x08;
 const MARK: u32 = 0x70;
 const DESCRIPTOR_KEY: usize = 0x30;
 const DESCRIPTOR_SIZE: usize = 0x80;
+/// A placed record's default instance and its definition, the descriptor the runtime reads its
+/// slot from. The definition is an 88-byte slot header whose `+0x08` holds the default instance's
+/// offset, whose `+0x36` holds the slot index and whose `+0x44` and `+0x48` hold its schemas.
+const RECORD_INSTANCE: usize = 0x10;
+const RECORD_DEFINITION: usize = 0x18;
+const SLOT_HEADER: usize = 88;
+const DESCRIPTOR_SLOT: usize = 0x34;
+const DESCRIPTOR_SENSE: usize = 0x44;
+const DESCRIPTOR_AUTH: usize = 0x48;
 /// A point's rotation quaternion, position and scale.
 const POINT_ROTATION: usize = 0x60;
 const POINT_POSITION: usize = 0x70;
@@ -240,6 +250,8 @@ pub(super) struct Donor {
     registry: Option<TagHash>,
     /// Each array's objects, their payloads and their handles per bubble.
     objects: [Vec<DonorObject>; 3],
+    /// The slots of each object, by its tag, whose placed record every copy leaves out.
+    lost: BTreeMap<u32, BTreeSet<u32>>,
     dependencies: Arc<BTreeSet<u32>>,
     templates: Option<Option<Templates>>,
     triggers: Option<Option<super::triggers::Triggers>>,
@@ -270,11 +282,18 @@ impl Donor {
                 if read_u64(&payload, OBJECT_BUBBLES)? != 0 {
                     let (count, _, rows, _) = array_at(&payload, OBJECT_BUBBLES)?;
                     for bubble in 0..count {
-                        let handles =
-                            words(&payload, rows + bubble * BUBBLE_SIZE + BUBBLE_HANDLES)?
-                                .into_iter()
-                                .map(|tag| handle(manager, tag, key))
-                                .collect::<AuthoringResult<Vec<_>>>()?;
+                        let tags = words(&payload, rows + bubble * BUBBLE_SIZE + BUBBLE_HANDLES)?;
+                        let mut handles = Vec::with_capacity(tags.len());
+                        for tag in tags {
+                            let kept = handle(manager, tag, key)?;
+                            // A handle the copy leaves out takes its record's slot with it.
+                            if matches!(kept, Handle::Dropped)
+                                && let Some(slot) = dropped_slot(manager, tag, key)?
+                            {
+                                self.lost.entry(object).or_default().insert(slot);
+                            }
+                            handles.push(kept);
+                        }
                         bubbles.push(handles);
                     }
                 }
@@ -348,9 +367,26 @@ impl Donor {
     }
 }
 
+/// Where a registry's copy sits and how it differs from the donor's, for the rows that describe
+/// it to the runtime.
+pub(super) struct Copies {
+    /// How many entries the registry takes.
+    pub entries: usize,
+    /// Each donor tag the registry copies with its copy: the registry itself and every object
+    /// whose lists change. An object the copy still lists by its donor tag is not among them.
+    pub moved: Vec<(TagHash, TagHash)>,
+    /// The slots of each donor object, by its tag, whose placed record the copy leaves out. The
+    /// runtime lists a slot in an object's roster only while a handle reaches its record.
+    pub lost: BTreeMap<u32, BTreeSet<u32>>,
+    /// The encounter object the copy adds, as the activity SDK pack describes it.
+    pub encounter: Option<super::pack::Encounter>,
+}
+
 pub(super) struct Registry {
     owner: Owner,
     dependencies: Arc<BTreeSet<u32>>,
+    /// The slots of each donor object, by its tag, whose placed record the copy leaves out.
+    lost: BTreeMap<u32, BTreeSet<u32>>,
     /// The objects of each of the registry's arrays.
     objects: [Vec<Object>; 3],
     spawns: Vec<Spawn>,
@@ -363,17 +399,6 @@ pub(super) struct Registry {
 
 fn class(manager: &PackageManager, tag: u32) -> Option<u32> {
     manager.get_entry(TagHash(tag)).map(|entry| entry.reference)
-}
-
-/// The `u32` rows of the array at `descriptor`, none when it is empty.
-fn words(payload: &[u8], descriptor: usize) -> AuthoringResult<Vec<u32>> {
-    if read_u64(payload, descriptor)? == 0 {
-        return Ok(Vec::new());
-    }
-    let (count, _, rows, _) = array_at(payload, descriptor)?;
-    (0..count)
-        .map(|index| read_u32(payload, rows + index * 4))
-        .collect()
 }
 
 /// The offsets of `record`'s descriptors in its payload.
@@ -393,6 +418,56 @@ fn floats<const N: usize>(payload: &[u8], at: usize) -> AuthoringResult<[f32; N]
         *value = f32::from_bits(read_u32(payload, at + k * 4)?);
     }
     Ok(values)
+}
+
+/// The slot of the object keyed `key` that the placed record `tag` fills, as the runtime finds
+/// it: the record's definition names the record and its default instance, carries the key, and
+/// holds a component class and schemas of class shape.
+fn slot_of(record: &[u8], tag: u32, key: u32) -> AuthoringResult<Option<u32>> {
+    let target = |field: usize| -> AuthoringResult<Option<usize>> {
+        let relative = read_u64(record, field)? as i64;
+        Ok((relative != 0)
+            .then(|| field.checked_add_signed(relative as isize))
+            .flatten())
+    };
+    let (Some(definition), Some(instance)) = (target(RECORD_DEFINITION)?, target(RECORD_INSTANCE)?)
+    else {
+        return Ok(None);
+    };
+    if definition
+        .checked_add(SLOT_HEADER)
+        .is_none_or(|end| end > record.len())
+    {
+        return Ok(None);
+    }
+    let class = |value: u32| value >> 16 == 0x8080;
+    let schema = |value: u32| value == u32::MAX || class(value);
+    let named = read_u32(record, definition)? == tag
+        && read_u64(record, definition + DESCRIPTOR_MARK)? == instance as u64
+        && read_u32(record, definition + DESCRIPTOR_KEY)? == key
+        && class(read_u32(record, definition + DESCRIPTOR_CLASS)?)
+        && schema(read_u32(record, definition + DESCRIPTOR_SENSE)?)
+        && schema(read_u32(record, definition + DESCRIPTOR_AUTH)?);
+    // The slot type is the low half of the word, the slot index the high half.
+    Ok(if named {
+        Some(read_u32(record, definition + DESCRIPTOR_SLOT)? >> 16)
+    } else {
+        None
+    })
+}
+
+/// The slot the placed record behind donor handle `handle` fills in the object keyed `key`, for a
+/// handle [`handle`] leaves out, read along the same handle, redirect and record.
+fn dropped_slot(manager: &PackageManager, handle: u32, key: u32) -> AuthoringResult<Option<u32>> {
+    let handle_payload = read_tag(manager, TagHash(handle), "object handle")?;
+    let redirects = words(&handle_payload, HANDLE_REDIRECTS)?;
+    let [redirect] = redirects[..] else {
+        return Ok(None);
+    };
+    let redirect_payload = read_tag(manager, TagHash(redirect), "object redirect")?;
+    let record = read_u32(&redirect_payload, REDIRECT_RECORD[0])?;
+    let record_payload = read_tag(manager, TagHash(record), "placed record")?;
+    slot_of(&record_payload, record, key)
 }
 
 /// What becomes of donor handle `handle` of an object keyed `key`: a point moves, a volume drops,
@@ -528,7 +603,7 @@ fn empty_list(manager: &PackageManager, handle: &mut Handle) -> AuthoringResult<
             // copy does not build, so such a handle or list stays as it is.
             let owner = |tag: u32| {
                 manager.get_entry(TagHash(tag)).is_some_and(|entry| {
-                    entry.file_type == crate::extend::SHARED_TAG_OWNER_FILE_TYPE
+                    entry.file_type == crate::package::extend::SHARED_TAG_OWNER_FILE_TYPE
                 })
             };
             if list == u32::MAX
@@ -725,10 +800,19 @@ impl Registry {
                 });
             }
         }
+        let mut lost = donor.lost.clone();
         if volumes.is_empty() {
             for object in objects.iter_mut().flatten() {
+                let key = read_u32(&object.payload, OBJECT_KEY)?;
                 for handle in object.bubbles.iter_mut().flatten().flatten() {
-                    if matches!(handle, Handle::Volumes { .. }) {
+                    if let Handle::Volumes {
+                        record, payloads, ..
+                    } = handle
+                    {
+                        // The record's slot leaves the object with it.
+                        if let Some(slot) = slot_of(&payloads[2], record.0, key)? {
+                            lost.entry(object.tag.0).or_default().insert(slot);
+                        }
                         *handle = Handle::Dropped;
                     }
                 }
@@ -862,6 +946,7 @@ impl Registry {
         Ok(Self {
             owner,
             dependencies: donor.dependencies.clone(),
+            lost,
             objects,
             spawns: spawns.to_vec(),
             volumes: volumes.to_vec(),
@@ -877,6 +962,34 @@ impl Registry {
         manager: &PackageManager,
         first: TagHash,
     ) -> AuthoringResult<Vec<NewTagSpec>> {
+        let (mut tags, added, _, _) = self.entries(first)?;
+        loading::prune(manager, first, &mut tags, &self.dependencies, &added)?;
+        Ok(tags)
+    }
+
+    /// The registry's copy as it sits from `first`.
+    pub(super) fn copies(&self, first: TagHash) -> AuthoringResult<Copies> {
+        let (tags, _, moved, encounter) = self.entries(first)?;
+        Ok(Copies {
+            entries: tags.len(),
+            moved,
+            lost: self.lost.clone(),
+            encounter,
+        })
+    }
+
+    /// The entries before their loading lists are pruned, the entries the copy adds, each donor
+    /// tag with its copy, and the encounter object the copy adds as the registry lists it.
+    #[allow(clippy::type_complexity)]
+    fn entries(
+        &self,
+        first: TagHash,
+    ) -> AuthoringResult<(
+        Vec<NewTagSpec>,
+        Vec<TagHash>,
+        Vec<(TagHash, TagHash)>,
+        Option<super::pack::Encounter>,
+    )> {
         let at = |offset: usize| {
             u16::try_from(first.entry_index() as usize + offset)
                 .map(|index| TagHash::new(first.pkg_id(), index))
@@ -891,6 +1004,7 @@ impl Registry {
         let mut registry_payload = self.owner.payload.clone();
         let mut next = 2;
         let mut added = Vec::new();
+        let mut moved = vec![(self.owner.tag, registry)];
         let mut content = Vec::new();
         for (list, &descriptor) in self.objects.iter().zip(&REGISTRY_OBJECTS) {
             for (index, object) in list.iter().enumerate() {
@@ -899,6 +1013,7 @@ impl Registry {
                 };
                 let copy = at(next)?;
                 next += 1;
+                moved.push((object.tag, copy));
                 let (_, _, rows, _) = array_at(&registry_payload, descriptor)?;
                 write_u32(&mut registry_payload, rows + index * 4, copy.0)?;
                 let mut payload = object.payload.clone();
@@ -1035,8 +1150,13 @@ impl Registry {
             self.bubble.rename(payload);
         };
         let mut authored = Vec::new();
+        let mut encounter_rows = None;
         if let Some(encounter) = &self.encounter {
             authored.push(encounter.tags(&at, &mut next, &rename)?);
+            // The encounter is the first object appended to the registry's second array.
+            let descriptor = REGISTRY_OBJECTS[1];
+            let ordinal = words(&registry_payload, descriptor)?.len();
+            encounter_rows = Some(encounter.rows(authored[0].1, descriptor, ordinal)?);
         }
         if let Some(triggers) = &self.triggers {
             authored.push(triggers.tags(&at, &mut next, &rename)?);
@@ -1069,8 +1189,7 @@ impl Registry {
             ),
         ];
         tags.extend(content);
-        loading::prune(manager, first, &mut tags, &self.dependencies, &added)?;
-        Ok(tags)
+        Ok((tags, added, moved, encounter_rows))
     }
 
     /// A moved point's handle, redirect and record from the donor's three `payloads`. The handle

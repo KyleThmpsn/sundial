@@ -274,7 +274,7 @@ fn catalog_to_staged_private_perk_has_a_repeatable_package_receipt() {
     .unwrap();
     let report =
         crate::workflow::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();

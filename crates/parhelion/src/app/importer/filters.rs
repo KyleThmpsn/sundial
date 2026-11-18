@@ -63,9 +63,10 @@ impl Filters {
     }
 }
 
-const FAMILIES: [service::Family; 9] = [
+const FAMILIES: [service::Family; 11] = [
     service::Family::Weapon,
     service::Family::Armor,
+    service::Family::Artifact,
     service::Family::Ornament,
     service::Family::WeaponOrnament,
     service::Family::GhostShell,
@@ -73,6 +74,7 @@ const FAMILIES: [service::Family; 9] = [
     service::Family::Sparrow,
     service::Family::Shader,
     service::Family::Emblem,
+    service::Family::Subclass,
 ];
 
 /// The family whose slots a family's rows fill. A universal ornament fills an armor slot.
@@ -84,7 +86,7 @@ fn slot_family(family: service::Family) -> service::Family {
     }
 }
 
-const SLOTS: [(u32, &str); 12] = [
+const SLOTS: [(u32, &str); 13] = [
     (1498876634, "Kinetic"),
     (2465295065, "Energy"),
     (953998645, "Power"),
@@ -97,6 +99,7 @@ const SLOTS: [(u32, &str); 12] = [
     (284967655, "Ship"),
     (2025709351, "Sparrow"),
     (4274335291, "Emblem"),
+    (1506418338, "Artifact"),
 ];
 
 const CLASSES: [(u8, &str); 3] = [(0, "Titan"), (1, "Hunter"), (2, "Warlock")];
@@ -237,7 +240,7 @@ fn draw_source(
         changed |= show_imported(ui, browser);
         if source == Source::Marathon {
             ui.checkbox(preferences.marathon_animations, "Marathon Animations").on_hover_text(
-                "Experimental. Imports play the weapon's own Marathon animations instead of the donor's.",
+                "Imports play the weapon's own Marathon animations. Turn this off to use the donor's animations.",
             );
             ui.checkbox(preferences.marathon_ornaments, "Ornaments").on_hover_text(
                 "Imports each weapon's camos as ornaments. Each camo adds a model, so imports take longer. Reimports keep the ornaments each recipe has.",
@@ -284,8 +287,19 @@ pub(super) fn draw(
             FAMILIES
                 .into_iter()
                 .filter(|family| {
-                    source != Source::D1RiseOfIron
-                        || matches!(family, service::Family::Weapon | service::Family::Armor)
+                    (source != Source::D1RiseOfIron
+                        || matches!(
+                            family,
+                            service::Family::Weapon
+                                | service::Family::Armor
+                                | service::Family::Artifact
+                                | service::Family::Subclass
+                        ))
+                        && (source == Source::D1RiseOfIron
+                            || !matches!(
+                                family,
+                                service::Family::Artifact | service::Family::Subclass
+                            ))
                 })
                 .map(|value| (value, value.label().to_owned())),
             142.0,
@@ -332,7 +346,11 @@ pub(super) fn draw(
                 .into_iter()
                 .filter(|(bucket, _)| {
                     (source != Source::D1RiseOfIron
-                        || service::Family::from_bucket(*bucket) == Some(service::Family::Armor))
+                        || matches!(
+                            service::Family::from_bucket(*bucket),
+                            Some(service::Family::Armor | service::Family::Artifact)
+                        ))
+                        && (source == Source::D1RiseOfIron || *bucket != 1506418338)
                         && filters.family.is_none_or(|family| {
                             service::Family::from_bucket(*bucket) == Some(slot_family(family))
                         })
@@ -385,12 +403,24 @@ pub(super) fn draw(
         }
         if filters
             .family
-            .is_none_or(|family| slot_family(family) == service::Family::Armor)
+            .is_none_or(|family| {
+                matches!(
+                    slot_family(family),
+                    service::Family::Armor | service::Family::Artifact
+                )
+            })
         {
+            let label = if source == Source::D1RiseOfIron
+                && filters.family != Some(service::Family::Armor)
+            {
+                "Equipment Class"
+            } else {
+                "Armor Class"
+            };
             changed |= choice(
                 ui,
                 "import-class",
-                "Armor Class",
+                label,
                 "Class",
                 &mut filters.class,
                 CLASSES

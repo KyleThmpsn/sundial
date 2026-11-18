@@ -28,8 +28,8 @@ use crate::package_payload::{
     bytes_at, i64_at, native_array_at, relative_offset, rows_fit, u32_at, u64_at,
 };
 use crate::runtime::{
-    WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimeResource,
-    WeaponRuntimeValue, WeaponRuntimeValueOverride,
+    RuntimeField, RuntimeFieldSource, RuntimeGraph, RuntimeResource, RuntimeValue,
+    RuntimeValueOverride,
 };
 mod bank;
 pub mod evade;
@@ -437,7 +437,7 @@ const ACTIVATING: [(u32, u32); 3] = [
 ];
 
 /// Whether a controller in `resource`'s owner holds its preparation where its activation reaches.
-fn activated(graph: &WeaponRuntimeGraph, resource: &WeaponRuntimeResource) -> bool {
+fn activated(graph: &RuntimeGraph, resource: &RuntimeResource) -> bool {
     graph.resources.iter().any(|controller| {
         controller.owner_tag == resource.owner_tag
             && resource
@@ -456,7 +456,7 @@ pub struct MovementValue {
     pub unit: Unit,
     /// Whether a native consumer establishes its role.
     pub traced: bool,
-    pub field: WeaponRuntimeField,
+    pub field: RuntimeField,
     offset: usize,
 }
 
@@ -464,7 +464,7 @@ pub struct MovementValue {
 /// not wholly inside one opaque field is left out, and so is the profile of a preparation no
 /// controller's activation reaches.
 #[must_use]
-pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<MovementValue> {
+pub fn discover(graph: &RuntimeGraph) -> Vec<MovementValue> {
     let mut found = Vec::new();
     for resource in &graph.resources {
         let Some(root) = resource.definition.as_ref() else {
@@ -480,7 +480,7 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<MovementValue> {
             if schema == PREPARATION && matches!(offset, 0x260 | 0x264) {
                 let height = root.fields.iter().find_map(|field| {
                     let start = 0x260_u32.checked_sub(field.locator.value_offset)? as usize;
-                    let WeaponRuntimeValue::Bytes(bytes) = &field.value else {
+                    let RuntimeValue::Bytes(bytes) = &field.value else {
                         return None;
                     };
                     bytes
@@ -493,7 +493,7 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<MovementValue> {
                 }
             }
             let mut covering = root.fields.iter().filter(|field| {
-                field.source != WeaponRuntimeFieldSource::NativeDeclaration
+                field.source != RuntimeFieldSource::NativeDeclaration
                     && field.locator.value_offset <= offset
                     && field
                         .locator
@@ -504,7 +504,7 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<MovementValue> {
             let Some(field) = covering.next() else {
                 continue;
             };
-            if covering.next().is_some() || !matches!(field.value, WeaponRuntimeValue::Bytes(_)) {
+            if covering.next().is_some() || !matches!(field.value, RuntimeValue::Bytes(_)) {
                 continue;
             }
             let value = MovementValue {
@@ -523,8 +523,8 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<MovementValue> {
 }
 
 impl MovementValue {
-    fn read(&self, value: &WeaponRuntimeValue) -> Option<u32> {
-        let WeaponRuntimeValue::Bytes(bytes) = value else {
+    fn read(&self, value: &RuntimeValue) -> Option<u32> {
+        let RuntimeValue::Bytes(bytes) = value else {
             return None;
         };
         let bytes = bytes.get(self.offset..self.offset + self.unit.width())?;
@@ -535,10 +535,7 @@ impl MovementValue {
         }
     }
 
-    fn own<'a>(
-        &self,
-        draft: &'a [WeaponRuntimeValueOverride],
-    ) -> Option<&'a WeaponRuntimeValueOverride> {
+    fn own<'a>(&self, draft: &'a [RuntimeValueOverride]) -> Option<&'a RuntimeValueOverride> {
         draft
             .iter()
             .find(|entry| entry.locator == self.field.locator)
@@ -552,7 +549,7 @@ impl MovementValue {
 
     /// The bits `draft` gives it, else the stock ones.
     #[must_use]
-    pub fn bits(&self, draft: &[WeaponRuntimeValueOverride]) -> u32 {
+    pub fn bits(&self, draft: &[RuntimeValueOverride]) -> u32 {
         self.own(draft)
             .and_then(|entry| self.read(&entry.value))
             .unwrap_or_else(|| self.stock())
@@ -560,17 +557,17 @@ impl MovementValue {
 
     /// Whether `draft` changes it.
     #[must_use]
-    pub fn is_modified(&self, draft: &[WeaponRuntimeValueOverride]) -> bool {
+    pub fn is_modified(&self, draft: &[RuntimeValueOverride]) -> bool {
         self.bits(draft) != self.stock()
     }
 
     /// Sets its four bytes in `draft`, keeping the rest of the field as `draft` has it. The
     /// override goes once the field is stock again.
-    pub fn write(&self, draft: &mut Vec<WeaponRuntimeValueOverride>, bits: u32) {
+    pub fn write(&self, draft: &mut Vec<RuntimeValueOverride>, bits: u32) {
         let mut value = self
             .own(draft)
             .map_or_else(|| self.field.value.clone(), |entry| entry.value.clone());
-        let WeaponRuntimeValue::Bytes(bytes) = &mut value else {
+        let RuntimeValue::Bytes(bytes) = &mut value else {
             return;
         };
         let Some(lane) = bytes.get_mut(self.offset..self.offset + self.unit.width()) else {
@@ -579,7 +576,7 @@ impl MovementValue {
         lane.copy_from_slice(&bits.to_le_bytes()[..self.unit.width()]);
         draft.retain(|entry| entry.locator != self.field.locator);
         if value != self.field.value {
-            draft.push(WeaponRuntimeValueOverride {
+            draft.push(RuntimeValueOverride {
                 locator: self.field.locator.clone(),
                 value,
             });
@@ -587,7 +584,7 @@ impl MovementValue {
     }
 
     /// Restores its stock bytes in `draft`.
-    pub fn reset(&self, draft: &mut Vec<WeaponRuntimeValueOverride>) {
+    pub fn reset(&self, draft: &mut Vec<RuntimeValueOverride>) {
         self.write(draft, self.stock());
     }
 }

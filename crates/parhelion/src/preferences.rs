@@ -1,3 +1,4 @@
+//! Parhelion's saved preferences and where they are stored.
 use std::{
     fs, io,
     path::{Path, PathBuf},

@@ -11,7 +11,7 @@ const HELP: &str = "Fields of this graph. The build changes a copy only this abi
 
 /// A loaded graph and the graphs it spawns, each with its name.
 pub(super) struct Loaded {
-    pub(super) graph: Arc<WeaponRuntimeGraph>,
+    pub(super) graph: Arc<RuntimeGraph>,
     pub(super) spawns: Vec<(u32, String)>,
 }
 
@@ -25,7 +25,7 @@ pub(super) struct Values {
     objects: Option<Arc<Catalog>>,
     query: String,
     cache: Option<RuntimeValuesCache>,
-    text: BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
+    text: BTreeMap<(RuntimeFieldLocator, u8), String>,
     show_technical: bool,
 }
 
@@ -88,7 +88,7 @@ fn load(packages: &Path, graph_tag: u32, objects: Option<Arc<Catalog>>) -> Load 
     let payload = manager
         .read_tag(tiger_pkg::TagHash(graph_tag))
         .map_err(|error| error.to_string())?;
-    let mut graph = load_weapon_runtime_graph_for_entity(&manager, 0, 0, graph_tag, &payload)?;
+    let mut graph = load_runtime_graph_for_entity(&manager, 0, 0, graph_tag, &payload)?;
     graph.scope_fields();
     let is_bank = sundial::package_authoring::ability_modifier::is_bank;
     graph
@@ -115,10 +115,10 @@ fn load(packages: &Path, graph_tag: u32, objects: Option<Arc<Catalog>>) -> Load 
 
 /// The values that belong to `graph`: scoped to it, or unscoped when it is the ability's own.
 pub(super) fn values_of(
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
     graph: u32,
     entity: u32,
-) -> Vec<WeaponRuntimeValueOverride> {
+) -> Vec<RuntimeValueOverride> {
     values
         .iter()
         .filter(|value| {
@@ -141,9 +141,9 @@ impl PackageAuthoringApp {
         ui: &mut egui::Ui,
         (loaded, entity): (&Loaded, u32),
         place: Place,
-        values: &[WeaponRuntimeValueOverride],
+        values: &[RuntimeValueOverride],
         state: &mut Values,
-    ) -> Option<Vec<WeaponRuntimeValueOverride>> {
+    ) -> Option<Vec<RuntimeValueOverride>> {
         let tag = loaded.graph.entity_tag;
         let own = values_of(values, tag, entity);
         let mut edited = own.clone();

@@ -1,3 +1,5 @@
+//! The build manifest: the project, items and identities a build records, the fingerprint of its
+//! selected recipes, and their validation.
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -41,6 +43,9 @@ pub(crate) struct ManifestDocument {
     /// Executable mission sidecars published atomically with their activity packages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) mission_scripts: Vec<ArtifactMetadata>,
+    /// Each member's activity SDK pack, which Sunrise resolves its maps' activities through.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) activity_packs: Vec<ArtifactMetadata>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) mods: Vec<crate::mod_family::Member>,
 }
@@ -90,12 +95,25 @@ impl ManifestDocument {
                 return Err("Invalid or repeated mission controller artifact".into());
             }
         }
+        validate_artifact_metadata("activity pack", &self.activity_packs)?;
+        let mut packs = BTreeSet::new();
+        for artifact in &self.activity_packs {
+            use sundial::package_authoring::mod_content::activity_pack;
+            if crate::mod_family::native_name(&artifact.file_name) != activity_pack::FILE_NAME
+                || artifact.byte_length == 0
+                || artifact.byte_length > activity_pack::BYTE_LIMIT
+                || !packs.insert(&artifact.file_name)
+            {
+                return Err("Invalid or repeated activity pack artifact".into());
+            }
+        }
         crate::mod_family::validate(
             &self.mods,
             &self.artifacts,
             &self.merge_data,
             self.map_diagnostics.as_ref(),
             &self.mission_scripts,
+            &self.activity_packs,
         )?;
         if let Some(artifact) = &self.map_diagnostics {
             use sundial::package_authoring::mod_content::map_diagnostics;
@@ -116,7 +134,7 @@ impl ManifestDocument {
             .flat_map(|member| {
                 member.receipt.artifacts.iter().filter_map(|artifact| {
                     let name = artifact.path.rsplit('/').next()?;
-                    let profile = crate::package_profile::authored_package_for_file_name(name)?;
+                    let profile = crate::package::profile::authored_package_for_file_name(name)?;
                     (!profile.stock_overlay)
                         .then_some((profile.package_id, member.manifest.id.as_str()))
                 })
@@ -707,7 +725,7 @@ fn validate_artifact_metadata(label: &str, artifacts: &[ArtifactMetadata]) -> Re
 fn validate_ignored_authored_files(files: &[String]) -> Result<(), String> {
     let mut seen = BTreeSet::new();
     for file in files {
-        if crate::package_profile::authored_package_for_file_name(file).is_none() {
+        if crate::package::profile::authored_package_for_file_name(file).is_none() {
             return Err(format!(
                 "The manifest ignored-authored list contains unexpected file {file:?}"
             ));

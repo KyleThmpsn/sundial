@@ -12,7 +12,7 @@ pub(super) struct AuthoredIconPreviewKey {
     /// A subclass icon, shown without a rarity plate or watermark.
     pub(super) plain: bool,
     /// The art the icon shows in place of its image: a vehicle's silhouette or a generated icon.
-    pub(super) art: Option<crate::icon_art::Request>,
+    pub(super) art: Option<crate::icon::art::Request>,
 }
 
 impl AuthoredIconPreviewKey {
@@ -46,7 +46,7 @@ pub(super) fn effective_icon_rarity(
 }
 
 /// An icon's layers as read, with the art its image gives way to.
-pub(super) type ReadIconLayers = Result<(IconLayers, Option<crate::icon_art::Read>), String>;
+pub(super) type ReadIconLayers = Result<(IconLayers, Option<crate::icon::art::Read>), String>;
 
 /// A rendered icon, or why it could not render, with what it was rendered from.
 pub(super) enum AuthoredIconPreview<Key = AuthoredIconPreviewKey> {
@@ -103,7 +103,7 @@ impl PackageAuthoringApp {
             Some((
                 TagHash(tag),
                 self.authored_icon_rarity()?,
-                crate::icon_art::edited(
+                crate::icon::art::edited(
                     self.icon_art_request().as_ref(),
                     &self.recipe.overrides.icon_edit,
                     self.icon_art().as_ref(),
@@ -124,14 +124,14 @@ impl PackageAuthoringApp {
     }
 
     /// What the recipe's icon shows in place of its image, as its previews read and draw it.
-    pub(super) fn icon_art_request(&self) -> Option<crate::icon_art::Request> {
-        crate::icon_art::Art::of(&self.recipe).map(|art| art.request(&self.subclasses))
+    pub(super) fn icon_art_request(&self) -> Option<crate::icon::art::Request> {
+        crate::icon::art::Art::of(&self.recipe).map(|art| art.request(&self.subclasses))
     }
 
     /// The art the icon shows in place of its image, as the icon card last read it and drawn in
     /// the recipe's current colors, for the icon editors to start from. `None` until the card has
     /// read it.
-    pub(super) fn icon_art(&self) -> Option<crate::icon_edit::ImportedIcon> {
+    pub(super) fn icon_art(&self) -> Option<crate::icon::edit::ImportedIcon> {
         let request = self.icon_art_request()?;
         let (read_for, Ok((_, Some(read)))) = self.authored_icon_layers.as_ref()? else {
             return None;
@@ -190,14 +190,14 @@ impl PackageAuthoringApp {
                     .as_ref()
                     .map(|art| {
                         art.draw(key.art.as_ref().map_or_else(
-                            crate::icon_art::Look::default,
-                            crate::icon_art::Request::look,
+                            crate::icon::art::Look::default,
+                            crate::icon::art::Request::look,
                         ))
                     })
                     .transpose()
                     .map(Option::flatten)
                     .and_then(|art| {
-                        layers.render(&crate::icon_art::edited(
+                        layers.render(&crate::icon::art::edited(
                             key.art.as_ref(),
                             &key.edit,
                             art.as_ref(),

@@ -1,7 +1,9 @@
-//! Preserve selected content, default content and the two Barrel launch slots in that order.
+//! Preserve selected content, default content and the two Barrel launch slots in that order. The
+//! base's other content rows follow as carriers for a source projectile the first cannot take.
 use super::*;
 use sundial::package_authoring::entity::{WEAPON_BARREL_COMPONENT_KEY, barrel::projectile_slots};
 
+#[derive(Clone, Copy)]
 pub(super) struct SourceSelection {
     pub key: u32,
     pub graph: u32,
@@ -81,7 +83,13 @@ pub(super) struct Native {
     pub content_default: bool,
     pub barrel: Option<Value>,
     pub fingerprints: Vec<Value>,
+    /// The content row a later carrier comes from, as its offset from the content definition.
+    /// The first carrier is the one the base itself selects and has none.
+    pub row: Option<u64>,
 }
+
+/// The most carriers one source projectile is tried on.
+const CARRIERS: usize = 12;
 
 fn native_barrel(native: &mut Reader, entity: &[u8]) -> Result<(u32, Value, Value)> {
     let bindings = weapon_component_bindings(entity, WEAPON_BARREL_COMPONENT_KEY)
@@ -102,14 +110,20 @@ fn native_barrel(native: &mut Reader, entity: &[u8]) -> Result<(u32, Value, Valu
     ))
 }
 
-pub(super) fn native(native: &mut Reader, donor: u32, key: u32) -> Result<Native> {
+/// The carriers the base's content owner offers, each graph once. The first is the base's own
+/// selection: the row under the source's content key, else the default row, else the Barrel
+/// slots. Shadowkeep keeps rows under many Rise of Iron content keys, and such a row can name
+/// another family's carrier, as the row a pulse rifle base keeps under an auto rifle source key
+/// does. The default row and then every other row follow, so the source projectile can take a
+/// carrier of its own family. Only the first carrier's errors are reported.
+pub(super) fn carriers(native: &mut Reader, donor: u32, key: u32) -> Result<Vec<Native>> {
     let manager = sundial::package_authoring::PackageManager::new(
         &native.manager.package_dir,
         native.manager.version,
         Some(native.manager.platform),
     )
     .map_err(anyhow::Error::msg)?;
-    let runtime = runtime::load_weapon_runtime_entity_for_item_with_manager(&manager, donor)
+    let runtime = runtime::load_runtime_entity_for_item_with_manager(&manager, donor)
         .map_err(anyhow::Error::msg)?;
     let bindings =
         weapon_component_bindings(&runtime.payload, CONTENT).map_err(anyhow::Error::msg)?;
@@ -131,25 +145,56 @@ pub(super) fn native(native: &mut Reader, donor: u32, key: u32) -> Result<Native
         selected.len() <= 1,
         "Native content has ambiguous source-key counterparts"
     );
-    let row = selected.first().copied().unwrap_or(d + 0x80);
-    let mut graph = p.u32(row + 0xF0)?;
-    let mut fingerprints = vec![fingerprint(binding.owner_tag, &p)];
-    let barrel = if matches!(graph, 0 | u32::MAX) {
-        let (fallback, report, fingerprint) = native_barrel(native, &runtime.payload)?;
-        graph = fallback;
-        fingerprints.push(fingerprint);
-        Some(report)
-    } else {
-        None
-    };
-    native.tag(graph, Some(0x80809C0F))?;
-    Ok(Native {
-        graph,
-        content: binding.owner_tag,
-        resource: binding.resource_offset,
-        key: runtime.weapon_content_group_hash,
-        content_default: selected.is_empty(),
-        barrel,
-        fingerprints,
-    })
+    let first = selected.first().copied().unwrap_or(d + 0x80);
+    let mut order = vec![first];
+    if first != d + 0x80 {
+        order.push(d + 0x80);
+    }
+    order.extend(
+        p.array(d + 0x240, 0x1C0, Some(0x80803ACF))?
+            .into_iter()
+            .filter(|&row| row != first),
+    );
+    let mut seen = BTreeSet::new();
+    let mut found = Vec::new();
+    for (index, row) in order.into_iter().enumerate() {
+        let mut graph = p.u32(row + 0xF0)?;
+        let mut fingerprints = vec![fingerprint(binding.owner_tag, &p)];
+        let barrel = if matches!(graph, 0 | u32::MAX) {
+            let slots = native_barrel(native, &runtime.payload);
+            let (fallback, report, fingerprint) = match slots {
+                Ok(slots) => slots,
+                Err(error) if index == 0 => return Err(error),
+                Err(_) => continue,
+            };
+            graph = fallback;
+            fingerprints.push(fingerprint);
+            Some(report)
+        } else {
+            None
+        };
+        if !seen.insert(graph) {
+            continue;
+        }
+        if let Err(error) = native.tag(graph, Some(0x80809C0F)) {
+            if index == 0 {
+                return Err(error);
+            }
+            continue;
+        }
+        found.push(Native {
+            graph,
+            content: binding.owner_tag,
+            resource: binding.resource_offset,
+            key: runtime.weapon_content_group_hash,
+            content_default: index == 0 && selected.is_empty(),
+            barrel,
+            fingerprints,
+            row: (index > 0).then(|| (row - d) as u64),
+        });
+        if found.len() == CARRIERS {
+            break;
+        }
+    }
+    Ok(found)
 }

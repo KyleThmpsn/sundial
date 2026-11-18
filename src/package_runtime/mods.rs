@@ -7,6 +7,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+pub mod activity_pack;
 mod config;
 mod content;
 mod family;
@@ -224,6 +225,16 @@ impl Receipt {
                     || !valid_sha256(&artifact.sha256)
                 {
                     return Err("Invalid map diagnostics receipt".into());
+                }
+                continue;
+            }
+            if artifact.path == activity_pack::FILE_NAME {
+                if !names.insert(artifact.path.clone())
+                    || artifact.byte_length == 0
+                    || artifact.byte_length > activity_pack::BYTE_LIMIT
+                    || !valid_sha256(&artifact.sha256)
+                {
+                    return Err("Invalid activity pack receipt".into());
                 }
                 continue;
             }
@@ -488,6 +499,11 @@ fn member_files(install: &Path, id: &str, folder: &Path) -> Result<Vec<PathBuf>,
     checked_path(install, &diagnostics)?;
     if diagnostics.try_exists().map_err(|e| e.to_string())? {
         actual.insert(map_diagnostics::FILE_NAME.to_owned());
+    }
+    let pack = folder.join(activity_pack::FILE_NAME);
+    checked_path(install, &pack)?;
+    if pack.try_exists().map_err(|e| e.to_string())? {
+        actual.insert(activity_pack::FILE_NAME.to_owned());
     }
     for child in ["packages", "patches"] {
         let path = folder.join(child);

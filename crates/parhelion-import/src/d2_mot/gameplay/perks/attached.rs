@@ -1,7 +1,131 @@
 //! Complete two-state kill controllers with independently lived attachments.
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::{Assignment, assigned, controller, lower, translate};
-use crate::d2_mot::{entity::sequence, payload::Payload, reader::Reader};
-use anyhow::{Result, ensure};
+use crate::d2_mot::{entity::sequence, native::attachment, payload::Payload, reader::Reader};
+use anyhow::{Result, anyhow, ensure};
+use sundial::package_authoring::sandbox_perk::program::{
+    Action, Asset, AttachmentTarget, NativeGroup, NativeNode, Program, Trigger, native_draft,
+};
+
+const EMPTY: u32 = 0x811C_9DC5;
+
+fn native(node: lower::Node) -> NativeNode {
+    NativeNode {
+        kind: node.kind,
+        bytes: node.bytes,
+    }
+}
+
+/// The native attachment of `source`, naming `graph`. A retained attachment that independently
+/// outlives its action takes a private lifetime key under `namespace`. One the source cleans up
+/// with its action needs no key when the closure retains its graph, and takes one when the graph
+/// retires on its own timer. Any other cleanup still needs a qualified native lifetime.
+pub fn attach_action(
+    source: &lower::attachment::Attachment,
+    graph: u32,
+    namespace: &str,
+    retained_graphs: &BTreeSet<u32>,
+    timed_graphs: &BTreeMap<u32, f32>,
+) -> Result<Action> {
+    ensure!(
+        source.retained && source.stacks_name == EMPTY,
+        "Attachment retention or creation stacks require translation"
+    );
+    let lifetime = match source.cleanup {
+        lower::attachment::Cleanup::Independent => independent_key(namespace)?,
+        lower::attachment::Cleanup::Automatic | lower::attachment::Cleanup::UnlessParentIsHost
+            if retained_graphs.contains(&source.graph) =>
+        {
+            EMPTY
+        }
+        lower::attachment::Cleanup::Automatic | lower::attachment::Cleanup::UnlessParentIsHost
+            if timed_graphs.contains_key(&source.graph) =>
+        {
+            independent_key(namespace)?
+        }
+        lower::attachment::Cleanup::Automatic | lower::attachment::Cleanup::UnlessParentIsHost => {
+            anyhow::bail!(
+                "Component-sensitive attachment cleanup still requires a qualified native lifetime"
+            )
+        }
+    };
+    Ok(Action::Attach {
+        asset: Asset {
+            graph,
+            ..Default::default()
+        },
+        mode: AttachmentTarget::from_byte(source.target),
+        keys: [lifetime, source.removal_name],
+        float_bits: [source.removal_value.to_bits(); 4],
+    })
+}
+
+fn independent_key(namespace: &str) -> Result<u32> {
+    let key = format!("{namespace}/independent-attachment")
+        .bytes()
+        .fold(EMPTY, |hash, byte| {
+            hash.wrapping_mul(16777619) ^ u32::from(byte)
+        });
+    ensure!(
+        !matches!(key, 0 | u32::MAX | EMPTY),
+        "The private attachment lifetime key is reserved"
+    );
+    Ok(key)
+}
+
+/// The controller an entity of a private attachment group hosts, compiled into a private native
+/// action in envelope `template`. Its hit cycle becomes the action's main group, with the
+/// attachments it makes, and its stateless modifiers a second group that is always active, so
+/// they hold for the host's whole lifetime. The action's selectors already use the closure's
+/// private category dictionary, so it is compiled here rather than by the package build, which
+/// would resolve the temporary tags as resident resources and rebuild those masks against
+/// unrelated stock category indices.
+pub fn compile_hosted(
+    input: attachment::ActionInput<'_>,
+    template: u32,
+    namespace: &str,
+) -> Result<attachment::CompiledAction> {
+    let source = hosted(input.reader, input.payload, input.selectors)?;
+    let actions = source
+        .attachments
+        .iter()
+        .map(|action| {
+            let graph = input
+                .graphs
+                .get(&action.graph)
+                .ok_or_else(|| anyhow!("hosted attachment is outside the private closure"))?;
+            attach_action(
+                action,
+                *graph,
+                namespace,
+                input.retained_graphs,
+                input.timed_graphs,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let program = Program {
+        name: format!("Imported Controller {:08X}", input.source),
+        trigger: Trigger::Native,
+        native_trigger: Some(native(source.activation.node)),
+        native_removal: Some(native(source.removal)),
+        duration_ms: 0,
+        cooldown_ms: 0,
+        actions,
+        additional_groups: vec![NativeGroup {
+            activation: vec![NativeNode {
+                kind: 0,
+                bytes: vec![0, 0, 128, 63, 255, 0, 0, 0],
+            }],
+            effects: source.modifiers.into_iter().map(native).collect(),
+            ..Default::default()
+        }],
+        ..Program::default()
+    };
+    let draft = native_draft(&program).map_err(anyhow::Error::msg)?;
+    let payload = Payload(draft.graph.emit().map_err(anyhow::Error::msg)?);
+    Ok(attachment::CompiledAction { payload, template })
+}
 
 pub struct Source {
     pub assignment: Assignment,

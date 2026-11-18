@@ -4,16 +4,12 @@ use std::{env, fs, path::PathBuf};
 
 use parhelion_import::d2_mot::{gameplay::perks, payload::Payload, reader::Reader};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use sundial::storage::sha256_hex;
 
 fn configured(key: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(env::var_os(key)
         .map(PathBuf::from)
         .ok_or_else(|| format!("Set {key}"))?)
-}
-
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 #[test]
@@ -71,7 +67,7 @@ fn modern_perk_bridge_discovers_complete_source_dependencies()
             evidence.push(json!({
                 "plug_hash": plug,
                 "controller": format!("{:08X}", source.action_tag),
-                "controller_sha256": digest(&source.controller.0),
+                "controller_sha256": sha256_hex(&source.controller.0),
                 "effects": source.routing.effects,
                 "removals": source.routing.removals,
                 "lunge_owner": format!("{:08X}", source.lunge.owner_tag),
@@ -159,7 +155,7 @@ fn modern_draw_condition_prefix_matches_two_native_pairs() -> Result<(), Box<dyn
             "native_class": "80803DF5",
             "source_actions": ["80C30E09", "80C306B3"],
             "native_controls": ["80BBCA85", "80BBC8BB"],
-            "prefix_sha256": digest(&ordinary_prefix),
+            "prefix_sha256": sha256_hex(&ordinary_prefix),
             "paired_prefixes_equal": true,
             "gameplay_verified": false
         }))?,
@@ -236,8 +232,8 @@ fn modern_state_value_condition_lowers_to_shipped_native_predicate()
             "eager_maximum": 1.0,
             "base_source_trace": base_trace,
             "enhanced_source_trace": enhanced_trace,
-            "eager_node_sha256": digest(&eager_node.bytes),
-            "whirlwind_node_sha256": digest(&lowered.bytes),
+            "eager_node_sha256": sha256_hex(&eager_node.bytes),
+            "whirlwind_node_sha256": sha256_hex(&lowered.bytes),
             "gameplay_verified": false,
             "successful_sword_event_covered": false
         }))?,

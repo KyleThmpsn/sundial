@@ -7,7 +7,7 @@ impl PackageAuthoringApp {
     pub(in crate::app) fn draw_runtime_value_column(
         &mut self,
         ui: &mut egui::Ui,
-        graph: Option<&Arc<WeaponRuntimeGraph>>,
+        graph: Option<&Arc<RuntimeGraph>>,
     ) {
         if let Some(graph) = graph {
             self.draw_runtime_values(ui, graph);
@@ -20,7 +20,7 @@ impl PackageAuthoringApp {
     pub(in crate::app) fn draw_runtime_values(
         &mut self,
         ui: &mut egui::Ui,
-        graph: &Arc<WeaponRuntimeGraph>,
+        graph: &Arc<RuntimeGraph>,
     ) {
         let scope = egui::Id::new(("parhelion-runtime-values", self.recipe_panel_scope()));
         // The values end the Runtime page, so they scroll with it.

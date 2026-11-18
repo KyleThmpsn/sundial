@@ -4,6 +4,7 @@
 mod output;
 use super::super::curve::Program;
 use super::*;
+use crate::tiger::sequence::relative;
 use crate::{
     halo_reach::{Scene, animation::native as source_motion},
     presentation::append,
@@ -115,14 +116,6 @@ fn node(p: &mut Payload, class: u32, size: usize) -> Result<usize> {
     p.0.resize(at + size, 0);
     put(&mut p.0, at - 4, &class.to_le_bytes())?;
     Ok(at)
-}
-
-fn relative(p: &mut Payload, field: usize, target: usize) -> Result<()> {
-    put(
-        &mut p.0,
-        field,
-        &(target as i64 - field as i64).to_le_bytes(),
-    )
 }
 
 fn parameters(

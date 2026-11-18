@@ -73,7 +73,7 @@ fn bulk_acquisition_persists_in_the_selected_json_or_sqlite_account() {
         let json = json!({"version":if dawn {6} else if native {18} else {8},"state":{"characters":[],"unlocks":{"future":true}}});
         std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
         if native {
-            crate::persistence::sqlite_account::tests::create_fixture(
+            crate::persistence::sunrise_account::tests::create_fixture(
                 &directory.0.join("data/investment.sqlite3"),
                 3,
             );
@@ -98,7 +98,7 @@ fn bulk_acquisition_persists_in_the_selected_json_or_sqlite_account() {
                 workspace.save_dawn().unwrap();
             } else if native {
                 assert_eq!(workspace.json(), &json);
-                crate::persistence::sqlite_account::tests::save_fixture_document(
+                crate::persistence::sunrise_account::tests::save_fixture_document(
                     workspace.native_account_mut().unwrap(),
                     &directory.0.join(format!("backup-{acquired}.sqlite3")),
                 );

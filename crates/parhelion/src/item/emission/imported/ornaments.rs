@@ -45,6 +45,34 @@ fn clear_requirements(emission: &mut PackageEmission, target: u32) -> AuthoringR
     Ok(())
 }
 
+/// The item index in a plug block of the item the plug belongs to, which an ornament's tooltip and
+/// Collections entry show beneath its description. Every stock weapon ornament with a plug block
+/// names its weapon here.
+const PLUG_OWNER_ITEM_OFFSET: usize = 0x06;
+
+/// Names `owner` as the item the private plug `target` belongs to, in place of the weapon the stock
+/// ornament it copies belongs to. A plug copied from one that names no item still names none.
+fn name_owner(emission: &mut PackageEmission, target: u32, owner: u32) -> AuthoringResult<()> {
+    let (count, _, rows, _) = array_at(&emission.item_table, 8)?;
+    let found = (0..count)
+        .filter(|index| read_u32(&emission.item_table, rows + index * 24).ok() == Some(owner))
+        .collect::<Vec<_>>();
+    let [index] = found.as_slice() else {
+        return Err(invalid("Ornament owner item missing or ambiguous"));
+    };
+    let index = u16::try_from(*index).map_err(|_| invalid("Ornament owner index overflow"))?;
+    let ordinal = definition_ordinal(emission, target)?;
+    let definition = &mut emission.host_new_tags[ordinal].payload;
+    let plug = relative_target(definition, 0x40)?;
+    if plug < 4 || read_u32(definition, plug - 4)? != ITEM_PLUG_BLOCK_CLASS {
+        return Err(invalid("Ornament plug resource layout differs"));
+    }
+    if read_u16(definition, plug + PLUG_OWNER_ITEM_OFFSET)? != u16::MAX {
+        write_u16(definition, plug + PLUG_OWNER_ITEM_OFFSET, index)?;
+    }
+    Ok(())
+}
+
 /// The rarity an ornament link names, which its private plug and icon take.
 pub(super) fn rarity(graph: &Value) -> AuthoringResult<Option<crate::AuthoredWeaponRarity>> {
     let Some(value) = graph["ornament"].get("rarity") else {
@@ -88,6 +116,7 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
         return Err(invalid("Ornament owner must be a separate authored weapon"));
     }
     clear_requirements(emission, target)?;
+    name_owner(emission, target, owner)?;
     // A socket type whitelists the reset's plug category and one ornament category. A link that
     // names that category moves the private plug into it, whichever stock ornament it copies.
     if let Some(category) = link.get("plug_category") {

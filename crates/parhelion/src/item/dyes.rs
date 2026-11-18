@@ -468,7 +468,7 @@ pub(super) fn author(
     // The dependency list grows the envelope by far less than a block, as linking assumes.
     let companion_bound = envelope
         .len()
-        .checked_add(crate::format::BLOCK_SIZE)
+        .checked_add(crate::package::format::BLOCK_SIZE)
         .ok_or_else(|| invalid("Companion size overflow"))?;
     for dye in &plan.dyes {
         let stock = &dye.stock;

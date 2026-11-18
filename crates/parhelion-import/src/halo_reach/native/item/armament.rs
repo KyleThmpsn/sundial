@@ -8,6 +8,9 @@ pub(super) struct Layout {
     /// stock unit carries them creates. Another carrier's seats ride on its own entity, where a
     /// gunner has no unit of its own to aim and rides as a passenger.
     carries_children: bool,
+    /// A flight carrier without child rows creates the driver's secondary projectile from its
+    /// effect flow instead of a pod.
+    creates_secondary: bool,
     stationary_driver: Option<Value>,
 }
 
@@ -42,6 +45,7 @@ impl Layout {
         };
         Ok(Self {
             carries_children,
+            creates_secondary: runtime.is_some() && !carries_children && vehicle::flies(scene),
             stationary_driver,
         })
     }
@@ -53,6 +57,8 @@ pub(super) struct Armament {
     stationary_driver: Option<Value>,
     primary: Option<Value>,
     secondary: Option<Value>,
+    /// Why a secondary projectile its effect flow would create did not convert.
+    secondary_refusal: Option<String>,
 }
 
 impl Armament {
@@ -69,8 +75,22 @@ impl Armament {
         // effect-only carrier, as the Scorpion's shell did. The vehicle keeps its native barrel's
         // own explosive round instead.
         let primary = detonating(primary, sources.graph)?;
+        let mut secondary_refusal = None;
         let secondary = match &primary {
-            Some(primary) if layout.carries_children => secondary(sources, pages, native, primary)?,
+            Some(primary) if layout.carries_children => {
+                secondary(sources, pages, native, Some(primary))?
+            }
+            // No Barrel fires a created projectile, so it needs no primary and shares no launch
+            // policy with one. It is a route these vehicles gain, so a source that does not
+            // convert keeps the vehicle without it and records why.
+            _ if layout.creates_secondary => match secondary(sources, pages, native, None) {
+                Ok(section) => section,
+                Err(error) if crate::cancellation::is_cancelled(&error) => return Err(error),
+                Err(error) => {
+                    secondary_refusal = Some(format!("{error:#}"));
+                    None
+                }
+            },
             _ => None,
         };
         gunners(sources, pages, native, scene, primary.as_ref())?;
@@ -78,6 +98,7 @@ impl Armament {
             stationary_driver: layout.stationary_driver,
             primary,
             secondary,
+            secondary_refusal,
         })
     }
 
@@ -123,6 +144,14 @@ impl Armament {
         {
             projectile_import["secondary"] = section["conversion"]["source"].clone();
             additional.push(section);
+        }
+        if let Some(reason) = self.secondary_refusal
+            && graph["vehicle"].is_object()
+            && graph["vehicle"]["secondary_weapon"].is_null()
+        {
+            graph["vehicle"]["secondary_weapon"] = json!(format!(
+                "The secondary projectile did not convert: {reason}"
+            ));
         }
         if !additional.is_empty() {
             graph["additional_projectiles"] = json!(additional);
@@ -200,13 +229,14 @@ fn primary(
     .with_context(|| format!("Stationary gun projectile of {}", entry.slug))
 }
 
-/// The driver's secondary trigger fires its own converted projectile from a driver-aimed weapon
-/// child, as the stock tank's second weapon does. It needs the primary's launch.
+/// The driver's secondary trigger fires its own converted projectile. With `primary`, a
+/// driver-aimed weapon child fires it, as the stock tank's second weapon does, and it needs the
+/// primary's launch. Without one, the carrier's effect flow creates it.
 fn secondary(
     sources: &Sources<'_>,
     pages: &mut resource::Pages,
     native: &mut Reader,
-    primary: &Value,
+    primary: Option<&Value>,
 ) -> Result<Option<Value>> {
     let section = crate::halo_reach::projectile::vehicle_secondary(
         sources.cache,
@@ -216,10 +246,13 @@ fn secondary(
         sources.projectiles,
         sources.entry,
         sources.graph,
+        primary.is_none(),
     )
     .with_context(|| format!("Vehicle secondary projectile of {}", sources.entry.slug))?;
     Ok(detonating(section, sources.graph)?.filter(|section| {
-        section["conversion"]["launch_policy"] == primary["conversion"]["launch_policy"]
+        primary.is_none_or(|primary| {
+            section["conversion"]["launch_policy"] == primary["conversion"]["launch_policy"]
+        })
     }))
 }
 

@@ -3,6 +3,7 @@
 //! Common ability energy and body animation remain explicit native adaptations. The source
 //! controller's bank, effect graph and character selector are separate translation boundaries.
 use super::{Direction, read, replace_motion};
+use crate::tiger::sequence::relative;
 use crate::{
     d2_mot::native::effects::controller,
     presentation::put,
@@ -25,14 +26,6 @@ const MOVEMENT_ENTITY: u32 = 0x80B81789;
 fn size(p: &mut Payload) -> Result<()> {
     let length = p.0.len() as u64;
     put(&mut p.0, 0, &length.to_le_bytes())
-}
-
-fn pointer(p: &mut Payload, field: usize, target: usize) -> Result<()> {
-    put(
-        &mut p.0,
-        field,
-        &(target as i64 - field as i64).to_le_bytes(),
-    )
 }
 
 fn structure(p: &mut Payload, class: u32, bytes: &[u8]) -> usize {
@@ -93,7 +86,7 @@ fn copy_preparation(
         )?;
     }
     rebase_copied(template, output, owner, [(si, i, 0x190), (from, d, 0x320)])?;
-    pointer(output, i + 16, parent)?;
+    relative(output, i + 16, parent)?;
     size(output)?;
     Ok(d)
 }
@@ -292,9 +285,9 @@ pub fn prepare(
     count(&mut controller, configuration + 16, 1)?;
     count(&mut controller, configuration_instance + 32, 1)?;
     let preparation = copy_preparation(&movement, &mut controller, donor_preparation, runtime)?;
-    pointer(&mut controller, profile + 0x78, preparation)?;
+    relative(&mut controller, profile + 0x78, preparation)?;
     let preparation_instance = usize::try_from(controller.u64(preparation + 8)?)?;
-    pointer(&mut controller, runtime + 0x20, preparation_instance)?;
+    relative(&mut controller, runtime + 0x20, preparation_instance)?;
     let motion = replace_motion(source, &controller, source_preparation, preparation)?;
     controller = motion.owner;
     controller::seal(&mut controller)?;

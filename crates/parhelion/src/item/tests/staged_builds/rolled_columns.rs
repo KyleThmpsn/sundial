@@ -19,7 +19,7 @@ const BADLANDER: u32 = 0x4F1C_712E;
 )]
 fn real_rolled_column_appends_a_private_randomized_set() {
     let packages = crate::test_support::stock_packages();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();

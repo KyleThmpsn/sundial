@@ -12,9 +12,9 @@ use tiger_pkg::TagHash;
 
 use crate::{
     AuthoringResult, NewTagSpec, ReplacementSpec,
-    appended_tags::MAX_PACKAGE_ENTRY_COUNT,
     error::invalid,
-    format::NamedTag,
+    package::appended_tags::MAX_PACKAGE_ENTRY_COUNT,
+    package::format::NamedTag,
     tag_payload::{read_tag, read_u32, write_u32},
 };
 
@@ -347,8 +347,7 @@ impl Plan {
                 return Err(invalid(format!("Private match table {tag} moved")));
             }
         }
-        // An importer whose maps join the main mod's builds on the main mod's activity tables,
-        // so its own hold both and Sunrise serves them from it while it loads.
+        // The main mod's finished table, for an importer whose maps join the main mod's.
         let base = |tag: TagHash, label: &str| {
             crate::mod_family::build::shared_payload(
                 crate::mod_family::build::Shared::Activities,
@@ -356,16 +355,34 @@ impl Plan {
             )
             .map_or_else(|| read_tag(manager, tag, label), Ok)
         };
-        let activities = base(activity_tag, "activity table")?;
-        let displays = base(display_tag, "activity display table")?;
+        // A mod-folder build adds only its own rows to the installed tables, which Sunrise merges
+        // with every other mod's. It follows the main mod's activities to keep clear of their
+        // hashes, names and destinations. Any other build has no family and no merge, so an
+        // importer's tables hold the main mod's rows too.
+        let mergeable = crate::package::profile::host().is_standalone();
+        let own = |tag: TagHash, label: &str| {
+            if mergeable {
+                read_tag(manager, tag, label)
+            } else {
+                base(tag, label)
+            }
+        };
+        let reference = base(activity_tag, "activity table")?;
+        let reference_rows = activity::Rows::read(&reference)?;
+        let activities = if mergeable {
+            read_tag(manager, activity_tag, "activity table")?
+        } else {
+            reference.clone()
+        };
+        let displays = own(display_tag, "activity display table")?;
         let rows = activity::Rows::read(&activities)?;
-        let mut taken = rows.hashes(&activities)?;
+        let mut taken = reference_rows.hashes(&reference)?;
         let mut strings = BTreeSet::new();
         let destinations = super::destination::prepare(
             manager,
             &root,
             &globals,
-            &activities,
+            &reference,
             &recipes,
             string_floor,
             &mut strings,
@@ -380,7 +397,10 @@ impl Plan {
                 recipe.title,
                 recipe.donor
             ));
-            if !rows.ordinals_named(&activities, &recipe.name)?.is_empty() {
+            if !reference_rows
+                .ordinals_named(&reference, &recipe.name)?
+                .is_empty()
+            {
                 return Err(invalid(format!(
                     "Map {} already has activity rows",
                     recipe.name
@@ -422,11 +442,12 @@ impl Plan {
             });
         }
         report("Planning Maps: Preparing Activity and Display Rows");
-        let (activities, displays, copies) = activity::append(&activities, &displays, &maps)?;
-        let private_table = base(private_match_tag, "private match table")?;
-        let private_displays = base(private_match_display_tag, "private match display table")?;
+        let (activities, displays, copies) =
+            activity::append(&activities, &displays, &maps, mergeable)?;
+        let private_table = own(private_match_tag, "private match table")?;
+        let private_displays = own(private_match_display_tag, "private match display table")?;
         let image_rows = private_match::image_rows(&activities, &private_table, &private_displays)?;
-        let bank = u32::try_from(crate::package_profile::localization_table())
+        let bank = u32::try_from(crate::package::profile::localization_table())
             .map_err(|_| invalid("Localized bank index does not fit 32 bits"))?;
         let (private_matches, mut private_match_displays, picture_displays) =
             private_match::append(&private_table, &private_displays, &maps, &copies, bank)?;
@@ -556,7 +577,7 @@ impl Plan {
 
     pub(crate) fn part_count(&self, index: usize, part: Part) -> usize {
         match part {
-            Part::World if crate::package_profile::host().is_standalone() => {
+            Part::World if crate::package::profile::host().is_standalone() => {
                 let (_, resources) = self.worlds[index].split_counts().unwrap();
                 1 + resources.div_ceil(MAX_PACKAGE_ENTRY_COUNT)
             }
@@ -574,7 +595,7 @@ impl Plan {
         native: u16,
         manager: &PackageManager,
     ) -> AuthoringResult<Option<SplitWorld>> {
-        if part != Part::World || !crate::package_profile::host().is_standalone() {
+        if part != Part::World || !crate::package::profile::host().is_standalone() {
             return Ok(None);
         }
         let world = &self.worlds[index];
@@ -712,7 +733,7 @@ impl Plan {
                 })?;
             entries.push(addresses[anchor.2]);
         }
-        let authored = crate::package_profile::window();
+        let authored = crate::package::profile::window();
         for package in packages {
             if registered.contains(&package) || (authored.base..=authored.top).contains(&package) {
                 continue;
@@ -737,7 +758,7 @@ impl Plan {
     ) -> AuthoringResult<(
         Vec<NewTagSpec>,
         Vec<NamedTag>,
-        Vec<crate::extend::NewTagReferenceOverride>,
+        Vec<crate::package::extend::NewTagReferenceOverride>,
     )> {
         let world = &self.worlds[index];
         match part {
@@ -773,6 +794,10 @@ impl Plan {
                     ids[0],
                     &tags,
                 )?;
+                // A mod-folder build ships its maps' activity SDK rows, which name these entries.
+                if crate::package::profile::host().is_standalone() {
+                    crate::mod_family::build::record_map_rows(world.pack_rows(entry_tag(ids, 0)?)?);
+                }
                 named.extend(names);
                 Ok((tags, named, Vec::new()))
             }
@@ -798,7 +823,7 @@ impl Plan {
     }
 
     /// The activity, activity display, private match and private match display tables the plan
-    /// replaces, which Sunrise can't merge.
+    /// replaces. A mod-folder build adds only its own rows to them, which Sunrise merges.
     pub(crate) fn activity_tables(&self) -> &[ReplacementSpec] {
         &self.replacements[..self.replacements.len().min(PRIVATE_MATCH_DISPLAYS + 1)]
     }

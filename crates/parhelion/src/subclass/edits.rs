@@ -12,7 +12,7 @@ use super::modifiers::{
 };
 use super::palette::{EffectGrade, PaletteEdit, TintEdit};
 use crate::perk::{Icon, PerkRecipe};
-use sundial::package_authoring::runtime::WeaponRuntimeValueOverride;
+use sundial::package_authoring::runtime::RuntimeValueOverride;
 
 /// Longest authored name, and description.
 pub(super) const NAME_LIMIT: usize = 64;
@@ -78,7 +78,7 @@ pub struct EntryEdits {
     /// Values of the ability's own entity, and of the entity graphs it spawns, changed on
     /// copies that only this entry uses. Each value names its graph.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ability_values: Vec<WeaponRuntimeValueOverride>,
+    pub ability_values: Vec<RuntimeValueOverride>,
     /// Color changes to palettes its effects draw with, on private copies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub palettes: Vec<PaletteEdit>,

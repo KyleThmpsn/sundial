@@ -50,7 +50,7 @@ impl PerkEditor {
             }
             for (_, graph) in &loaded.graphs {
                 for field in graph.fields() {
-                    if field.source != WeaponRuntimeFieldSource::OpaqueNativeType
+                    if field.source != RuntimeFieldSource::OpaqueNativeType
                         || occurrences[&field.locator] != 1
                     {
                         continue;

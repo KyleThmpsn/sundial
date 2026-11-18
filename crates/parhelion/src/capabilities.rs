@@ -17,7 +17,7 @@ use crate::recipe::{
     RecipeDamageType, RecipeInventorySlot, WeaponRecipe, WeaponRecipeOverrides,
     WeaponSocketPlugVariantRecipe,
 };
-use crate::weapon::variable_damage::resting_element;
+use crate::weapon::variable_damage::resting_damage_type;
 use sundial::package_authoring::investment_schema::ELEMENTAL_DAMAGE_SOCKET_TYPE;
 
 /// The recipe field associated with a capability or validation diagnostic.
@@ -118,7 +118,7 @@ pub(crate) fn recipe_combat_profile_action(
         .modern_damage_type
         .map(recipe_damage_type)
         .or(donor.damage_type)?;
-    // Explicitly restating the donor's slot/element is equivalent to preservation.
+    // Explicitly restating the donor's slot or damage type is equivalent to preservation.
     // Keep the serialized overrides; only normalize the UI/capability action.
     if donor.inventory_slot == Some(inventory_slot) && donor.damage_type == Some(damage_type) {
         return Some(CombatProfileAction::Preserve);
@@ -285,24 +285,24 @@ pub(crate) fn reconcile_presentation_donor(
     }
 }
 
-/// Whether this base weapon's family can graft the reload-hold element switch. The compiler
+/// Whether this base weapon's family can graft the reload-hold damage type switch. The compiler
 /// resolves the record for real and reports a clear error when a family has none.
 #[must_use]
 pub(crate) fn variable_damage_supported(gameplay_donor: &WeaponDonorSummary) -> bool {
-    crate::weapon::behavior::switches_element_for_type(&gameplay_donor.type_name)
+    crate::weapon::behavior::switches_damage_type_for_type(&gameplay_donor.type_name)
 }
 
-/// The element a variable-damage weapon rests on: the first chosen one in selector order.
+/// The damage type a variable-damage weapon rests on: the first chosen one in selector order.
 #[must_use]
 pub(crate) fn variable_damage_resting_type(
-    elements: &[RecipeDamageType],
+    damage_types: &[RecipeDamageType],
 ) -> Option<RecipeDamageType> {
-    let elements = elements
+    let damage_types = damage_types
         .iter()
         .copied()
         .map(ModernDamageType::from)
         .collect::<Vec<_>>();
-    resting_element(&elements).map(RecipeDamageType::from)
+    resting_damage_type(&damage_types).map(RecipeDamageType::from)
 }
 
 const fn recipe_inventory_slot(value: RecipeInventorySlot) -> WeaponInventorySlot {

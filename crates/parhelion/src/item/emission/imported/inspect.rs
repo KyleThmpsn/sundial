@@ -26,6 +26,7 @@ use parhelion_import::tiger::{animation::rig, payload::Payload};
 use sundial::package_authoring::entity::{
     retarget_weapon_component_owner, retarget_weapon_component_owner_payload,
 };
+use sundial::package_authoring::fnv1;
 
 /// An entity's component rows, each led by its owner tag.
 const COMPONENTS: usize = 0x10;
@@ -390,13 +391,6 @@ fn nodes(
     companion.companion = Some(linking::Companion::new(PAIR, source.pair));
     nodes.push(companion);
     Ok(nodes)
-}
-
-/// FNV-1 over the bytes of `name`.
-fn fnv1(name: &str) -> u32 {
-    name.bytes().fold(0x811C_9DC5u32, |hash, byte| {
-        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
-    })
 }
 
 /// Give the item a private inspect scene when its converted equipment skeleton has more bones

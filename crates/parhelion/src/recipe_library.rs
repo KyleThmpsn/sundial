@@ -13,6 +13,7 @@ use crate::{
     bundled_defaults::{self, AppliedVersions, DefaultsRefresh},
 };
 
+mod build_list;
 // Conversions and their shared payloads are the importer's.
 #[cfg(feature = "d2-model-importer")]
 mod conversions;
@@ -24,6 +25,7 @@ mod shaders;
 #[cfg(test)]
 mod transactions_tests;
 mod transfer;
+pub(crate) use build_list::NAME_LIMIT as BUILD_LIST_NAME_LIMIT;
 #[cfg(feature = "d2-model-importer")]
 pub(crate) use conversions::{Progress, Removed, SetAside, Status, Step};
 pub(crate) use delete::DeleteRecipe;
@@ -36,7 +38,7 @@ const EVERY_END_FILE_NAME: &str = "every-end.parhelion.json";
 const EVERY_END_TEMPLATE: &str = include_str!("../recipes/every-end.parhelion.json");
 const SECOND_SUN_FILE_NAME: &str = "second-sun.parhelion.json";
 const SECOND_SUN_TEMPLATE: &str = include_str!("../recipes/second-sun.parhelion.json");
-pub(crate) const BUNDLED_RECIPES: [(&str, &str); 18] = [
+pub(crate) const BUNDLED_RECIPES: [(&str, &str); 19] = [
     (EVERY_END_FILE_NAME, EVERY_END_TEMPLATE),
     (SECOND_SUN_FILE_NAME, SECOND_SUN_TEMPLATE),
     (
@@ -103,6 +105,10 @@ pub(crate) const BUNDLED_RECIPES: [(&str, &str); 18] = [
         "suros-renaissance.parhelion.json",
         include_str!("../recipes/suros-renaissance.parhelion.json"),
     ),
+    (
+        "reassigned-purpose.parhelion.json",
+        include_str!("../recipes/reassigned-purpose.parhelion.json"),
+    ),
 ];
 const LIBRARY_STATE_SCHEMA: u32 = 1;
 const LIBRARY_STATE_FILE_NAME: &str = "library-state.json";
@@ -117,6 +123,9 @@ struct RecipeLibraryState {
     enabled_recipes: BTreeSet<String>,
     /// File names of the maps folder's recipes a build includes. A new map starts out of builds.
     enabled_maps: BTreeSet<String>,
+    /// Selections saved by name. An application without them keeps the field as it found it.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    build_lists: std::collections::BTreeMap<String, build_list::BuildList>,
     #[serde(flatten)]
     extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
@@ -165,7 +174,7 @@ pub struct RecipeLibraryEntry {
     pub icon_hash: u32,
     pub icon_edit: crate::WeaponIconEdit,
     /// The art the icon shows in place of its image: a vehicle's silhouette or a generated icon.
-    pub art: Option<crate::icon_art::Art>,
+    pub art: Option<crate::icon::art::Art>,
     /// The fingerprint of a mod perk's own image, which the mod's icon is. [`load_perk_icon`]
     /// reads the image.
     pub perk_icon: Option<u64>,
@@ -196,7 +205,7 @@ pub(crate) fn load_corner_icon(
 }
 
 /// The image of the mod recipe at `path`, which is its one perk's own image.
-pub(crate) fn load_perk_icon(path: &Path) -> Result<crate::icon_edit::ImportedIcon, String> {
+pub(crate) fn load_perk_icon(path: &Path) -> Result<crate::icon::edit::ImportedIcon, String> {
     let recipe =
         WeaponRecipe::load_listing(path).map_err(|error| format!("{}: {error}", path.display()))?;
     match recipe
@@ -594,7 +603,7 @@ impl RecipeLibrary {
         for (file_name, encoded) in BUNDLED_RECIPES {
             let recipe = WeaponRecipe::from_json_str(encoded)
                 .map_err(|error| format!("Bundled recipe {file_name} is invalid: {error}"))?;
-            let digest = bundled_defaults::digest(encoded.as_bytes());
+            let digest = sundial::storage::sha256_hex(encoded.as_bytes());
             let path = self.root.join(file_name);
             // A bundled recipe that was deleted stays deleted until defaults are restored.
             if removed.contains(file_name) && fs::symlink_metadata(&path).is_err() {

@@ -8,7 +8,7 @@
 //! which exotics with animations of their own set apart. Another row of the same owner can lend
 //! both keys, and only a row of the same owner, since that owner's entity is what reads them.
 use crate::tag_payload::{array_at, read_u32, relative_target};
-use crate::{AuthoringResult, error::invalid, item::WeaponRuntimeResourcePatch};
+use crate::{AuthoringResult, error::invalid, item::RuntimeResourcePatch};
 use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::entity::{
     WEAPON_ENTITY_COMPONENT_ROW_SIZE, weapon_component_bindings,
@@ -174,7 +174,7 @@ pub(crate) fn hold_patches(
     manager: &PackageManager,
     entity: &[u8],
     hold: Hold,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let attachment = attachment(manager, entity)?;
     // Read through the same checks, so a kept rig without a readable hold is refused too.
     if self::hold(manager, entity)? == hold {
@@ -184,7 +184,7 @@ pub(crate) fn hold_patches(
         .checked_sub(attachment.resource)
         .and_then(|offset| u32::try_from(offset).ok())
         .ok_or_else(|| invalid("First-person attachment hold offset overflow"))?;
-    Ok(vec![WeaponRuntimeResourcePatch {
+    Ok(vec![RuntimeResourcePatch {
         binding_hash: BINDING,
         resource_index: 0,
         offset,
@@ -201,7 +201,7 @@ pub(crate) fn patches(
     entity: &[u8],
     selected: Option<u32>,
     donor: Profile,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let attachment = attachment(manager, entity)?;
     if attachment.owner_tag != donor.owner {
         return Err(invalid(
@@ -218,7 +218,7 @@ pub(crate) fn patches(
             .checked_sub(attachment.resource)
             .and_then(|offset| u32::try_from(offset).ok())
             .ok_or_else(|| invalid("First-person attachment row offset overflow"))?;
-        patches.push(WeaponRuntimeResourcePatch {
+        patches.push(RuntimeResourcePatch {
             binding_hash: BINDING,
             resource_index: 0,
             offset,
@@ -251,8 +251,8 @@ impl ArmsRig {
     }
 
     /// The patch that points the row at another arms rig entity.
-    pub(crate) fn patch(&self, entity_tag: u32) -> WeaponRuntimeResourcePatch {
-        WeaponRuntimeResourcePatch {
+    pub(crate) fn patch(&self, entity_tag: u32) -> RuntimeResourcePatch {
+        RuntimeResourcePatch {
             binding_hash: BINDING,
             resource_index: 0,
             offset: self.row_field,

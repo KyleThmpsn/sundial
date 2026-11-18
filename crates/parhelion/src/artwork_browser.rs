@@ -22,7 +22,7 @@ mod selection;
 pub(crate) use purpose::Purpose;
 mod thumbnails;
 mod view;
-use crate::{icon_edit::package_icons, perk::Icon};
+use crate::{icon::edit::package_icons, perk::Icon};
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},

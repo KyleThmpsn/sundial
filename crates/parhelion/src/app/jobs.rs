@@ -13,7 +13,7 @@ mod tests;
 /// Keep the request identity with its worker, including when it exits without a result.
 pub(super) struct RuntimeGraphJob {
     key: RuntimeGraphKey,
-    receiver: Receiver<Result<(WeaponRuntimeGraph, bool), String>>,
+    receiver: Receiver<Result<(RuntimeGraph, bool), String>>,
     worker: thread::JoinHandle<()>,
 }
 
@@ -375,7 +375,7 @@ impl PackageAuthoringApp {
     pub(super) fn install_catalog(&mut self, catalog: InvestmentCatalog) {
         self.donor_summaries = catalog.weapon_donors();
         // Only stock subclasses can be a base or an ability source, not ones a build installed.
-        self.subclasses = catalog.subclasses(crate::package_profile::is_stock_item_definition);
+        self.subclasses = catalog.subclasses(crate::package::profile::is_stock_item_definition);
         // On a Specific Ability names every stock ability by the nodes that equip it.
         super::custom_perks::workbench::remember_abilities(&self.subclasses);
         super::ability_names::remember(&self.subclasses, catalog.ability_rows());
@@ -409,7 +409,7 @@ impl PackageAuthoringApp {
             .collect();
         self.library_state.refresh_donors(&self.library_donors);
         self.sandbox_perk_choices = catalog
-            .weapon_sandbox_perk_choices_from(crate::package_profile::is_stock_item_definition);
+            .weapon_sandbox_perk_choices_from(crate::package::profile::is_stock_item_definition);
         self.trait_choices = catalog.weapon_trait_choices();
         self.log.push(LogEntry::info(format!(
             "Loaded {} weapon donors",
@@ -538,6 +538,13 @@ impl PackageAuthoringApp {
                     started,
                 ),
             ));
+            if let Some(notice) = snapshot.dawn_artifacts_notice() {
+                let mut event = BuildProgress::phase(BuildPhase::ReadingRecipes, 0, 0);
+                event.activity = Some(crate::workflow::BuildActivity::Diagnostic(notice));
+                let _ = sender.send(BuildWorkerEvent::Progress(
+                    TimedBuildProgress::from_progress(event, started),
+                ));
+            }
             // A recipe that stops the build on its own is left out and the rest builds again,
             // so one broken item doesn't cost the whole build.
             let result = build_and_stage_snapshot_skipping(&snapshot, |progress| {

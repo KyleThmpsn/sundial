@@ -1,5 +1,6 @@
 //! Player predicates retain ranges while rebuilding the target's field and state domains.
 use super::*;
+mod named;
 
 pub(super) fn read(
     source: &Source,
@@ -21,7 +22,7 @@ pub(super) fn graph(
     source: &Source,
     p: &Payload,
     at: usize,
-    native: Option<&mut Reader>,
+    mut native: Option<&mut Reader>,
 ) -> Result<Graph> {
     ensure!(
         (0.0..=1.0).contains(&p.f32(at)?)
@@ -35,14 +36,14 @@ pub(super) fn graph(
         p.u8(at + 0x60)? <= 4
             && p.u8(at + 0x61)? & !3 == 0
             && p.bytes::<2>(at + 0x62)? == [0; 2]
-            && p.u32(at + 0x9C)? == 0x811C9DC5
             && p.bytes::<8>(at + 0xA8)? == [0; 8]
             && p.u32(at + 0xBC)? == 0
             && p.bytes::<3>(at + 0xC1)? == [0; 3]
             && p.u8(at + 0xC8)? <= 1
             && p.bytes::<7>(at + 0xC9)? == [0; 7],
-        "Source player predicate has an unqualified named value or activity restriction"
+        "Source player predicate has an unqualified activity restriction"
     );
+    named::check(source, native.as_deref_mut(), p.u32(at + 0x9C)?)?;
     let pattern = p.u32(at + 0xB8)?;
     let selected = if pattern == u32::MAX {
         ensure!(

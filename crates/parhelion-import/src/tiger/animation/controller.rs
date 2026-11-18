@@ -1,6 +1,7 @@
 //! Native pose controllers (instance `8080348F`, definition `80803640`) grown by channel inputs,
 //! parameters and supplemental layers. The controller's allocation and the layer buffers of its
 //! animation implementation (`808036E2`) follow every count.
+use crate::tiger::sequence::relative;
 use crate::{
     presentation::{append, put},
     tiger::{instance, payload::Payload},
@@ -13,14 +14,6 @@ fn rows(p: &Payload, fields: &[usize], stride: usize) -> Vec<u8> {
         .iter()
         .flat_map(|&at| p.0[at..at + stride].iter().copied())
         .collect()
-}
-
-fn relative(p: &mut Payload, field: usize, target: usize) -> Result<()> {
-    put(
-        &mut p.0,
-        field,
-        &(target as i64 - field as i64).to_le_bytes(),
-    )
 }
 
 /// Allocation rows below `root`, by key, class and old count, take their new counts. Every

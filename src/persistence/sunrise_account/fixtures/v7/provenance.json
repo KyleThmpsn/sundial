@@ -1,0 +1,23 @@
+{
+  "upstream": "https://github.com/stanuwu/Sunrise",
+  "revision": "3d8684ca11d89fde8e69203accdbec09af286c6e",
+  "resources": {
+    "investment_schema.sql": {
+      "sha256": "d093ad6f2fad3d8f0872e303fbab7b01acd21a97b391d302977998cec0bda400",
+      "upstream_path": "Sunrise/resources/database/investment_schema.sql"
+    },
+    "character_starter.sql": {
+      "sha256": "6924aec666d48d2c7ca7a87db8322d0f7faf6cec0110defebebbfe0f6bef8ed5",
+      "upstream_path": "Sunrise/resources/database/character_starter.sql",
+      "file": "../v5/character_starter.sql",
+      "note": "Unchanged since the schema 5 revision, so schema 7 reads the schema 5 copy."
+    }
+  },
+  "code_tables": {
+    "file": "code_tables.sql",
+    "sha256": "80ef6b082916b27e93f7710d6e57edf2d2c634b921b9d4fede7e71859437119f",
+    "source": "Sunrise/src/state/investment/investment_database.cpp",
+    "source_sha256": "022d40a6b41307e0f74c4800ae64c1ac2a7801f4b414af4db13ee53fb8f726ab",
+    "extraction": "The string literals of kParkedItemsTable, kParkedPlacementColumn, kItemObjectivesTable, kParkedObjectivesColumn, kCharacterHelmetTiersTable, kWalletSyncTable and kCharacterObjectivesTable, each joined in order on its own line. Sunrise runs these statements when it creates a save and bundles no resource for them. It runs the starter SQL between the helmet tiers and the wallet sync table, which none of these statements reads."
+  }
+}

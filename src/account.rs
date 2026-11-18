@@ -168,7 +168,7 @@ pub fn read_authored_account_source(path: &Path) -> Result<Vec<u8>, String> {
     }
     validate_authored_cleanup_backend(path)?;
     if is_database(path) {
-        return crate::persistence::sqlite_account::snapshot::read(path);
+        return crate::persistence::sunrise_account::snapshot::read(path);
     }
     std::fs::read(path).map_err(|e| e.to_string())
 }
@@ -183,7 +183,7 @@ pub fn replace_authored_account_source(
     }
     validate_authored_cleanup_backend(path)?;
     if is_database(path) {
-        return crate::persistence::sqlite_account::package::replace(path, expected, updated);
+        return crate::persistence::sunrise_account::package::replace(path, expected, updated);
     }
     if std::fs::read(path).map_err(|e| e.to_string())? != expected {
         return Err("The account changed after review".into());

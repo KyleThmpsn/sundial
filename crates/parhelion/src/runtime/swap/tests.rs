@@ -67,17 +67,14 @@ fn native_group_swap_repairs_conflicts_and_previews_transferred_settings() {
                 .affected_bindings
                 .iter()
                 .any(|(binding, _)| *binding == field.locator.binding_hash.get())
-                && field.kind == WeaponRuntimeValueKind::Float32
+                && field.kind == RuntimeValueKind::Float32
                 && field.locator.is_buildable()
         })
         .unwrap();
-    recipe
-        .overrides
-        .runtime_values
-        .push(WeaponRuntimeValueOverride {
-            locator: field.locator.clone(),
-            value: field.value.clone(),
-        });
+    recipe.overrides.runtime_values.push(RuntimeValueOverride {
+        locator: field.locator.clone(),
+        value: field.value.clone(),
+    });
     let mut stale = recipe.overrides.runtime_values[0].clone();
     stale.locator.root_schema = SchemaHandle::new(0x8080_FFFF);
     recipe.overrides.runtime_values.push(stale);
@@ -168,7 +165,7 @@ fn preview_uses_compiler_overlap_checks_for_automatic_ammo_edits() {
     recipe
         .overrides
         .runtime_resource_patches
-        .push(crate::WeaponRuntimeResourcePatchRecipe {
+        .push(crate::RuntimeResourcePatchRecipe {
             binding_hash: patch.binding_hash.into(),
             resource_index: patch.resource_index,
             offset: patch.offset,

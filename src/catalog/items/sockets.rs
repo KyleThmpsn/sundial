@@ -201,6 +201,31 @@ pub(in crate::catalog) fn build_socket_type_options(
                 .or_insert_with(|| shaders.clone());
         }
     }
+    // Functional artifacts have no stock sockets. Their authored equipped talents use the
+    // legacy armor perk role, type 15, whose installed carriers are armor. Keep this narrow
+    // so artifact authors cannot select unrelated weapon, ornament or Armor 2.0 mod roles.
+    let armor_perks = items
+        .iter()
+        .filter(|item| gear_kind(item.bucket_hash) == GearKind::Armor)
+        .flat_map(|item| &item.sockets)
+        .filter(|socket| socket.socket_type == 15)
+        .filter_map(|socket| plug_pools.get(socket.pool as usize))
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    if !armor_perks.is_empty() {
+        for item in items
+            .iter()
+            .filter(|item| item.bucket_hash == 1_506_418_338)
+        {
+            socket_and_gear_type_options
+                .entry(item_gear_type(item).into_owned())
+                .or_default()
+                .entry(15)
+                .or_default()
+                .extend(&armor_perks);
+        }
+    }
     for options_by_socket in socket_and_gear_type_options.values_mut() {
         for options in options_by_socket.values_mut() {
             sort_plug_options(options, names);

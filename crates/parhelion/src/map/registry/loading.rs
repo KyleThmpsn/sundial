@@ -30,7 +30,7 @@ pub(super) fn prune(
 ) -> AuthoringResult<()> {
     let end = usize::from(first.entry_index())
         .checked_add(tags.len())
-        .filter(|&end| end <= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT)
+        .filter(|&end| end <= crate::package::appended_tags::MAX_PACKAGE_ENTRY_COUNT)
         .ok_or_else(|| invalid("Map registry entries exceed their package"))?;
     let own = (usize::from(first.entry_index())..end)
         .map(|index| TagHash::new(first.pkg_id(), index as u16).0)

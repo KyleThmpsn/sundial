@@ -1028,6 +1028,7 @@ impl PackageAuthoringApp {
                     && let Some(rarity) = self.authored_icon_rarity()
                 {
                     let art = self.icon_art();
+                    let model = self.icon_model();
                     self.icon_editor = Some(
                         WeaponIconEditor::open(
                             &self.packages,
@@ -1039,6 +1040,7 @@ impl PackageAuthoringApp {
                             self.recipe.kind == crate::ItemKind::Subclass,
                         )
                         .with_art(art.as_ref())
+                        .with_model(model)
                         .with_corner(self.recipe.overrides.corner_icon.as_ref()),
                     );
                 }
@@ -1427,7 +1429,7 @@ impl PackageAuthoringApp {
     }
 }
 
-/// The behaviors this base weapon can borrow, leaving out the element switch that the Variable
+/// The behaviors this base weapon can borrow, leaving out the damage type switch that the Variable
 /// damage type applies and the weapon's own behavior.
 pub(super) fn unique_behavior_sources(
     gameplay_donor: Option<&WeaponDonor>,
@@ -1444,7 +1446,7 @@ pub(super) fn unique_behavior_sources(
         .filter_map(crate::weapon::behavior::Behavior::graph_tag)
         .collect::<Vec<_>>();
     crate::weapon::behavior::catalog_for_type(&gameplay_donor.summary.type_name)
-        .filter(|entry| !entry.switches_element())
+        .filter(|entry| !entry.switches_damage_type())
         .filter(|entry| entry.source_item_hash != gameplay_donor.summary.hash)
         .filter(|entry| {
             entry
@@ -1458,11 +1460,11 @@ pub(super) fn unique_behavior_sources(
 fn selected_unique_behavior(
     overrides: &crate::recipe::WeaponRecipeOverrides,
 ) -> Option<&'static crate::weapon::behavior::Behavior> {
-    use crate::weapon::behavior::ELEMENT_SWITCH;
+    use crate::weapon::behavior::DAMAGE_TYPE_SWITCH;
     overrides
         .additional_behaviors
         .iter()
-        .find(|chosen| chosen.behavior != ELEMENT_SWITCH)
+        .find(|chosen| chosen.behavior != DAMAGE_TYPE_SWITCH)
         .and_then(|chosen| crate::weapon::behavior::behavior(&chosen.behavior))
 }
 
@@ -1572,7 +1574,7 @@ fn behavior_choice_label(
     if entry.has_graph() || !paired_graph {
         label
     } else if entry.carries_behavior_record() {
-        // Calling this "State Only" was wrong: it carries the owner's behavior array. Only the
+        // This entry is more than state: it carries the owner's behavior array. Only the
         // firing and projectile side is missing, which is what the graph choice adds.
         format!("{label} · No Firing Graph")
     } else {
@@ -1592,7 +1594,7 @@ pub(super) fn draw_unique_behavior_control(
     stacked: bool,
 ) {
     use crate::recipe::AdditionalBehaviorRecipe;
-    use crate::weapon::behavior::ELEMENT_SWITCH;
+    use crate::weapon::behavior::DAMAGE_TYPE_SWITCH;
     let selected = selected_unique_behavior(overrides);
     let offered = offered_behaviors(sources, selected);
     let selected_text = selected.map_or_else(
@@ -1653,27 +1655,27 @@ pub(super) fn draw_unique_behavior_control(
     } else {
         parts::draw_part(ui, catalog, scope, query, candidates, part)
     };
-    // Element switch is requested by its own control, so it survives every change made here.
-    let keep_element_switch = |overrides: &mut crate::recipe::WeaponRecipeOverrides| {
+    // Damage type switch is requested by its own control, so it survives every change made here.
+    let keep_damage_type_switch = |overrides: &mut crate::recipe::WeaponRecipeOverrides| {
         overrides
             .additional_behaviors
-            .retain(|kept| kept.behavior == ELEMENT_SWITCH);
+            .retain(|kept| kept.behavior == DAMAGE_TYPE_SWITCH);
     };
     match selection {
         Some(WeaponDonorPickerAction::Clear) => {
-            if selected.is_some_and(crate::weapon::behavior::source_switches_element) {
+            if selected.is_some_and(crate::weapon::behavior::source_switches_damage_type) {
                 overrides.variable_damage = None;
             }
-            keep_element_switch(overrides);
+            keep_damage_type_switch(overrides);
         }
         Some(WeaponDonorPickerAction::Select(hash)) => {
             if let Some(entry) = entry_for_hash(hash) {
-                if selected.is_some_and(crate::weapon::behavior::source_switches_element)
-                    && !crate::weapon::behavior::source_switches_element(entry)
+                if selected.is_some_and(crate::weapon::behavior::source_switches_damage_type)
+                    && !crate::weapon::behavior::source_switches_damage_type(entry)
                 {
                     overrides.variable_damage = None;
                 }
-                keep_element_switch(overrides);
+                keep_damage_type_switch(overrides);
                 overrides
                     .additional_behaviors
                     .push(AdditionalBehaviorRecipe {
@@ -1681,7 +1683,7 @@ pub(super) fn draw_unique_behavior_control(
                     });
                 // Hard Light and Borealis switch damage as well as fire differently, so choosing
                 // them turns that on rather than leaving it to be found.
-                if crate::weapon::behavior::source_switches_element(entry) {
+                if crate::weapon::behavior::source_switches_damage_type(entry) {
                     overrides.variable_damage = Some(crate::recipe::VariableDamageRecipe::all());
                 }
             }

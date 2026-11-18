@@ -1,7 +1,7 @@
 //! Cross-host projectile staging probes. These do not assert gameplay compatibility.
 use super::*;
 use sundial::package_authoring::runtime::{
-    WeaponRuntimeRootKind, WeaponRuntimeValue, load_weapon_runtime_graph_for_entity,
+    RuntimeRootKind, RuntimeValue, load_runtime_graph_for_entity,
 };
 
 const HOSTS: &[(u32, &str)] = &[
@@ -182,7 +182,7 @@ fn speed_values(
     globals: &[u8],
     effect: &Effect,
     multiplier: f32,
-) -> Vec<WeaponRuntimeValueOverride> {
+) -> Vec<RuntimeValueOverride> {
     let Some(tag) = effect.projectile else {
         return Vec::new();
     };
@@ -194,14 +194,10 @@ fn speed_values(
         .find(|graph| graph.tag.0 == tag)
         .unwrap();
     let decoded =
-        load_weapon_runtime_graph_for_entity(manager, effect.plug, 0, tag, &graph.payload).unwrap();
+        load_runtime_graph_for_entity(manager, effect.plug, 0, tag, &graph.payload).unwrap();
     [
-        (WeaponRuntimeRootKind::ComponentInstance, 0x8080_3B73, 0x144),
-        (
-            WeaponRuntimeRootKind::ComponentDefinition,
-            0x8080_388F,
-            0x88,
-        ),
+        (RuntimeRootKind::ComponentInstance, 0x8080_3B73, 0x144),
+        (RuntimeRootKind::ComponentDefinition, 0x8080_388F, 0x88),
     ]
     .into_iter()
     .map(|(root, schema, offset)| {
@@ -214,19 +210,19 @@ fn speed_values(
                     && field.locator.root_schema.get() == schema
                     && field.locator.value_offset <= offset
                     && field.locator.value_offset + field.locator.byte_size >= offset + 4
-                    && matches!(field.value, WeaponRuntimeValue::Bytes(_))
+                    && matches!(field.value, RuntimeValue::Bytes(_))
             })
             .max_by_key(|field| field.locator.byte_size)
             .unwrap_or_else(|| panic!("{} has no bounded speed storage", effect.name));
-        let WeaponRuntimeValue::Bytes(mut bytes) = field.value.clone() else {
+        let RuntimeValue::Bytes(mut bytes) = field.value.clone() else {
             panic!("bounded speed bytes")
         };
         let at = (offset - field.locator.value_offset) as usize;
         assert_eq!(read_u32(&bytes, at).unwrap(), 1.0f32.to_bits());
         write_u32(&mut bytes, at, multiplier.to_bits()).unwrap();
-        WeaponRuntimeValueOverride {
+        RuntimeValueOverride {
             locator: field.locator.clone(),
-            value: WeaponRuntimeValue::Bytes(bytes),
+            value: RuntimeValue::Bytes(bytes),
         }
     })
     .collect()
@@ -236,7 +232,7 @@ fn recipe(
     catalog: &InvestmentCatalog,
     host: (u32, &str),
     effect: &Effect,
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
     index: usize,
 ) -> WeaponRecipe {
     let donor = catalog
@@ -250,7 +246,7 @@ fn recipe(
     .unwrap();
     recipe.overrides.modern_damage_type = Some(if effect.perk == 1778 {
         // Matched live controls spawn the follow-up Wave with Solar, but not Arc.
-        // Keep element isolation separate from the cross-host baseline.
+        // Keep damage type isolation separate from the cross-host baseline.
         RecipeDamageType::Solar
     } else {
         [
@@ -343,7 +339,7 @@ fn verify_stock_graphs(
             "stock projectile graph changed"
         );
         let decoded =
-            load_weapon_runtime_graph_for_entity(stock, 0, 0, graph.tag.0, &graph.payload).unwrap();
+            load_runtime_graph_for_entity(stock, 0, 0, graph.tag.0, &graph.payload).unwrap();
         for owner in decoded.owners {
             let tag = TagHash(owner.owner_tag);
             assert_eq!(

@@ -12,7 +12,7 @@ mod recovery;
 #[cfg(test)]
 pub use loader::preview_upgrade;
 pub use loader::{UPGRADE_REVIEW_STEPS, UpgradeReview, preview_upgrade_with_progress};
-pub(crate) use loader::{other_mods_change, package_window, uses_mod_loader};
+pub(crate) use loader::{other_mods_change, other_mods_entries, package_window, uses_mod_loader};
 pub use recovery::recover_interrupted_install;
 use recovery::*;
 mod locking;
@@ -79,24 +79,24 @@ use tiger_pkg::{Package, PackageD2PreBL};
 
 use crate::SUNDIAL_BUILD_SIGNATURE;
 use crate::artifact::{ArtifactMetadata, FileDigest, digest_file, has_pkg_extension};
-use crate::format::PackageLayout;
 #[cfg(test)]
 use crate::manifest::recipe_selection_fingerprint;
 use crate::manifest::{
     MANIFEST_FILE_NAME, MANIFEST_SCHEMA, ManifestDocument, ManifestProject, SelectionFingerprint,
 };
+use crate::package::format::PackageLayout;
 #[cfg(test)]
-use crate::package_profile::AUTHORED_PACKAGES;
+use crate::package::profile::AUTHORED_PACKAGES;
 #[cfg(test)]
-pub(crate) use crate::package_profile::AUTHORED_PATCH_ID;
+pub(crate) use crate::package::profile::AUTHORED_PATCH_ID;
 #[cfg(test)]
-pub(crate) use crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES;
-use crate::package_profile::{
+pub(crate) use crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES;
+use crate::package::profile::{
     ACCOUNT_UNLOCK_BANK, AuthoredPackage, CANONICAL_PACKAGES, PACKAGE_HEADER_PREFIX_SIZE,
     PackageHeaderPrefix, all_authored_packages_in, authored_package,
     authored_package_for_file_name, authored_packages_for_file_names, canonical_package,
 };
-pub(crate) use crate::package_profile::{CANONICAL_PACKAGE_IDS, SHADOWKEEP_HEADER_VERSION};
+pub(crate) use crate::package::profile::{CANONICAL_PACKAGE_IDS, SHADOWKEEP_HEADER_VERSION};
 use crate::recipe::WeaponRecipe;
 
 const SUNRISE_CACHE_BACKUP_DIRECTORY: &str = "sunrise-cache";
@@ -335,6 +335,7 @@ struct ValidatedRun {
     merge_data: Vec<ArtifactMetadata>,
     map_diagnostics: Option<ArtifactMetadata>,
     mission_scripts: Vec<ArtifactMetadata>,
+    activity_packs: Vec<ArtifactMetadata>,
     mods: Vec<crate::mod_family::Member>,
     obsolete_artifacts: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
@@ -942,6 +943,7 @@ struct ValidatedManifest {
     merge_data: Vec<ArtifactMetadata>,
     map_diagnostics: Option<ArtifactMetadata>,
     mission_scripts: Vec<ArtifactMetadata>,
+    activity_packs: Vec<ArtifactMetadata>,
     mods: Vec<crate::mod_family::Member>,
     selected_recipe_files: Vec<String>,
     selected_map_files: Vec<String>,

@@ -66,8 +66,7 @@ impl FiredProjectile {
 /// its runtime selects names, as the build finds it.
 fn read_fired(packages: &Path, (key, requested): &Firing) -> Fired {
     use sundial::package_authoring::runtime::{
-        load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_entity_with_manager,
+        load_runtime_entity_at_pattern_index_with_manager, load_runtime_entity_with_manager,
     };
     use sundial::package_authoring::sandbox_perk::entity::{Kind, kind};
     let manager = open_shadowkeep_package_manager(packages)?;
@@ -79,9 +78,9 @@ fn read_fired(packages: &Path, (key, requested): &Firing) -> Fired {
                 .iter()
                 .map(|&(binding, pattern, item)| {
                     let donor = if let Some(pattern) = pattern {
-                        load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, pattern)?
+                        load_runtime_entity_at_pattern_index_with_manager(&manager, pattern)?
                     } else {
-                        load_weapon_runtime_entity_with_manager(&manager, item)?
+                        load_runtime_entity_with_manager(&manager, item)?
                     };
                     Ok((binding, donor.payload))
                 })

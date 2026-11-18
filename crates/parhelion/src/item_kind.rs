@@ -23,15 +23,17 @@ pub enum ItemKind {
     /// A custom perk on its own, offered in every socket of its type rather than placed on one
     /// item.
     Mod,
+    Artifact,
 }
 
 impl ItemKind {
     /// Menu order: weapons, armor, then the rest of the loadout, emblems, shaders, mods and
     /// subclasses. Declaration order stays the order kinds were added, which gear pages are
     /// allocated in.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Weapon,
         Self::Armor,
+        Self::Artifact,
         Self::Sparrow,
         Self::Ship,
         Self::GhostShell,
@@ -59,6 +61,7 @@ impl ItemKind {
             Self::Subclass => "Subclass",
             Self::Emblem => "Emblem",
             Self::Mod => "Mod",
+            Self::Artifact => "Artifact",
         }
     }
 
@@ -74,6 +77,7 @@ impl ItemKind {
             Self::Subclass => "Subclasses",
             Self::Emblem => "Emblems",
             Self::Mod => "Mods",
+            Self::Artifact => "Artifacts",
         }
     }
 
@@ -90,6 +94,7 @@ impl ItemKind {
             Self::Subclass => "subclass",
             Self::Emblem => "emblem",
             Self::Mod => "mod",
+            Self::Artifact => "artifact",
         }
     }
 
@@ -121,6 +126,7 @@ impl ItemKind {
             Self::Subclass => "A subclass authored with Parhelion.",
             Self::Emblem => "An emblem authored with Parhelion.",
             Self::Mod => "A mod authored with Parhelion.",
+            Self::Artifact => "An artifact authored with Parhelion.",
         }
     }
 
@@ -141,6 +147,7 @@ impl ItemKind {
             Self::GhostShell => &[4_023_194_814],
             Self::Shader => &[2_973_005_342],
             Self::Subclass => &[3_284_755_031],
+            Self::Artifact => &[1_506_418_338],
             Self::Emblem => &[4_274_335_291],
             // A mod's base is the custom perk's template plug, which comes from the plug catalog,
             // not an inventory bucket.
@@ -162,6 +169,7 @@ impl ItemKind {
             Self::Shader => &[(14, 0)],
             // Equipment slot 0 with the second byte set, as all nine stock subclasses carry it.
             Self::Subclass => &[(16, 0x0100)],
+            Self::Artifact => &[(49, 0x0112)],
             Self::Emblem => &[(27, 13)],
             // A mod keeps its template plug's bucket. Stock mods use 13 (weapon mods) and 37
             // (armor mods), and its type comes from its classification plug instead.

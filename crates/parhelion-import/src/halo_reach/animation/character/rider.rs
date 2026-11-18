@@ -133,10 +133,17 @@ fn transitions(names: &std::collections::BTreeSet<&str>, role: &str) -> Result<R
 }
 
 /// The mounted pose of a role that idles only with a weapon in hand, as a Reach passenger does
-/// (`warthog_p:rifle:idle`, `warthog_p:pistol:idle` and others, with no `warthog_p:idle`): the idle
-/// of the weapon class the role gives the most actions, so its most complete seated pose.
+/// (`warthog_p:rifle:idle`, `warthog_p:pistol:idle` and others, with no `warthog_p:idle`). The
+/// rider holds no source weapon, so the pose is the `rifle` class's, the two-handed carry Reach
+/// gives a passenger's ordinary weapons. A count of actions alone picked `mongoose_p:missile:idle`,
+/// the shouldered launcher pose, whose class holds more actions than `rifle`. A role without a
+/// rifle idle takes the idle of the class it gives the most actions.
 fn class_idle(names: &std::collections::BTreeSet<&str>, role: &str) -> Result<Action> {
     let prefix = format!("{role}:");
+    let rifle = format!("{prefix}rifle:idle");
+    if names.contains(rifle.as_str()) {
+        return Ok(Action::Clip(rifle));
+    }
     let mut classes = BTreeMap::<&str, usize>::new();
     for name in names {
         if let Some((class, _)) = name

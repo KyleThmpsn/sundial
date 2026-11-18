@@ -11,7 +11,7 @@ mod tests;
 /// A successful load proves that both schemas are known by the embedded native registry. It does
 /// not prove that two resources have interchangeable behavior or compatible sibling components.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeResourceShape {
+pub struct RuntimeResourceShape {
     pub instance_schema: u32,
     /// `None` means no native definition was declared, not an unknown or invalid definition.
     pub definition_schema: Option<u32>,
@@ -22,10 +22,10 @@ pub struct WeaponRuntimeResourceShape {
 /// Unknown schemas, including generated-only schemas, are deliberately rejected so callers cannot
 /// classify unverified data as a lower-risk match. Invalid declared native definitions are errors
 /// rather than being treated as absent definitions. The owning tag is validated before inspection.
-pub fn load_weapon_runtime_resource_shape(
+pub fn load_runtime_resource_shape(
     manager: &PackageManager,
     binding: &WeaponComponentBinding,
-) -> Result<WeaponRuntimeResourceShape, String> {
+) -> Result<RuntimeResourceShape, String> {
     let registry = runtime_registry()?;
     let runtime_binding = runtime_shape_binding(binding)?;
     // Generated-only and unknown classes cannot qualify. Reject these common cases before
@@ -35,8 +35,8 @@ pub fn load_weapon_runtime_resource_shape(
     native_resource_shape(&owner, &runtime_binding, registry)
 }
 
-fn runtime_shape_binding(binding: &WeaponComponentBinding) -> Result<WeaponRuntimeBinding, String> {
-    Ok(WeaponRuntimeBinding {
+fn runtime_shape_binding(binding: &WeaponComponentBinding) -> Result<RuntimeBinding, String> {
+    Ok(RuntimeBinding {
         binding_hash: binding.binding_hash,
         binding_label: String::new(),
         resource_index: u16::try_from(binding.resource_index)
@@ -51,9 +51,9 @@ fn runtime_shape_binding(binding: &WeaponComponentBinding) -> Result<WeaponRunti
 
 fn native_resource_shape(
     owner_payload: &[u8],
-    binding: &WeaponRuntimeBinding,
+    binding: &RuntimeBinding,
     registry: &RuntimeRegistry,
-) -> Result<WeaponRuntimeResourceShape, String> {
+) -> Result<RuntimeResourceShape, String> {
     let start = usize::try_from(binding.resource_offset)
         .map_err(|_| "Runtime resource offset does not fit this platform")?;
     let instance_size = validate_native_root(
@@ -100,7 +100,7 @@ fn native_resource_shape(
         }
         None
     };
-    Ok(WeaponRuntimeResourceShape {
+    Ok(RuntimeResourceShape {
         instance_schema: binding.concrete_class,
         definition_schema,
     })

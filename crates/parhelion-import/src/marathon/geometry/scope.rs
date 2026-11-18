@@ -7,6 +7,8 @@ pub(crate) struct Lens {
     pub aim: [f32; 3],
     pub axes: [[f32; 3]; 2],
     pub radii: [f32; 2],
+    /// Unit normal of the mask's own plane.
+    pub normal: [f32; 3],
     pub artwork: bool,
     pub outline: Vec<[f32; 3]>,
     /// The source eye lies within the bounds of the mesh that carries the aperture, as in the
@@ -112,14 +114,28 @@ pub(super) fn points(
         .collect()
 }
 
+/// Share of the aperture's smaller radius within which solid geometry lies in the aperture's
+/// plane. The examined holographic housing's rim spans 1.0 to 1.8 mm behind a mask whose smaller
+/// radius is 12.4 mm.
+const PLANE: f32 = 0.2;
+
+/// Whether a point lies inside or on a triangle of either winding.
+fn inside(triangle: &[[f32; 2]; 3], point: [f32; 2]) -> bool {
+    let edge = |a: [f32; 2], b: [f32; 2]| {
+        (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0])
+    };
+    let sides = [
+        edge(triangle[0], triangle[1]),
+        edge(triangle[1], triangle[2]),
+        edge(triangle[2], triangle[0]),
+    ];
+    sides.iter().all(|side| *side >= 0.) || sides.iter().all(|side| *side <= 0.)
+}
+
 impl Lens {
-    /// Whether the sight axis passes through the opening: inside every outline edge, or within
-    /// the aperture radii when the outline is unsupported.
-    pub(super) fn aimed(&self) -> bool {
-        let offset: [f32; 3] = std::array::from_fn(|a| self.aim[a] - self.center[a]);
-        let point = self
-            .axes
-            .map(|axis| (0..3).map(|a| axis[a] * offset[a]).sum::<f32>());
+    /// Whether a point in aperture coordinates lies in the opening: inside every outline edge, or
+    /// within the aperture radii when the outline is unsupported.
+    fn within(&self, point: [f32; 2]) -> bool {
         if self.outline.is_empty() {
             (0..2).all(|k| point[k].abs() <= self.radii[k])
         } else {
@@ -129,12 +145,134 @@ impl Lens {
         }
     }
 
+    /// Whether the sight axis passes through the opening.
+    pub(super) fn aimed(&self) -> bool {
+        let offset: [f32; 3] = std::array::from_fn(|a| self.aim[a] - self.center[a]);
+        self.within(
+            self.axes
+                .map(|axis| (0..3).map(|a| axis[a] * offset[a]).sum::<f32>()),
+        )
+    }
+
+    /// The share of the opening that the triangles cover, sampled on a grid across its radii.
+    fn covered(&self, triangles: &[[[f32; 2]; 3]]) -> f32 {
+        const STEPS: usize = 64;
+        let bounds = triangles
+            .iter()
+            .map(|t| {
+                let low: [f32; 2] = std::array::from_fn(|k| t[0][k].min(t[1][k]).min(t[2][k]));
+                let high: [f32; 2] = std::array::from_fn(|k| t[0][k].max(t[1][k]).max(t[2][k]));
+                (low, high)
+            })
+            .collect::<Vec<_>>();
+        let (mut open, mut closed) = (0u32, 0u32);
+        for row in 0..STEPS {
+            for column in 0..STEPS {
+                let point = [column, row].map(|step| (step as f32 + 0.5) / STEPS as f32 * 2. - 1.);
+                let point = [point[0] * self.radii[0], point[1] * self.radii[1]];
+                if !self.within(point) {
+                    continue;
+                }
+                open += 1;
+                if triangles
+                    .iter()
+                    .zip(&bounds)
+                    .any(|(triangle, (low, high))| {
+                        (0..2).all(|k| point[k] >= low[k] && point[k] <= high[k])
+                            && inside(triangle, point)
+                    })
+                {
+                    closed += 1;
+                }
+            }
+        }
+        if open == 0 {
+            1.
+        } else {
+            closed as f32 / open as f32
+        }
+    }
+
+    /// The triangles of a solid draw that frame the opening rather than block it, one flag per
+    /// triangle of `points`. A source mask can reach past the glass onto the rim that holds it,
+    /// and an opening cut along the mask's outline then shows a gap between the glass and that
+    /// rim. Rim triangles lie in the aperture's plane and connect, through corners they share in
+    /// that plane, to geometry outside the outline. They count only while they leave most of the
+    /// opening open, so a display back that closes it is still cut.
+    pub(super) fn frame(&self, points: &[[f32; 3]]) -> Vec<bool> {
+        let mut flags = vec![false; points.len() / 3];
+        if self.outline.is_empty() {
+            return flags;
+        }
+        let reach = PLANE * self.radii[0].min(self.radii[1]);
+        let local = |p: &[f32; 3]| {
+            let offset: [f32; 3] = std::array::from_fn(|a| p[a] - self.center[a]);
+            let along = |v: &[f32; 3]| (0..3).map(|a| v[a] * offset[a]).sum::<f32>();
+            (
+                [along(&self.axes[0]), along(&self.axes[1])],
+                along(&self.normal),
+            )
+        };
+        // Corners match by position, since a seam repeats a vertex.
+        let corner = |p: &[f32; 3]| p.map(|v| (v * 100_000.).round() as i64);
+        let mut planar = Vec::new();
+        let mut shared = BTreeMap::<[i64; 3], Vec<usize>>::new();
+        let mut pending = Vec::new();
+        for (index, triangle) in points.chunks_exact(3).enumerate() {
+            let corners = [
+                local(&triangle[0]),
+                local(&triangle[1]),
+                local(&triangle[2]),
+            ];
+            if corners.iter().any(|(_, depth)| depth.abs() > reach) {
+                continue;
+            }
+            let slot = planar.len();
+            planar.push((index, corners.map(|(point, _)| point)));
+            for p in triangle {
+                shared.entry(corner(p)).or_default().push(slot);
+            }
+            if corners.iter().any(|(point, _)| !self.within(*point)) {
+                pending.push(slot);
+            }
+        }
+        let mut rim = vec![false; planar.len()];
+        for &slot in &pending {
+            rim[slot] = true;
+        }
+        while let Some(slot) = pending.pop() {
+            let index = planar[slot].0;
+            for p in &points[index * 3..index * 3 + 3] {
+                for &next in &shared[&corner(p)] {
+                    if !rim[next] {
+                        rim[next] = true;
+                        pending.push(next);
+                    }
+                }
+            }
+        }
+        let triangles = planar
+            .iter()
+            .zip(&rim)
+            .filter(|(_, rim)| **rim)
+            .map(|((_, triangle), _)| *triangle)
+            .collect::<Vec<_>>();
+        if triangles.is_empty() || self.covered(&triangles) >= 0.5 {
+            return flags;
+        }
+        for ((index, _), rim) in planar.iter().zip(&rim) {
+            flags[*index] = *rim;
+        }
+        flags
+    }
+
     pub(super) fn placed(&self, matrix: &[f32; 16]) -> Self {
         Self {
             center: transform(self.center, matrix, true),
             aim: transform(self.aim, matrix, true),
             axes: self.axes.map(|v| transform(v, matrix, false)),
             radii: self.radii,
+            normal: transform(self.normal, matrix, false),
             artwork: self.artwork,
             outline: self.outline.clone(),
             enclosed: self.enclosed,
@@ -286,6 +424,7 @@ pub(super) fn read(
     });
     let axes = [[-slope[0], 1., 0.], [-slope[1], 0., 1.]];
     let outline = outline(&points, center, axes)?;
+    let normal = plane(&points, [1., slope[0], slope[1]])?;
     let mut bounds = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
     for index in 0..vertices.0.len() / 24 {
         let point = position(model, vertices, posed, u32::try_from(index)?)?;
@@ -311,6 +450,7 @@ pub(super) fn read(
         aim,
         axes,
         radii,
+        normal,
         artwork,
         outline,
         enclosed,
@@ -323,6 +463,58 @@ pub(super) fn read(
         .unwrap_or_default();
     lens.framing = sight.and_then(|([rear, front], angle)| Framing::new(&lens, angle, rear, front));
     Ok(Some(lens))
+}
+
+/// A solid draw's triangles as the sets that become surfaces: its rim under an aperture cutout,
+/// flagged, and the rest. A draw without a cutout or a rim is one set.
+pub(super) fn split(
+    cutout: Option<&Lens>,
+    model: &Payload,
+    vertices: &Payload,
+    posed: Option<&[[f32; 12]]>,
+    faces: Vec<[u32; 3]>,
+) -> Result<Vec<(Vec<[u32; 3]>, bool)>> {
+    let rim = match cutout {
+        Some(lens) => lens.frame(&points(model, vertices, posed, &faces)?),
+        None => Vec::new(),
+    };
+    let (frame, rest): (Vec<_>, Vec<_>) = faces
+        .into_iter()
+        .enumerate()
+        .partition(|(index, _)| rim.get(*index).copied().unwrap_or(false));
+    Ok([(frame, true), (rest, false)]
+        .into_iter()
+        .filter(|(faces, _)| !faces.is_empty())
+        .map(|(faces, frame)| (faces.into_iter().map(|(_, face)| face).collect(), frame))
+        .collect())
+}
+
+/// The unit normal of the mask's plane, from its own triangles with each oriented along the sight
+/// direction `ahead`.
+fn plane(points: &[[f32; 3]], ahead: [f32; 3]) -> Result<[f32; 3]> {
+    let mut normal = [0.; 3];
+    for triangle in points.chunks_exact(3) {
+        let edges: [[f32; 3]; 2] =
+            std::array::from_fn(|k| std::array::from_fn(|a| triangle[k + 1][a] - triangle[0][a]));
+        let face: [f32; 3] = std::array::from_fn(|a| {
+            edges[0][(a + 1) % 3] * edges[1][(a + 2) % 3]
+                - edges[0][(a + 2) % 3] * edges[1][(a + 1) % 3]
+        });
+        let sign = if (0..3).map(|a| face[a] * ahead[a]).sum::<f32>() < 0. {
+            -1.
+        } else {
+            1.
+        };
+        for a in 0..3 {
+            normal[a] += face[a] * sign;
+        }
+    }
+    let length = normal.iter().map(|v| v * v).sum::<f32>().sqrt();
+    ensure!(
+        length.is_finite() && length > 0.,
+        "Source scope aperture has no plane"
+    );
+    Ok(normal.map(|v| v / length))
 }
 
 /// A convex, filled source mask supplies the opening, including its rounded corners. Other

@@ -27,6 +27,7 @@ mod geometry;
 #[cfg(feature = "d2-model-importer")]
 mod lighting;
 pub(crate) mod mission;
+pub(crate) mod pack;
 #[cfg(feature = "d2-model-importer")]
 mod picture;
 #[cfg(feature = "d2-model-importer")]
@@ -68,7 +69,7 @@ pub(crate) struct Picture {
     /// The hash the picture's icon row takes.
     pub hash: u32,
     pub donor_row: u16,
-    pub donor: crate::icon_chain::Donor,
+    pub donor: crate::icon::chain::Donor,
     pub pixels: [Vec<u8>; 2],
 }
 

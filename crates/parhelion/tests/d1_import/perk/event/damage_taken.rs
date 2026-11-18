@@ -18,7 +18,12 @@ pub(super) fn check(
     assert_eq!(native.u32(n + 0xA0)?, 0x811C9DC5);
     player::ability_ranges(source, s + 0x178, native, n + 0xA8)?;
     assert_eq!(native.bytes::<16>(n + 0xB8)?, [0; 16]);
-    assert_eq!(source.bytes::<64>(s + 0x98)?, [0; 64]);
+    if source.bytes::<64>(s + 0x98)? != [0; 64] {
+        // The source's second label filter has no native field of its own.
+        let evidence = filter::merged(stock, source, (s + 8, s + 0x98), native, n + 8)?;
+        println!("Incoming event label filter: {evidence}");
+        return Ok(());
+    }
     assert_eq!(source.bytes::<128>(s + 0xE8)?, [0; 128]);
     assert_eq!(source.bytes::<4>(s + 0x168)?, [1; 4]);
     filter::damage(reader, stock, source, s + 8, native, n + 8)

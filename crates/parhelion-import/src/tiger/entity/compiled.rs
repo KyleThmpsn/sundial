@@ -156,6 +156,7 @@ fn registrations<'a>(
             "native template condition state is initialized"
         );
     }
+    let copy = conditions.component(entity, template_owner);
     for binding in entity.array(72, 8, Some(0x80809C25))? {
         let key = entity.u32(binding)?;
         if key == u32::MAX {
@@ -220,7 +221,7 @@ fn registrations<'a>(
                     old < old_masks.len(),
                     "native condition mask index exceeds table"
                 );
-                let (word, bits) = conditions.place(entity, old, bits)?;
+                let (word, bits) = conditions.place(entity, copy, old, bits)?;
                 map[..2].copy_from_slice(&word.to_le_bytes());
                 map[2..4].copy_from_slice(&bits.to_le_bytes());
             }

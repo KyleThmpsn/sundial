@@ -121,6 +121,7 @@ pub(super) fn emit(
         source.bytes::<16>(si + 0x320)? == output.bytes::<16>(ni + 0x260)?,
         "timed property state is initialized"
     );
+    let mut banks = Vec::new();
     for index in 0..4 {
         let i = si + 0x330 + index * 64;
         let d = sd + 0x640 + index * 24;
@@ -128,14 +129,30 @@ pub(super) fn emit(
         let td = nd + 0x448 + index * 24;
         pair(source, i, d, 0x80803568, 0x80803569)?;
         pair(output, ti, td, 0x8080420D, 0x8080420E)?;
+        // Modifiers that drive a property hold a bank on its input, the records a stat modifier
+        // owner holds. The template is a shipped status with as many rows in each bank.
+        let banked = source.u64(d + 16)? != 0;
         ensure!(
             source.pointer(i + 16)? == si
                 && output.pointer(ti + 16)? == ni
-                && source.bytes::<40>(i + 24)? == output.bytes::<40>(ti + 24)?
-                && source.u64(d + 16)? == 0,
+                && source.bytes::<24>(i + 24)? == output.bytes::<24>(ti + 24)?
+                && source.bytes::<8>(i + 56)? == output.bytes::<8>(ti + 56)?
+                && banked == (source.u64(i + 48)? != 0)
+                && banked == (output.u64(td + 16)? != 0)
+                && banked == (output.u64(ti + 48)? != 0),
             "timed property input has live state"
         );
-        put(&mut output.0, td + 16, &[0; 8])?;
+        if banked {
+            let (records, loose) = super::super::stat::bank(
+                source,
+                output,
+                (source.pointer(i + 48)?, source.pointer(d + 16)?),
+                (output.pointer(ti + 48)?, output.pointer(td + 16)?),
+            )
+            .with_context(|| format!("timed property {index} modifier bank"))?;
+            objects.extend(records);
+            banks.extend(loose);
+        }
         objects.push(object(source, output, i, 0x80803568, ti, 0x8080420D)?);
         objects.push(object(source, output, d, 0x80803569, td, 0x8080420E)?);
     }
@@ -151,6 +168,7 @@ pub(super) fn emit(
             offset: (sd + 0x620) as u64,
         },
     ];
+    unbound.extend(banks);
     for (offset, class, method) in [
         (0x6A0, 0x8080955E, 4),
         (0x6C8, 0x8080955E, 5),

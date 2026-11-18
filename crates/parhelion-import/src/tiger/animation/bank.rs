@@ -18,6 +18,27 @@ pub struct Addition {
     pub template: u32,
     pub clip: u32,
     pub duration: f32,
+    pub dispatch: Dispatch,
+}
+
+/// What the pose consumers read for a new descriptor: the stock supplemental route whose edges
+/// its own route row copies, and the aim and look aliases, each `FFFF` for none. Stock gives
+/// every descriptor with a supplemental pose a route row of its own, and shares each alias
+/// among descriptors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct Dispatch {
+    pub route: Option<u16>,
+    pub aim: u16,
+    pub look: u16,
+}
+
+impl Dispatch {
+    /// A complete authored pose: no supplemental route and no direction correction.
+    pub const NONE: Self = Self {
+        route: None,
+        aim: u16::MAX,
+        look: u16::MAX,
+    };
 }
 
 pub struct Extension {
@@ -77,12 +98,16 @@ pub fn extend(
         );
         direction_aliases.push((field, aliases));
     }
+    let stock_routes = original_layers.array(56, 32, Some(0x808034EF))?.len();
+    let mut routes = layers.array(56, 32, Some(0x808034EF))?;
+    let copied_routes = routes.len();
     let mut indices = Vec::new();
     for &Addition {
         descriptor: index,
         template,
         clip: private,
         duration,
+        dispatch: pose,
     } in additions
     {
         ensure!(
@@ -119,16 +144,37 @@ pub fn extend(
             source_dispatch.get(index).is_some(),
             "Character pose dispatch missing"
         );
-        dispatch.extend(u16::MAX.to_le_bytes());
-        for (_, aliases) in &mut direction_aliases {
-            // Both directional consumers index directly by descriptor. An
-            // absolute authored pose has no donor direction correction.
-            aliases.extend(u16::MAX.to_le_bytes());
+        match pose.route {
+            None => dispatch.extend(u16::MAX.to_le_bytes()),
+            // A supplemental pose takes a route row of its own with the stock route's edges.
+            Some(route) => {
+                ensure!(
+                    usize::from(route) < stock_routes,
+                    "Character pose route is not a stock route"
+                );
+                dispatch.extend(u16::try_from(routes.len())?.to_le_bytes());
+                routes.push(routes[usize::from(route)]);
+            }
+        }
+        for ((field, aliases), alias) in direction_aliases.iter_mut().zip([pose.aim, pose.look]) {
+            // Both directional consumers index directly by descriptor. An absolute authored
+            // pose has no donor direction correction. Any other alias is one stock uses.
+            ensure!(
+                alias == u16::MAX
+                    || rows(original_directions, *field, 2, 0x80800006)?
+                        .chunks_exact(2)
+                        .any(|stock| stock == alias.to_le_bytes()),
+                "Character direction alias is not a stock alias"
+            );
+            aliases.extend(alias.to_le_bytes());
         }
     }
     let mut bank = bank.clone();
     let mut layers = layers.clone();
     let mut directions = directions.clone();
+    if routes.len() > copied_routes {
+        holding::copy_rows(&mut layers, 56, 0x808034EF, 32, &routes, &[0, 16])?;
+    }
     append(&mut bank.0, 8, 0x80808F48, &clips, 4)?;
     append(&mut bank.0, 24, 0x80800007, &auxiliary, 4)?;
     append(&mut bank.0, 0x68, 0x80809002, &descriptors, 32)?;

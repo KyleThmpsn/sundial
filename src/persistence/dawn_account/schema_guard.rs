@@ -6,13 +6,16 @@ use rusqlite::Connection;
 use super::{contract, error::DawnAccountError};
 use crate::persistence::native_account::snapshot::Snapshot;
 
-const REWRITTEN: [&str; 6] = [
+/// The tables a save deletes from or that lose rows through its cascades. `item_values` exists
+/// from schema 7. On schema 5 it is absent from the database and the reference alike.
+const REWRITTEN: [&str; 7] = [
     "account",
     "characters",
     "character_items",
     "profile_items",
     "item_sockets",
     "item_rolls",
+    "item_values",
 ];
 
 pub(super) fn validate(db: &Connection) -> Result<(), DawnAccountError> {
@@ -22,11 +25,10 @@ pub(super) fn validate(db: &Connection) -> Result<(), DawnAccountError> {
         ))
     };
     let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version != contract::SCHEMA_VERSION {
+    if !contract::supported(version) {
         return Err(refuse(format!("schema version {version}")));
     }
-    let reference = Connection::open_in_memory()?;
-    reference.execute_batch(contract::SCHEMA)?;
+    let reference = contract::reference(version)?;
     for table in REWRITTEN {
         if columns(db, table)? != columns(&reference, table)? {
             return Err(refuse(format!("{table} has unrecognized columns")));
@@ -66,8 +68,7 @@ pub(super) fn extensions_unchanged(
     before: &Snapshot,
     after: &Snapshot,
 ) -> Result<(), DawnAccountError> {
-    let reference = Connection::open_in_memory()?;
-    reference.execute_batch(contract::SCHEMA)?;
+    let reference = contract::reference(before.version)?;
     let known = reference
         .prepare("SELECT name FROM sqlite_schema WHERE type='table'")?
         .query_map([], |r| r.get::<_, String>(0))?

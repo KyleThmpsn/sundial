@@ -2,7 +2,6 @@
 use super::*;
 use crate::recipe::{HexHash, WeaponSocketColumnRecipe, WeaponSocketPlugVariantRecipe};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use sundial::package_authoring::{
     loading_index,
     sandbox_perk::{
@@ -13,12 +12,9 @@ use sundial::package_authoring::{
         },
     },
 };
+use sundial::storage::sha256_hex;
 
 const HOST: u32 = 0x80B825C0;
-
-fn sha(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
 
 fn recipe(stock: &PackageManager, amount: f32) -> (crate::WeaponRecipe, u32) {
     let graph = stock.read_tag(TagHash(HOST)).unwrap();
@@ -229,8 +225,9 @@ fn persisted_patch_only_graphs_keep_private_replication_and_native_layout() {
                 &owner,
             )
             .unwrap();
-            owner_records
-                .push(json!({"tag":tag,"source":old,"allocation":allocation,"sha256":sha(&owner)}));
+            owner_records.push(
+                json!({"tag":tag,"source":old,"allocation":allocation,"sha256":sha256_hex(&owner)}),
+            );
         }
         let mut normalized = graph.clone();
         normalize_graph(&mut normalized, &mapping, replica_tag);
@@ -270,7 +267,7 @@ fn persisted_patch_only_graphs_keep_private_replication_and_native_layout() {
             fs::write(output.join(format!("patch-{ordinal}-{name}.bin")), bytes).unwrap();
         }
         records.push(json!({"root":root,"replication":replication_tag,"companion":companion.0,
-            "owners":owner_records,"graph_sha256":sha(&graph),"replication_sha256":sha(&replication),"loading_sha256":sha(loading)}));
+            "owners":owner_records,"graph_sha256":sha256_hex(&graph),"replication_sha256":sha256_hex(&replication),"loading_sha256":sha256_hex(loading)}));
     }
     let mut grown = recipes[0].clone();
     let edit = &mut grown.overrides.socket_plug_variants[0].sandbox_perks[0]
@@ -300,12 +297,12 @@ fn persisted_patch_only_graphs_keep_private_replication_and_native_layout() {
         bundle
             .artifacts
             .iter()
-            .map(|artifact| sha(artifact.bytes()))
+            .map(|artifact| sha256_hex(artifact.bytes()))
             .collect::<Vec<_>>(),
         rebuilt
             .artifacts
             .iter()
-            .map(|artifact| sha(artifact.bytes()))
+            .map(|artifact| sha256_hex(artifact.bytes()))
             .collect::<Vec<_>>()
     );
     for (&tag, original) in &originals {
@@ -320,13 +317,13 @@ fn persisted_patch_only_graphs_keep_private_replication_and_native_layout() {
         .into_iter()
         .map(|path| {
             json!({
-        "file":path.file_name().unwrap().to_string_lossy(),"sha256":sha(&fs::read(&path).unwrap())})
+        "file":path.file_name().unwrap().to_string_lossy(),"sha256":sha256_hex(&fs::read(&path).unwrap())})
         })
         .collect::<Vec<_>>();
     fs::write(output.join("readback.json"), serde_json::to_vec_pretty(&json!({
         "native_build":"86657.20.08.23.1800.d2_rc___release","revision":revision,
-        "executable_sha256":sha(&fs::read(std::env::current_exe().unwrap()).unwrap()),
-        "source_packages":packages,"source_payloads":originals.iter().map(|(tag,bytes)|json!({"tag":tag,"sha256":sha(bytes)})).collect::<Vec<_>>(),
+        "executable_sha256":sha256_hex(&fs::read(std::env::current_exe().unwrap()).unwrap()),
+        "source_packages":packages,"source_payloads":originals.iter().map(|(tag,bytes)|json!({"tag":tag,"sha256":sha256_hex(bytes)})).collect::<Vec<_>>(),
         "recipes":recipes,"cases":records,"packages":files,"stock_preserved":true,"growth_rejected":true,
         "limits":"Persisted recipes and staged native package readback. No live activation or network execution."
     })).unwrap()).unwrap();

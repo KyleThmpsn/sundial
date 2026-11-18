@@ -503,7 +503,9 @@ fn installed_path(artifact: &ArtifactMetadata) -> Result<String, InstallError> {
     let name = crate::mod_family::native_name(&artifact.file_name);
     if let Some(path) = mod_content::mission_script::path(name) {
         Ok(path)
-    } else if name == mod_content::map_diagnostics::FILE_NAME {
+    } else if name == mod_content::map_diagnostics::FILE_NAME
+        || name == mod_content::activity_pack::FILE_NAME
+    {
         Ok(name.to_owned())
     } else {
         package_path(artifact)
@@ -943,6 +945,7 @@ fn validate_record(record: &Record, target: &Path, backup_root: &Path) -> Result
             if name != mod_content::MANIFEST
                 && name != mod_content::RECEIPT
                 && name != mod_content::map_diagnostics::FILE_NAME
+                && name != mod_content::activity_pack::FILE_NAME
                 && !mod_content::mission_script::valid_path(name)
             {
                 let file_name = name

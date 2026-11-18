@@ -11,8 +11,10 @@
 //! - Each importer writes its entries over the rows the stock entries held, after the main mod's
 //!   and every earlier importer's ([`place_first`]), and changes no other row.
 //!
-//! Merged, the list holds the main mod's entries, each importer's in compile order, then every
-//! stock entry in its stock order. A member loaded alone shows its own entries first, beside
+//! The stock-sized prefix holds the members' leading entries in compile order. Overflow and
+//! displaced stock rows append in loader order, so the complete list has no global prefix-order
+//! guarantee once the stock capacity is exceeded. Every entry remains present. A member loaded
+//! alone shows its own entries first, beside
 //! stock rows the others would have written over, so a stock entry can show twice or not at all
 //! until the family is installed together again.
 use crate::AuthoringResult;
@@ -44,7 +46,7 @@ pub(crate) fn place_first(nodes: &mut Vec<u8>, node: usize, added: &[Row]) -> Au
         added.len(),
         rows.len(),
     );
-    if crate::package_profile::member().is_none() {
+    if crate::package::profile::member().is_none() {
         insert_collectible_children(nodes, node, 0, added)
     } else {
         write_collectible_children_from(nodes, node, added, slot.row, slot.stock)

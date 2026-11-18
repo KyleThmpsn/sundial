@@ -176,7 +176,7 @@ impl PackageAuthoringApp {
                     self.recipe
                         .overrides
                         .runtime_resource_patches
-                        .push(WeaponRuntimeResourcePatchRecipe::default());
+                        .push(RuntimeResourcePatchRecipe::default());
                 }
             });
     }

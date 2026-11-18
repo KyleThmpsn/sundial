@@ -103,8 +103,9 @@ struct Role {
 ///
 /// A type only one other item carries, its own ornaments or catalyst with a reissue of the same
 /// piece counted once, or one that offers no plug is left out unless the item carries it, and
-/// Technical's Socket Type still reaches it. A blank label takes the type of the plug the socket
-/// starts with, as a seasonal armor mod socket's Empty Mod Socket names its season, else that
+/// Technical's Socket Type still reaches it. Explicit shared roles have no subtype carriers,
+/// but their checked, nonempty catalog pools remain available. A blank label takes the type of
+/// the plug the socket starts with, as a seasonal armor mod socket's Empty Mod Socket names its season, else that
 /// plug's name. Roles of one label that offer the same plugs are one row. A label still shared names a row by the item type most of its plugs share
 /// when no other row has it, as the class Universal Ornament sockets do. Of the rest, the item's
 /// own, else the most carried, keeps the label. The others add their plug count where it differs
@@ -120,7 +121,7 @@ fn role_choices(catalog: &InvestmentCatalog, donor: &WeaponDonor) -> Result<Vec<
         BTreeMap::<String, Vec<(sundial::investment::WeaponSocketTypeChoice, bool)>>::new();
     for choice in choices {
         let owned = own.contains(&choice.socket_type);
-        if !owned && (choice.carriers < 2 || choice.compatible_plug_count == 0) {
+        if !owned && (choice.carriers == 1 || choice.compatible_plug_count == 0) {
             continue;
         }
         let label = [
@@ -1846,10 +1847,10 @@ impl BehaviorPins {
 /// perk no longer claimed.
 ///
 /// The build grafts these plugs too, so this changes nothing about the weapon that gets built.
-/// What it changes is when the author sees them: a behavior used to describe what it would do to
-/// the sockets later, which left the list on screen disagreeing with the weapon until it was
-/// built. Running every frame keeps the two in step through every way the choice can change,
-/// including deselecting the behavior and turning its perks off.
+/// What it changes is when the author sees them: the socket list on screen shows the claimed
+/// perks before the build, and so agrees with the weapon that will be built. Running every
+/// frame keeps the two in step through every way the choice can change, including deselecting
+/// the behavior and turning its perks off.
 pub(super) fn sync_behavior_socket_pins(
     recipe: &mut WeaponRecipe,
     pins: &mut BehaviorPins,
@@ -1879,8 +1880,8 @@ pub(super) fn sync_behavior_socket_pins(
     let mut required =
         crate::weapon::behavior::socket_pins(behaviors(), skip, &socket_types, &placed);
     let mut claimed = crate::weapon::behavior::claimed_plugs(behaviors(), skip);
-    // Variable damage carries The Fundamentals into a trait lane whether or not the element-switch
-    // behavior is listed, which is how the build reads it.
+    // Variable damage carries The Fundamentals into a trait lane whether or not the Damage Type
+    // Switch behavior is listed, which is how the build reads it.
     if recipe.overrides.variable_damage.is_some() {
         let fundamentals = crate::weapon::variable_damage::FUNDAMENTALS_PLUG_HASH;
         claimed.insert(fundamentals);

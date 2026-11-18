@@ -113,7 +113,7 @@ fn glyph_table(manager: &PackageManager) -> AuthoringResult<Vec<u8>> {
 /// loader publishes it. The existing theme binding reads the first vector directly, even
 /// when its presence bit is clear. A transparent vector supplies no visible theme.
 pub(crate) fn row_color(manager: &PackageManager, key: u32) -> AuthoringResult<Option<[u8; 3]>> {
-    let rows = crate::hud_icon::assets::table_rows(&glyph_table(manager)?)?;
+    let rows = crate::icon::hud::assets::table_rows(&glyph_table(manager)?)?;
     let Some(row) = rows.get(&key) else {
         return Ok(None);
     };
@@ -146,7 +146,7 @@ pub(crate) fn build(
     }
     let tag = TagHash(ability_hud::GLYPH_TABLE);
     let table = glyph_table(manager)?;
-    let stock = crate::hud_icon::assets::table_rows(&table)?;
+    let stock = crate::icon::hud::assets::table_rows(&table)?;
     let rows = added
         .into_iter()
         .map(|added| {
@@ -198,6 +198,6 @@ pub(crate) fn build(
         .collect::<AuthoringResult<Vec<_>>>()?;
     Ok(Some(ReplacementSpec {
         tag,
-        payload: crate::hud_icon::assets::insert_rows(table, stock, rows)?,
+        payload: crate::icon::hud::assets::insert_rows(table, stock, rows)?,
     }))
 }

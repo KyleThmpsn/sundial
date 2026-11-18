@@ -186,17 +186,11 @@ fn character_defaults(
             entry.runtime_entity,
         )
     {
-        // A vehicle saved before its seats rode keeps its driver choices and gains the rider roles
-        // of seats added since. Without them every added seat kept the stock turret pose.
-        for passenger in defaults.passengers {
-            if !saved
-                .passengers
-                .iter()
-                .any(|old| old.role == passenger.role)
-            {
-                saved.passengers.push(passenger);
-            }
-        }
+        // A saved vehicle keeps its driver choices. Its rider roles are derived from the source
+        // seats and no workbench control edits them, so they follow the current defaults. A vehicle
+        // saved before its seats rode gains them, and a role whose default pose changed takes the
+        // new one instead of keeping the pose it was saved with.
+        saved.passengers = defaults.passengers;
     }
     Ok(())
 }

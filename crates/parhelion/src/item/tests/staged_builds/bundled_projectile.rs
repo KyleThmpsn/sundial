@@ -2,15 +2,11 @@
 //! The failure model is dependency loss, shared mutable identities, wrong damage records,
 //! incompatible firing selection, missing loading links or stock donor mutation.
 use super::*;
-use sha2::{Digest, Sha256};
-use sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager;
+use sundial::package_authoring::runtime::load_runtime_entity_with_manager;
+use sundial::storage::sha256_hex;
 
 #[cfg(feature = "d2-model-importer")]
 mod imports;
-
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
 
 fn relative(bytes: &[u8], offset: usize) -> usize {
     offset
@@ -79,7 +75,10 @@ fn audit_graph(manager: &PackageManager, source: &PackageManager, root: u32) -> 
         );
         let payload = manager.read_tag(TagHash(tag)).unwrap();
         let original = source.read_tag(TagHash(template)).unwrap();
-        assert_eq!(digest(&original), node["source_sha256"].as_str().unwrap());
+        assert_eq!(
+            sha256_hex(&original),
+            node["source_sha256"].as_str().unwrap()
+        );
         assert_eq!(manager.read_tag(TagHash(template)).unwrap(), original);
         for link in node["patches"].as_array().unwrap() {
             let offset = link["offset"].as_u64().unwrap() as usize;
@@ -99,7 +98,7 @@ fn audit_graph(manager: &PackageManager, source: &PackageManager, root: u32) -> 
         }
         audit_values(template, &payload);
         records.push(serde_json::json!({"symbol":symbol,"template":template,"tag":tag,
-            "sha256":digest(&payload),"source_sha256":digest(&original),"reference":entry.reference}));
+            "sha256":sha256_hex(&payload),"source_sha256":sha256_hex(&original),"reference":entry.reference}));
     }
     assert_eq!(
         seen.len(),
@@ -193,7 +192,7 @@ fn stage(packages: &Path, output: &Path, recipes: Vec<crate::WeaponRecipe>) {
     let mut records = Vec::new();
     for recipe in &recipes {
         let item = recipe.identity.item_hash.parse_u32().unwrap();
-        let entity = load_weapon_runtime_entity_with_manager(&manager, item).unwrap();
+        let entity = load_runtime_entity_with_manager(&manager, item).unwrap();
         let bindings = weapon_component_bindings(&entity.payload, 0x5F0D_D954).unwrap();
         assert!(!bindings.is_empty());
         let mut fired = BTreeSet::new();
@@ -225,7 +224,7 @@ fn stage(packages: &Path, output: &Path, recipes: Vec<crate::WeaponRecipe>) {
             root
         );
         records.push(serde_json::json!({"item": item, "root": root,
-            "replication": replication, "sha256": digest(&payload),
+            "replication": replication, "sha256": sha256_hex(&payload),
             "nodes": audit_graph(&manager, &source, root)}));
     }
     for template in [0x80BB_D121, 0x8153_3F23, 0x8153_3F29, 0x80EF_3972] {
@@ -238,7 +237,7 @@ fn stage(packages: &Path, output: &Path, recipes: Vec<crate::WeaponRecipe>) {
     fs::create_dir(&emitted).unwrap();
     let paths = bundle.write_new(&emitted).unwrap();
     let packages = paths.iter().map(|path| serde_json::json!({
-        "file":path.file_name().unwrap().to_string_lossy(),"sha256":digest(&fs::read(path).unwrap())
+        "file":path.file_name().unwrap().to_string_lossy(),"sha256":sha256_hex(&fs::read(path).unwrap())
     })).collect::<Vec<_>>();
     fs::write(output.join("readback.json"), serde_json::to_vec_pretty(&serde_json::json!({
         "recipes": recipes, "weapons": records, "packages": packages, "stock_preserved": true,

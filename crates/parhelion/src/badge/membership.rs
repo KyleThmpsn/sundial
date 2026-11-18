@@ -90,7 +90,7 @@ pub(super) fn set_members(
                 std::mem::take(&mut graph.objective_strings),
                 pools,
                 &unlocks,
-                crate::package_profile::localization_table() as u32,
+                crate::package::profile::localization_table() as u32,
                 &class_layout,
             )?;
             graph.objectives = objectives;

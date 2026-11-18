@@ -104,7 +104,7 @@ fn tree_patches(
             }) {
                 continue;
             }
-            graph_patches.push(WeaponRuntimeResourcePatch {
+            graph_patches.push(RuntimeResourcePatch {
                 binding_hash: place.binding_hash,
                 resource_index: place.resource_index,
                 offset: place.offset,

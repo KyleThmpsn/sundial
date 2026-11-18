@@ -1,8 +1,8 @@
 //! Whole event preparation has one commit boundary for topology, bodies and allocation data.
 use super::{
     animation::Animation, camera::Camera, completion::Completion, feedback::Feedback, hud::Hud,
-    numeric::Numeric, particle::Particle, profile::Profile, query::Query, signal::Signal,
-    sound::Sound, spawn::Spawn, table::Table, *,
+    numeric::Numeric, particle::Particle, profile::Profile, query::Query, screen::Screen,
+    signal::Signal, sound::Sound, spawn::Spawn, table::Table, *,
 };
 use crate::d1_roi::{Source, dependency};
 
@@ -22,6 +22,7 @@ enum Body {
     Feedback(Box<Feedback>),
     Table(Table),
     Profile(Profile),
+    Screen(Screen),
     /// A caller-listed external event keeps its scheduled timing as a native delay.
     Omitted(NativeEvent),
 }
@@ -48,6 +49,14 @@ pub struct Bindings {
     /// Private feedback resources of query damage blocks and feedback events, by source resource.
     pub feedback: BTreeMap<u32, String>,
     pub hud_keys: Option<hud::Keys>,
+    /// Private screen color records, indexed by source record, and the stock record they start
+    /// from.
+    pub screens: BTreeMap<u32, String>,
+    pub screen_twin: Option<screen::Twin>,
+    /// Private lookup textures of screen color records, by source texture.
+    pub lookups: BTreeMap<u32, String>,
+    /// Private baked hulls of query cones, by the cone's three values.
+    pub cones: BTreeMap<[u32; 3], String>,
     pub inputs: BTreeMap<u32, u32>,
     pub locators: BTreeMap<u8, u8>,
     pub dependencies: Vec<dependency::Asset>,
@@ -92,6 +101,18 @@ impl Plan {
         for event in topology.events() {
             let read = || -> Result<Body> {
                 Ok(match (event.domain, event.class, event.kind) {
+                    // A caller that translates lens records lists `screen::OTHER_RECORDS`
+                    // in place of the kind, which keeps only records of another form as delays.
+                    (Domain::External, 0x8080052F, 20)
+                        if omitted.contains(&screen::OTHER_RECORDS)
+                            && !Screen::qualifies(source, owner, event.offset)? =>
+                    {
+                        Body::Omitted(NativeEvent {
+                            source_class: 0x8080052F,
+                            source_kind: 20,
+                            class: 0x808093CB,
+                        })
+                    }
                     (Domain::External, class, kind) if omitted.contains(&(class, kind)) => {
                         Body::Omitted(NativeEvent {
                             source_class: class,
@@ -150,6 +171,9 @@ impl Plan {
                     }
                     (Domain::External, 0x80802045, 18) => {
                         Body::Camera(Camera::read(source, owner, event.offset)?)
+                    }
+                    (Domain::External, 0x8080052F, 20) => {
+                        Body::Screen(Screen::read(source, owner, event.offset)?)
                     }
                     (Domain::External, 0x80802891, 7) => {
                         Body::Feedback(Box::new(Feedback::read(source, owner, event.offset)?))
@@ -246,6 +270,39 @@ impl Plan {
             .collect()
     }
 
+    /// Source screen color records of the lens form.
+    pub fn screens(&self) -> BTreeSet<u32> {
+        self.bodies
+            .values()
+            .filter_map(|body| match body {
+                Body::Screen(event) => Some(event.resource()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Source lookup textures the screen color records name.
+    pub fn lookups(&self) -> BTreeSet<u32> {
+        self.bodies
+            .values()
+            .filter_map(|body| match body {
+                Body::Screen(event) => event.lookup(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The value triples of the cones the queries search.
+    pub fn cones(&self) -> BTreeSet<[u32; 3]> {
+        self.bodies
+            .values()
+            .filter_map(|body| match body {
+                Body::Query(event) => event.cone().map(|cone| cone.key()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn particles(&self) -> BTreeSet<u32> {
         self.bodies
             .values()
@@ -327,6 +384,7 @@ impl Plan {
                 Body::Feedback(event) => Some(event.mapping()),
                 Body::Table(event) => Some(event.mapping()),
                 Body::Profile(event) => Some(event.mapping()),
+                Body::Screen(event) => Some(event.mapping()),
                 Body::Omitted(event) => Some((offset, *event)),
             })
             .collect()
@@ -382,6 +440,16 @@ impl Plan {
                 && bindings.overrides.is_empty() == bindings.hud_keys.is_none(),
             "Sequence HUD bindings do not cover exactly the source resources"
         );
+        ensure!(
+            self.screens() == bindings.screens.keys().copied().collect()
+                && bindings.screens.is_empty() == bindings.screen_twin.is_none()
+                && self.lookups() == bindings.lookups.keys().copied().collect(),
+            "Sequence screen bindings do not cover exactly the source records"
+        );
+        ensure!(
+            self.cones() == bindings.cones.keys().copied().collect(),
+            "Sequence cone hull bindings do not cover exactly the source cones"
+        );
         let mut dependencies = bindings.dependencies.clone();
         let mut converted = BTreeSet::new();
         for body in self.bodies.values() {
@@ -410,6 +478,22 @@ impl Plan {
                     )?,
                 );
             }
+            if let Body::Screen(event) = body
+                && converted.insert(event.resource())
+            {
+                dependencies.extend(
+                    event.translate(
+                        &bindings.screens[&event.resource()],
+                        bindings
+                            .screen_twin
+                            .as_ref()
+                            .context("Native screen color record is absent")?,
+                        event
+                            .lookup()
+                            .map(|texture| bindings.lookups[&texture].as_str()),
+                    )?,
+                );
+            }
             if let Body::Table(event) = body
                 && !dependencies.iter().any(|a| a.symbol == event.symbol())
             {
@@ -433,11 +517,18 @@ impl Plan {
                     .chain(bindings.graphs.values())
                     .chain(bindings.profiles.values())
                     .chain(bindings.feedback.values())
+                    .chain(bindings.lookups.values())
+                    .chain(bindings.cones.values())
                     .any(|s| *s == asset.symbol)
             }),
             "Particle systems, cues, graphs, profiles and feedback belong to their own closures"
         );
-        let mut roots = bindings.overrides.values().cloned().collect::<Vec<_>>();
+        let mut roots = bindings
+            .overrides
+            .values()
+            .chain(bindings.screens.values())
+            .cloned()
+            .collect::<Vec<_>>();
         roots.extend(
             self.bodies
                 .values()
@@ -464,6 +555,12 @@ impl Plan {
                     .values()
                     .map(|symbol| (symbol.clone(), 0x80809C0F)),
             )
+            .chain(
+                bindings
+                    .lookups
+                    .values()
+                    .map(|symbol| (symbol.clone(), screen::LOOKUP)),
+            )
             .collect();
         if roots.is_empty() {
             ensure!(
@@ -472,7 +569,12 @@ impl Plan {
             );
         } else {
             dependency::validate_external(&dependencies, &roots, &external)?;
-            for (root, class) in bindings.overrides.values().map(|s| (s, 0x80803F26)) {
+            for (root, class) in bindings
+                .overrides
+                .values()
+                .map(|s| (s, 0x80803F26))
+                .chain(bindings.screens.values().map(|s| (s, 0x8080707E)))
+            {
                 let asset = dependencies
                     .iter()
                     .find(|asset| &asset.symbol == root)
@@ -575,20 +677,32 @@ impl Plan {
                     to,
                     &bindings.overrides[&event.resource()],
                 )?),
+                Body::Screen(event) => resources.push(event.write(
+                    &mut output,
+                    to,
+                    &bindings.screens[&event.resource()],
+                )?),
                 Body::Particle(event) => resources.push(event.write(
                     &mut output,
                     to,
                     &bindings.particles[&event.system()],
                     &bindings.locators,
                 )?),
-                Body::Query(event) => resources.extend(event.write(
-                    &mut output,
-                    to,
-                    &bindings.profiles,
-                    (&bindings.graphs, &bindings.stock_graphs),
-                    event.feedback().map(|tag| bindings.feedback[&tag].as_str()),
-                    (&bindings.locators, &bindings.inputs),
-                )?),
+                Body::Query(event) => resources.extend(
+                    event.write(
+                        &mut output,
+                        to,
+                        &bindings.profiles,
+                        (&bindings.graphs, &bindings.stock_graphs),
+                        (
+                            event.feedback().map(|tag| bindings.feedback[&tag].as_str()),
+                            event
+                                .cone()
+                                .map(|cone| bindings.cones[&cone.key()].as_str()),
+                        ),
+                        (&bindings.locators, &bindings.inputs),
+                    )?,
+                ),
                 Body::Spawn(event) => match bindings.stock_graphs.get(&event.graph()) {
                     Some(&graph) => {
                         event.write_stock(&mut output, to, graph, &bindings.locators)?

@@ -1,5 +1,5 @@
 use super::*;
-use crate::package_profile::PARHELION_ASSET_PACKAGE;
+use crate::package::profile::PARHELION_ASSET_PACKAGE;
 
 fn write_payload(run: &StagedRun) {
     fs::write(
@@ -10,9 +10,9 @@ fn write_payload(run: &StagedRun) {
     fs::write(run.directory.join(MANIFEST_FILE_NAME), b"{}").unwrap();
     fs::create_dir(run.directory.join("recipes")).unwrap();
     fs::write(run.directory.join("recipes/weapon.json"), b"{}").unwrap();
-    crate::merge_data::stage(
+    crate::package::merge_data::stage(
         &run.directory,
-        &crate::merge_data::MergeData {
+        &crate::package::merge_data::MergeData {
             sidecars: vec![(
                 PARHELION_ASSET_PACKAGE.file_name.replace(".pkg", ".merge"),
                 b"synthetic merge data".to_vec(),

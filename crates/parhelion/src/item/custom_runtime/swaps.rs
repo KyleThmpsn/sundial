@@ -21,12 +21,12 @@ pub(in crate::item) fn swap_patches(
     swaps: &[crate::subclass::SpawnSwap],
     (colors, values): (
         &BTreeMap<u32, palettes::ColorPatches>,
-        &BTreeMap<u32, Vec<WeaponRuntimeValueOverride>>,
+        &BTreeMap<u32, Vec<RuntimeValueOverride>>,
     ),
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
-) -> AuthoringResult<BTreeMap<u32, Vec<WeaponRuntimeResourcePatch>>> {
-    let mut patches = BTreeMap::<u32, Vec<WeaponRuntimeResourcePatch>>::new();
+) -> AuthoringResult<BTreeMap<u32, Vec<RuntimeResourcePatch>>> {
+    let mut patches = BTreeMap::<u32, Vec<RuntimeResourcePatch>>::new();
     let mut copies = BTreeMap::<u32, TagHash>::new();
     for swap in swaps {
         for tag in [swap.replaced, swap.replacement] {
@@ -85,7 +85,7 @@ pub(in crate::item) fn swap_patches(
             patches
                 .entry(swap.graph)
                 .or_default()
-                .push(WeaponRuntimeResourcePatch {
+                .push(RuntimeResourcePatch {
                     binding_hash: place.binding_hash,
                     resource_index: place.resource_index,
                     offset: place.offset,

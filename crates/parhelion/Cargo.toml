@@ -13,6 +13,10 @@ autoexamples = false
 [features]
 default = []
 d2-model-importer = ["dep:parhelion-import"]
+# Tools menu commands that export a staged build for Dawn's installer. The feature compiles the
+# local `crates/parhelion-dawn` sources into this crate, so it only builds where that folder
+# exists. A build without the feature needs none of it.
+dawn = ["dep:flate2"]
 
 [lints]
 workspace = true
@@ -20,6 +24,7 @@ workspace = true
 [dependencies]
 anyhow = "1"
 parhelion-import = { path = "../parhelion-import", optional = true }
+flate2 = { version = "1.1.10", optional = true }
 fs2 = "0.4.3"
 hex = "0.4.3"
 base64 = "0.23.1"

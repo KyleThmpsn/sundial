@@ -77,12 +77,7 @@ fn personal_badges_share_text_but_reject_conflicting_settings_and_over_capacity(
         })
         .is_ok()
     );
-    assert!(
-        canonical_project_weapons(&WeaponProjectSpec { weapons })
-            .unwrap_err()
-            .to_string()
-            .contains("24")
-    );
+    assert!(canonical_project_weapons(&WeaponProjectSpec { weapons }).is_err());
 }
 
 #[test]

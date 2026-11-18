@@ -37,7 +37,7 @@ pub(in crate::item) fn attachment_patches(
     manager: &PackageManager,
     extensions: &[Extension],
     entity: &[u8],
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let mut patches = Vec::new();
     for extension in extensions {
         patches.extend(attachments::patches(
@@ -54,7 +54,7 @@ pub(in crate::item) fn input_patches(
     manager: &PackageManager,
     extensions: &[Extension],
     entity: &[u8],
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let selected = extensions
         .iter()
         .filter(|extension| extension.secondary_input_only)

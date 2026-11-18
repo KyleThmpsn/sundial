@@ -60,7 +60,10 @@ pub(super) struct Layout {
 pub(super) struct Cells {
     descriptors: Vec<u8>,
     clusters: Vec<u8>,
+    /// The crossing regions, in priority order. Lighting cells are not among them.
     regions: Vec<tome::Region>,
+    /// The division that tiles the lighting cells' bounds, and the first cell's cluster.
+    division: Option<(tome::Division, Bounds, u32)>,
     /// Native probes for the lighting clusters appended after the crossing clusters.
     lighting_probes: Vec<super::lighting::Probe>,
     /// Probe choices for the crossing clusters that hold probes, by cluster.
@@ -70,16 +73,14 @@ pub(super) struct Cells {
 impl Cells {
     /// A lighting cell: a cluster of its own with cluster 0's row, no crossing, at its middle. A
     /// lit object finds the cell it stands in through its connected-region query, and the
-    /// occlusion record assigns each cluster a probe ([`Cells::lighting`]).
+    /// occlusion record assigns each cluster a probe ([`Cells::lighting`]). The tome places the
+    /// cell by the plan's division, so cells are pushed in the plan's order.
     fn push_lighting(&mut self, cell: lighting::Cell, probes: &[[f32; 4]]) {
-        let bounds = cell.bounds;
-        let cluster = (self.clusters.len() / 20) as u32;
         let mut row = self.clusters[..20].to_vec();
-        for (k, value) in bounds.center().into_iter().enumerate() {
+        for (k, value) in cell.bounds.center().into_iter().enumerate() {
             row[k * 4..k * 4 + 4].copy_from_slice(&value.to_le_bytes());
         }
         self.clusters.extend(row);
-        self.regions.push(tome::Region { bounds, cluster });
         self.lighting_probes.push(super::lighting::Probe::anchored(
             probes[cell.probe],
             cell.gradient,
@@ -658,6 +659,7 @@ impl Layout {
             descriptors: Vec::new(),
             clusters,
             regions: Vec::new(),
+            division: None,
             lighting_probes: Vec::new(),
             crossing_probes: BTreeMap::new(),
         };
@@ -730,8 +732,12 @@ impl Layout {
             }
         }
         let root = object_extent(area, visible);
-        for cell in lighting::cells(area, root, probes, structure, &cells.regions)? {
-            cells.push_lighting(cell, probes);
+        if let Some(plan) = lighting::cells(area, root, probes, structure, &cells.regions)? {
+            let base = (cells.clusters.len() / 20) as u32;
+            for cell in plan.cells {
+                cells.push_lighting(cell, probes);
+            }
+            cells.division = Some((plan.division, plan.bounds, base));
         }
         Ok(cells)
     }
@@ -760,9 +766,17 @@ impl Layout {
             descriptors,
             clusters,
             regions,
+            division,
             lighting_probes: _,
             crossing_probes: _,
         } = cells;
+        let lighting = division
+            .as_ref()
+            .map(|(division, bounds, base)| tome::Lighting {
+                division,
+                bounds: *bounds,
+                base: *base,
+            });
         let objects = visible
             .iter()
             .map(|object| Bounds {
@@ -771,20 +785,27 @@ impl Layout {
             })
             .collect::<Vec<_>>();
         bounds = object_extent(bounds, visible);
-        for extent in regions.iter().map(|region| region.bounds) {
+        // The lighting cells tile their bounds, so growing around those covers every cell.
+        for extent in regions
+            .iter()
+            .map(|region| region.bounds)
+            .chain(lighting.map(|lighting| lighting.bounds))
+        {
             for k in 0..3 {
                 bounds.minimum[k] = bounds.minimum[k].min(extent.minimum[k] - 16.);
                 bounds.maximum[k] = bounds.maximum[k].max(extent.maximum[k] + 16.);
             }
         }
-        let raw =
-            tome::encode(bounds, &regions, clusters.len() / 20, &objects).map_err(|error| {
+        let raw = tome::encode(bounds, &regions, lighting, clusters.len() / 20, &objects).map_err(
+            |error| {
                 error.context(format!(
-                    "Area {bubble} spatial tome of {} regions and {} objects",
+                    "Area {bubble} spatial tome of {} regions, {} clusters and {} objects",
                     regions.len(),
+                    clusters.len() / 20,
                     objects.len()
                 ))
-            })?;
+            },
+        )?;
         let mut metadata = self.metadata.1[..0x88].to_vec();
         metadata[0x18..0x78].fill(0);
         metadata[0x78..0x88].fill(0xFF);

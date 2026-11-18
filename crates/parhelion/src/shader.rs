@@ -32,7 +32,9 @@ pub(crate) fn rows(channels: impl IntoIterator<Item = i8>) -> [Vec<WeaponDyeRefe
     [rows.clone(), rows, vec![]]
 }
 
-pub(crate) fn source_icon(recipe: &WeaponRecipe) -> Result<crate::icon_edit::ImportedIcon, String> {
+pub(crate) fn source_icon(
+    recipe: &WeaponRecipe,
+) -> Result<crate::icon::edit::ImportedIcon, String> {
     crate::imported::source_icon(recipe)
 }
 

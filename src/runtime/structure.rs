@@ -58,8 +58,8 @@ pub struct NativeStructureField {
     /// Offset within the declaring native object, independent of its package placement.
     pub schema_offset: usize,
     /// Checked traversal from the selected root, independent of package placement.
-    pub path: Vec<WeaponRuntimePathElement>,
-    pub storage: Option<(WeaponRuntimeValueKind, u8)>,
+    pub path: Vec<RuntimePathElement>,
+    pub storage: Option<(RuntimeValueKind, u8)>,
     pub label: String,
     pub representation: String,
     pub value: String,
@@ -95,39 +95,39 @@ pub(super) fn inspect(
     result
 }
 
-fn scalar(code: u8, schema: u32) -> Option<WeaponRuntimeValueKind> {
+fn scalar(code: u8, schema: u32) -> Option<RuntimeValueKind> {
     // These identifier primitives have an independent native type mapping.
     // In particular, code zero alone does not imply an eight-byte value.
     if (code, schema) == (0, 0x8080_0012) {
-        return Some(WeaponRuntimeValueKind::HexIdentifier { bits: 64 });
+        return Some(RuntimeValueKind::HexIdentifier { bits: 64 });
     }
     // Codes verified against the native primitive codec declarations in the same image.
     Some(match code {
-        2 => WeaponRuntimeValueKind::Boolean,
-        3..=6 => WeaponRuntimeValueKind::SignedInteger {
+        2 => RuntimeValueKind::Boolean,
+        3..=6 => RuntimeValueKind::SignedInteger {
             bits: 8 << (code - 3),
         },
-        7..=10 => WeaponRuntimeValueKind::UnsignedInteger {
+        7..=10 => RuntimeValueKind::UnsignedInteger {
             bits: 8 << (code - 7),
         },
-        11 => WeaponRuntimeValueKind::Float32,
-        13..=16 | 42 => WeaponRuntimeValueKind::Vector4Float32,
+        11 => RuntimeValueKind::Float32,
+        13..=16 | 42 => RuntimeValueKind::Vector4Float32,
         _ => return None,
     })
 }
 
-fn scalar_text(value: &WeaponRuntimeValue) -> String {
+fn scalar_text(value: &RuntimeValue) -> String {
     match value {
-        WeaponRuntimeValue::Boolean(value) => value.to_string(),
-        WeaponRuntimeValue::Signed(value) => value.to_string(),
-        WeaponRuntimeValue::Unsigned(value) => value.to_string(),
-        WeaponRuntimeValue::Float32Bits(bits) => {
+        RuntimeValue::Boolean(value) => value.to_string(),
+        RuntimeValue::Signed(value) => value.to_string(),
+        RuntimeValue::Unsigned(value) => value.to_string(),
+        RuntimeValue::Float32Bits(bits) => {
             format!("{} (0x{bits:08X})", f32::from_bits(*bits))
         }
-        WeaponRuntimeValue::Float64Bits(bits) => {
+        RuntimeValue::Float64Bits(bits) => {
             format!("{} (0x{bits:016X})", f64::from_bits(*bits))
         }
-        WeaponRuntimeValue::Vector4Float32Bits(bits) => bits
+        RuntimeValue::Vector4Float32Bits(bits) => bits
             .iter()
             .map(|bits| format!("{} (0x{bits:08X})", f32::from_bits(*bits)))
             .collect::<Vec<_>>()
@@ -192,28 +192,27 @@ fn walk(
             if active == Some(0) {
                 return Ok(());
             }
-            let mut put =
-                |offset: usize,
-                 representation: String,
-                 value: String,
-                 storage: Option<(WeaponRuntimeValueKind, u8)>| {
-                    if fields.len() >= MAX_FIELDS {
-                        truncated = true;
-                        return;
-                    }
-                    fields
-                        .entry((offset, representation.clone()))
-                        .or_insert_with(|| NativeStructureField {
-                            owner_offset: offset,
-                            schema,
-                            schema_offset: offset - start,
-                            path: native::field_path(&path, schema, offset - start),
-                            label: label(schema, offset - start, names),
-                            representation,
-                            value,
-                            storage,
-                        });
-                };
+            let mut put = |offset: usize,
+                           representation: String,
+                           value: String,
+                           storage: Option<(RuntimeValueKind, u8)>| {
+                if fields.len() >= MAX_FIELDS {
+                    truncated = true;
+                    return;
+                }
+                fields
+                    .entry((offset, representation.clone()))
+                    .or_insert_with(|| NativeStructureField {
+                        owner_offset: offset,
+                        schema,
+                        schema_offset: offset - start,
+                        path: native::field_path(&path, schema, offset - start),
+                        label: label(schema, offset - start, names),
+                        representation,
+                        value,
+                        storage,
+                    });
+            };
             managed.extend(declaration.fields.iter().filter_map(|&(relative, kind)| {
                 start.checked_add(relative).map(|at| {
                     (
@@ -279,24 +278,22 @@ fn walk(
             for &(relative, storage, _) in labels::native_fields(schema, declaration.size)? {
                 let at = start + relative;
                 let (kind, name) = match storage {
-                    labels::Storage::Float32 => (WeaponRuntimeValueKind::Float32, "Float32"),
-                    labels::Storage::Boolean => (WeaponRuntimeValueKind::Boolean, "Boolean"),
+                    labels::Storage::Float32 => (RuntimeValueKind::Float32, "Float32"),
+                    labels::Storage::Boolean => (RuntimeValueKind::Boolean, "Boolean"),
                     labels::Storage::Byte => (
-                        WeaponRuntimeValueKind::UnsignedInteger { bits: 8 },
+                        RuntimeValueKind::UnsignedInteger { bits: 8 },
                         "Unsigned Byte",
                     ),
                     labels::Storage::Signed16 => (
-                        WeaponRuntimeValueKind::SignedInteger { bits: 16 },
+                        RuntimeValueKind::SignedInteger { bits: 16 },
                         "Signed 16-Bit Integer",
                     ),
-                    labels::Storage::Key => (
-                        WeaponRuntimeValueKind::HexIdentifier { bits: 32 },
-                        "Name Key",
-                    ),
-                    labels::Storage::Flags32 => (
-                        WeaponRuntimeValueKind::BitFlags { bits: 32 },
-                        "32-Bit Flags",
-                    ),
+                    labels::Storage::Key => {
+                        (RuntimeValueKind::HexIdentifier { bits: 32 }, "Name Key")
+                    }
+                    labels::Storage::Flags32 => {
+                        (RuntimeValueKind::BitFlags { bits: 32 }, "32-Bit Flags")
+                    }
                 };
                 put(
                     at,

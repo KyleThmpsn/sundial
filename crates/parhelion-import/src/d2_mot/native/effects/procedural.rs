@@ -262,13 +262,10 @@ pub(super) fn validate_source(
                 && entity.u32(**at + 28).ok() == Some(0x808098D2)
         })
         .collect::<Vec<_>>();
-    if providers.len() != 1 {
-        // This inspects the source entity, so every donor reaches the same
-        // verdict and the loop should not keep trying.
-        return Err(crate::d2_mot::source_limit(anyhow::anyhow!(
-            "source bank lacks one variable provider"
-        )));
-    }
+    ensure!(
+        providers.len() == 1,
+        "source bank lacks one variable provider"
+    );
     let variable_tag = entity.u32(*providers[0] + 24)?;
     let variable = format!("{variable_tag:08X}");
     let source = source_assets.raw(&variable)?;
@@ -278,15 +275,19 @@ pub(super) fn validate_source(
         source.u32(instance - 4)? == 0x80802C62 && source.u32(schema - 4)? == 0x80802C63,
         "source variable component type differs"
     );
+    // The component names its output twice and its one input once. Weapons differ in both
+    // names, so the bank declarations below are found by them, not by a fixed pair.
+    let output = source.u32(schema + 0x68)?;
     ensure!(
-        source.u32(schema + 0x68)? == 0x6E8F4D11 && source.u32(schema + 0xB0)? == 0x6E8F4D11,
+        output != 0x811C9DC5 && source.u32(schema + 0xB0)? == output,
         "source variable output name differs"
     );
     let inputs = source.array(instance + 0xA0, 48, Some(0x80809590))?;
     ensure!(inputs.len() == 1, "source variable input count differs");
     let link = source.u64(inputs[0] + 8)? as usize;
+    let control = source.u32(link + 32)?;
     ensure!(
-        source.u32(link + 32)? == 0x64590948 && source.u64(link + 8)? == inputs[0] as u64,
+        control != 0x811C9DC5 && control != output && source.u64(link + 8)? == inputs[0] as u64,
         "source variable input differs"
     );
     let runtime = bank.array(bank.pointer(16)? + 0x30, 80, Some(0x808095AF))?;
@@ -301,11 +302,11 @@ pub(super) fn validate_source(
     let controls = rows
         .iter()
         .enumerate()
-        .filter(|(_, at)| bank.u32(**at).ok() == Some(0x64590948))
+        .filter(|(_, at)| bank.u32(**at).ok() == Some(control))
         .collect::<Vec<_>>();
     let aliases = rows
         .iter()
-        .filter(|at| bank.u32(**at).ok() == Some(0x6E8F4D11))
+        .filter(|at| bank.u32(**at).ok() == Some(output))
         .collect::<Vec<_>>();
     ensure!(
         controls.len() == 1 && aliases.len() == 1,
@@ -334,6 +335,67 @@ pub(super) fn validate_source(
         "source variable resource feedback is missing"
     );
     Ok(variable)
+}
+
+/// The named-parameter component (`80808760`) that feeds bank channel `name`, when one does. A
+/// storage-less row can read a parameter of its own name through one of the bank's resource
+/// inputs. Nothing in the weapon's entity writes that parameter, so the channel rests at the
+/// declared value. The adapter emits only a zero resting vector.
+pub(super) fn parameter_source(
+    source_assets: &Source,
+    bank: &Payload,
+    entity: &Payload,
+    name: u32,
+) -> Result<Option<String>> {
+    let bank_tag = bank.u32(bank.pointer(16)?)?;
+    let inputs = bank.array(bank.pointer(24)? + 0x138, 32, Some(0x808095B0))?;
+    let mut found = Vec::new();
+    for at in entity.array(0x18, 56, Some(0x80809A8F))? {
+        if entity.u32(at)? != bank_tag
+            || entity.u32(at + 4)? != 0x808095B0
+            || entity.u32(at + 28)? != 0x808098D2
+            || !inputs.contains(&usize::try_from(entity.u64(at + 8)?)?)
+        {
+            continue;
+        }
+        let tag = format!("{:08X}", entity.u32(at + 24)?);
+        let component = source_assets.raw(&tag)?;
+        let instance = component.pointer(16)?;
+        let definition = component.pointer(24)?;
+        if instance < 4
+            || definition < 4
+            || component.u32(instance - 4)? != 0x80808760
+            || component.u32(definition - 4)? != 0x80808757
+        {
+            continue;
+        }
+        let target = usize::try_from(entity.u64(at + 32)?)?;
+        for declaration in component.array(definition + 0xB8, 80, Some(0x8080875D))? {
+            if declaration + 16 == target && component.u32(declaration + 48)? == name {
+                found.push((tag.clone(), component.clone(), declaration));
+            }
+        }
+    }
+    let Some((tag, component, declaration)) = found.pop() else {
+        return Ok(None);
+    };
+    ensure!(
+        found.is_empty(),
+        "source channel has several parameter providers"
+    );
+    let input = usize::try_from(component.u64(declaration + 8)?)?;
+    let value = component.bytes::<16>(declaration + 64)?;
+    ensure!(
+        component.u32(declaration + 52)? == 1
+            && component.u64(declaration + 56)? == 0
+            && component.bytes::<16>(input + 32)? == value,
+        "source parameter mode or initial value differs"
+    );
+    ensure!(
+        value == [0; 16],
+        "source parameter {name:08X} rests at a nonzero value"
+    );
+    Ok(Some(tag))
 }
 
 fn template_bank(c: &Effect) -> Result<Payload> {

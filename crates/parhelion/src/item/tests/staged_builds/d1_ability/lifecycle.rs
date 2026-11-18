@@ -105,7 +105,7 @@ pub(super) fn readback(
         }
         evidence.push(
             json!({"occurrence":occurrence,"source":source_tag,"native":tag,
-            "source_count":rows.len(),"methods":readback,"sha256":sha(&native.0)}),
+            "source_count":rows.len(),"methods":readback,"sha256":sha256_hex(&native.0)}),
         );
     }
     assert!(!evidence.is_empty(), "required lifecycle corpus is empty");

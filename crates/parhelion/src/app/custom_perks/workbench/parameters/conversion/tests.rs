@@ -46,14 +46,14 @@ fn synthetic_action(probability: f32) -> Vec<u8> {
 }
 
 /// The fixture editor state over a synthetic action, with one component edit in the draft.
-fn synthetic_editor(payload: &[u8]) -> (PrivatePerkRuntimeGraph, WeaponRuntimeValueOverride) {
+fn synthetic_editor(payload: &[u8]) -> (PrivatePerkRuntimeGraph, RuntimeValueOverride) {
     let mut loaded = super::super::tests::fixture();
     loaded.action_payload = payload.to_vec();
     loaded.graphs[0].1.scope_fields();
     let field = loaded.graphs[0].1.fields().next().unwrap();
-    let edit = WeaponRuntimeValueOverride {
+    let edit = RuntimeValueOverride {
         locator: field.locator.clone(),
-        value: WeaponRuntimeValue::Bytes([4.25f32.to_le_bytes(), [0; 4]].concat()),
+        value: RuntimeValue::Bytes([4.25f32.to_le_bytes(), [0; 4]].concat()),
     };
     (loaded, edit)
 }
@@ -68,7 +68,7 @@ fn native_fallback_keeps_every_ending_and_component_edit_when_the_typed_model_re
     editor.draft.push(edit.clone());
     let input = editor.conversion_input();
     let refusal = typed_program(&loaded, &input, &payload).unwrap_err();
-    assert!(refusal.contains("probability"), "{refusal}");
+    assert!(refusal.contains("chance"), "{refusal}");
     let program = native_program(&loaded, &input, &payload, [ENTITY]).unwrap();
     let emitted = program.native.as_ref().unwrap().graph.emit().unwrap();
     let decoded = action::decode(&emitted).unwrap();

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{hud_icon::HudImage, icon_edit::ImportedIcon, presentation::Artwork};
+use crate::{icon::edit::ImportedIcon, icon::hud::HudImage, presentation::Artwork};
 
 #[test]
 fn extreme_aspect_imports_render_the_center_at_canvas_size() {

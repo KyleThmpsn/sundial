@@ -4,7 +4,7 @@
 //! build copies that graph privately with these values, along with each graph below it that one
 //! of them changes, and every block that fires the stock graph fires the copy. The stock graph and
 //! every other weapon firing it stay as they are.
-use sundial::package_authoring::runtime::WeaponRuntimeValueOverride;
+use sundial::package_authoring::runtime::RuntimeValueOverride;
 
 /// A repository-owned native projectile graph carried with an attached private perk.
 pub use sundial::package_authoring::sandbox_perk::program::projectile::Dependency as Preset;
@@ -64,5 +64,5 @@ pub struct Edits {
     /// another.
     pub graph: u32,
     /// Each value names its graph: the firing graph, or one it spawns.
-    pub values: Vec<WeaponRuntimeValueOverride>,
+    pub values: Vec<RuntimeValueOverride>,
 }

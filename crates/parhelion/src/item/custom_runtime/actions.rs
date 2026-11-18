@@ -15,7 +15,7 @@ pub(super) fn author(
     actions: &[(AnimationAction, Profile)],
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     if actions.is_empty() {
         return Ok(Vec::new());
     }

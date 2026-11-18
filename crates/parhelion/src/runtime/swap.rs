@@ -10,9 +10,8 @@ use sundial::{
     package_authoring::{
         entity::{coupled_weapon_component_bindings, weapon_component_bindings},
         runtime::{
-            WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeValueKind,
-            WeaponRuntimeValueOverride, encode_weapon_runtime_value, resolve_weapon_runtime_field,
-            runtime_fields_share_semantics,
+            RuntimeField, RuntimeFieldLocator, RuntimeValueKind, RuntimeValueOverride,
+            encode_runtime_value, resolve_runtime_field, runtime_fields_share_semantics,
         },
     },
 };
@@ -77,7 +76,7 @@ pub(crate) fn preview(
     let pattern = donor
         .weapon_pattern_index
         .ok_or("The donor has no active runtime row")?;
-    let selected = load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, pattern)?;
+    let selected = load_runtime_entity_at_pattern_index_with_manager(&manager, pattern)?;
     let mut after = recipe.clone();
     let mut after_key = key.clone();
     replace_group(
@@ -93,7 +92,7 @@ pub(crate) fn preview(
     let source = load_effective_runtime_entity(&manager, key).ok();
     let graph = (!recipe.overrides.runtime_values.is_empty())
         .then(|| {
-            load_weapon_runtime_graph_for_entity(
+            load_runtime_graph_for_entity(
                 &manager,
                 target.item_hash,
                 target.pattern_global_id_hash,
@@ -125,12 +124,12 @@ pub(crate) fn preview(
 }
 
 fn changed(
-    source: Option<&WeaponRuntimeEntitySource>,
-    target: &WeaponRuntimeEntitySource,
+    source: Option<&RuntimeEntitySource>,
+    target: &RuntimeEntitySource,
     binding: u32,
     index: u16,
 ) -> bool {
-    let identity = |entity: &WeaponRuntimeEntitySource| {
+    let identity = |entity: &RuntimeEntitySource| {
         weapon_component_bindings(&entity.payload, binding)
             .ok()?
             .get(usize::from(index))
@@ -147,17 +146,14 @@ fn changed(
         .is_none_or(|before| Some(before) != identity(target))
 }
 
-fn carries_value(kind: &WeaponRuntimeValueKind) -> bool {
+fn carries_value(kind: &RuntimeValueKind) -> bool {
     !matches!(
         kind,
-        WeaponRuntimeValueKind::FixedBytes { .. } | WeaponRuntimeValueKind::HexIdentifier { .. }
+        RuntimeValueKind::FixedBytes { .. } | RuntimeValueKind::HexIdentifier { .. }
     )
 }
 
-fn portable_target<'a>(
-    source: &WeaponRuntimeField,
-    graph: &'a WeaponRuntimeGraph,
-) -> Option<&'a WeaponRuntimeField> {
+fn portable_target<'a>(source: &RuntimeField, graph: &'a RuntimeGraph) -> Option<&'a RuntimeField> {
     let locator = &source.locator;
     let candidates = graph
         .fields()
@@ -184,28 +180,28 @@ fn portable_target<'a>(
 
 fn transfer_value(
     manager: &PackageManager,
-    source: Option<&WeaponRuntimeEntitySource>,
-    target: &WeaponRuntimeEntitySource,
-    graph: Option<&WeaponRuntimeGraph>,
-    value: &WeaponRuntimeValueOverride,
-) -> Option<(WeaponRuntimeValueOverride, Option<String>)> {
+    source: Option<&RuntimeEntitySource>,
+    target: &RuntimeEntitySource,
+    graph: Option<&RuntimeGraph>,
+    value: &RuntimeValueOverride,
+) -> Option<(RuntimeValueOverride, Option<String>)> {
     let locator = &value.locator;
-    if let Ok(resolved) = resolve_weapon_runtime_field(manager, &target.payload, locator)
+    if let Ok(resolved) = resolve_runtime_field(manager, &target.payload, locator)
         && (!changed(
             source,
             target,
             locator.binding_hash.get(),
             locator.resource_index,
         ) || carries_value(&resolved.field.kind))
-        && encode_weapon_runtime_value(&resolved.field.kind, &value.value).is_ok()
+        && encode_runtime_value(&resolved.field.kind, &value.value).is_ok()
     {
         return Some((value.clone(), None));
     }
-    let original = resolve_weapon_runtime_field(manager, &source?.payload, locator).ok()?;
+    let original = resolve_runtime_field(manager, &source?.payload, locator).ok()?;
     let field = portable_target(&original.field, graph?)?;
-    encode_weapon_runtime_value(&field.kind, &value.value).ok()?;
+    encode_runtime_value(&field.kind, &value.value).ok()?;
     Some((
-        WeaponRuntimeValueOverride {
+        RuntimeValueOverride {
             locator: field.locator.clone(),
             value: value.value.clone(),
         },
@@ -215,11 +211,11 @@ fn transfer_value(
 
 fn setting_label(
     manager: &PackageManager,
-    source: Option<&WeaponRuntimeEntitySource>,
-    locator: &WeaponRuntimeFieldLocator,
+    source: Option<&RuntimeEntitySource>,
+    locator: &RuntimeFieldLocator,
 ) -> String {
     source
-        .and_then(|source| resolve_weapon_runtime_field(manager, &source.payload, locator).ok())
+        .and_then(|source| resolve_runtime_field(manager, &source.payload, locator).ok())
         .map_or_else(
             || {
                 format!(
@@ -233,9 +229,9 @@ fn setting_label(
 
 fn transfer_settings(
     manager: &PackageManager,
-    source: Option<&WeaponRuntimeEntitySource>,
-    target: &WeaponRuntimeEntitySource,
-    graph: Option<&WeaponRuntimeGraph>,
+    source: Option<&RuntimeEntitySource>,
+    target: &RuntimeEntitySource,
+    graph: Option<&RuntimeGraph>,
     result: &mut Preview,
 ) {
     let values = std::mem::take(&mut result.after.overrides.runtime_values);
@@ -290,7 +286,7 @@ fn check_recipe(
     recipe: &WeaponRecipe,
     key: &RuntimeGraphKey,
     donors: &[WeaponDonorSummary],
-    entity: &WeaponRuntimeEntitySource,
+    entity: &RuntimeEntitySource,
 ) -> Result<(), String> {
     let spec = recipe.to_spec().map_err(|error| error.to_string())?;
     let appearance_hash = recipe
@@ -319,7 +315,7 @@ fn check_recipe(
             let pattern = appearance_pattern.ok_or_else(|| {
                 crate::error::invalid("The appearance donor has no active runtime row")
             })?;
-            let source = load_weapon_runtime_entity_at_pattern_index_with_manager(manager, pattern)
+            let source = load_runtime_entity_at_pattern_index_with_manager(manager, pattern)
                 .map_err(crate::error::invalid)?;
             Ok(Some((source.payload, source.weapon_content_group_hash)))
         },
@@ -335,8 +331,7 @@ fn check_recipe(
                 .find(|donor| donor.hash == hash)
                 .and_then(|donor| donor.weapon_pattern_index)
                 .ok_or_else(|| format!("Component donor 0x{hash:08X} has no active runtime row"))?;
-            let source =
-                load_weapon_runtime_entity_at_pattern_index_with_manager(manager, pattern)?;
+            let source = load_runtime_entity_at_pattern_index_with_manager(manager, pattern)?;
             Ok((binding, source.payload))
         })
         .collect::<Result<Vec<_>, String>>()?;

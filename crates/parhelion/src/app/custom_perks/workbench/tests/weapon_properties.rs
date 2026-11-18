@@ -19,7 +19,7 @@ use crate::test_support::driver::{label, painted_text, tap, texts};
 use std::time::Instant;
 use sundial::package_authoring::{
     open_shadowkeep_package_manager, resolve_live_named_tag,
-    runtime::WeaponRuntimeValue,
+    runtime::RuntimeValue,
     sandbox_perk::{
         action, load_sandbox_perk_runtime_action,
         program::{AttachmentTarget, Program},
@@ -165,7 +165,7 @@ fn change_weapon_properties_goes_from_the_picker_to_the_card() {
             properties
                 .value(index, Part::Amount, &added.values)
                 .unwrap(),
-            WeaponRuntimeValue::Float32Bits(row.neutral().to_bits()),
+            RuntimeValue::Float32Bits(row.neutral().to_bits()),
             "row {index} neutral"
         );
     }

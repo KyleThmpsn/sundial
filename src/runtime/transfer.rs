@@ -5,31 +5,31 @@ use super::*;
 /// name is insufficient. Different component schemas must inherit the very same declarations.
 /// Callers must also prove the binding/resource correspondence and validate the encoded value.
 pub fn runtime_fields_share_semantics(
-    source: &WeaponRuntimeField,
-    target: &WeaponRuntimeField,
+    source: &RuntimeField,
+    target: &RuntimeField,
 ) -> Result<bool, String> {
     Ok(share_semantics(source, target, runtime_registry()?))
 }
 
-fn scalar(kind: &WeaponRuntimeValueKind) -> bool {
+fn scalar(kind: &RuntimeValueKind) -> bool {
     matches!(
         kind,
-        WeaponRuntimeValueKind::Boolean
-            | WeaponRuntimeValueKind::Float32
-            | WeaponRuntimeValueKind::SignedInteger { .. }
-            | WeaponRuntimeValueKind::UnsignedInteger { .. }
+        RuntimeValueKind::Boolean
+            | RuntimeValueKind::Float32
+            | RuntimeValueKind::SignedInteger { .. }
+            | RuntimeValueKind::UnsignedInteger { .. }
     )
 }
 
 fn share_semantics(
-    source: &WeaponRuntimeField,
-    target: &WeaponRuntimeField,
+    source: &RuntimeField,
+    target: &RuntimeField,
     registry: &RuntimeRegistry,
 ) -> bool {
     let left = &source.locator;
     let right = &target.locator;
-    if source.source != WeaponRuntimeFieldSource::NativeMember
-        || target.source != WeaponRuntimeFieldSource::NativeMember
+    if source.source != RuntimeFieldSource::NativeMember
+        || target.source != RuntimeFieldSource::NativeMember
         || !scalar(&source.kind)
         || source.kind != target.kind
         || left.root != right.root
@@ -46,7 +46,7 @@ fn share_semantics(
 }
 
 fn declarations(
-    locator: &WeaponRuntimeFieldLocator,
+    locator: &RuntimeFieldLocator,
     registry: &RuntimeRegistry,
 ) -> Option<Vec<(u32, u32, u32)>> {
     let mut schema = locator.root_schema.get();

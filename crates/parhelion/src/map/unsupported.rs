@@ -5,7 +5,9 @@ use std::path::Path;
 use sundial::package_authoring::PackageManager;
 use tiger_pkg::TagHash;
 
-use crate::{AuthoringResult, NewTagSpec, ReplacementSpec, error::invalid, format::NamedTag};
+use crate::{
+    AuthoringResult, NewTagSpec, ReplacementSpec, error::invalid, package::format::NamedTag,
+};
 
 use super::MapRecipe;
 
@@ -84,7 +86,7 @@ impl Plan {
     ) -> AuthoringResult<(
         Vec<NewTagSpec>,
         Vec<NamedTag>,
-        Vec<crate::extend::NewTagReferenceOverride>,
+        Vec<crate::package::extend::NewTagReferenceOverride>,
     )> {
         Ok(Default::default())
     }

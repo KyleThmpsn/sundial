@@ -99,6 +99,9 @@ pub(super) struct Catalog {
     abilities: Vec<Ability>,
     /// An item's private evades, when its translation can carry their human actions.
     evades: std::cell::RefCell<Option<Evades>>,
+    /// The keys an imported copy of each source Super keeps for other items' grants, by source
+    /// ability row. Read once, on the first grant that needs it.
+    granted: std::cell::OnceCell<BTreeMap<usize, BTreeSet<u32>>>,
 }
 
 impl Catalog {
@@ -182,7 +185,82 @@ impl Catalog {
         Ok(Self {
             abilities,
             evades: std::cell::RefCell::new(None),
+            granted: std::cell::OnceCell::new(),
         })
+    }
+
+    /// The grant of `key` to source Super `ordinal` as the key itself on the Super slot, for a
+    /// Super with no Shadowkeep version. An imported copy of that Super keeps the key's rows in
+    /// its private bank (`Source::granted_keys`), so the key reaches the copy and does nothing on
+    /// any other Super. It requires that no stock Super bank holds the key, as a row or a gate,
+    /// and that no other source ability's bank does when the grant names this ability alone.
+    fn imported_key(
+        &self,
+        source: &Source,
+        native: &mut Reader,
+        ordinal: usize,
+        key: u32,
+        wildcard: bool,
+    ) -> Result<Option<Value>> {
+        use sundial::package_authoring::ability_bank::{
+            AbilityTarget, SLOT_BANKS, membership_keys, property_rows,
+        };
+        if self.granted.get().is_none() {
+            let mut granted = BTreeMap::new();
+            for catalog in source.subclass_choices()? {
+                let keys = source.granted_keys(&catalog)?;
+                if !keys.is_empty() {
+                    granted.insert(usize::from(catalog.ability_row), keys);
+                }
+            }
+            // A second initialization cannot happen: this is the only writer.
+            let _ = self.granted.set(granted);
+        }
+        let granted = self.granted.get().context("Source granted keys")?;
+        if !granted
+            .get(&ordinal)
+            .is_some_and(|keys| keys.contains(&key))
+        {
+            return Ok(None);
+        }
+        if !wildcard {
+            for (other, ability) in self.abilities.iter().enumerate() {
+                if other == ordinal {
+                    continue;
+                }
+                for &at in &ability.rows {
+                    if ability.data.u32(at)? == key {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        let banks = SLOT_BANKS
+            .iter()
+            .find(|(slot, _)| *slot == AbilityTarget::Super)
+            .map_or(&[][..], |(_, banks)| *banks);
+        ensure!(!banks.is_empty(), "Native Super slot lists no bank");
+        for &bank in banks {
+            let payload = native.tag(bank, Some(0x80809C36))?;
+            if property_rows(&payload.0)
+                .map_err(anyhow::Error::msg)?
+                .iter()
+                .any(|row| row.key == key)
+                || membership_keys(&payload.0)
+                    .map_err(anyhow::Error::msg)?
+                    .contains(&key)
+            {
+                return Ok(None);
+            }
+        }
+        let ability = &self.abilities[ordinal];
+        Ok(Some(json!({
+            "source_ability":ordinal,"source_pattern":ability.pattern,"source_bank":ability.bank,
+            "slot":AbilityTarget::Super.byte(),"property_key":key,"parameter_index":null,
+            "route":"imported_ability_key","balance":"source",
+            "stock_super_banks_checked":banks.len(),
+            "limits":"The key applies only to an imported copy of this source Super whose private bank keeps it. Without one in the build the perk changes nothing."
+        })))
     }
 
     /// Lets an airborne evade grant play the source's own human actions, converted under
@@ -315,6 +393,7 @@ impl Catalog {
         };
         let mut report = Vec::new();
         let mut keys = BTreeSet::new();
+        let mut imported = BTreeSet::new();
         let mut dropped = Vec::<String>::new();
         let grants = variant["ability_grants"]
             .as_array()
@@ -486,6 +565,32 @@ impl Catalog {
                                 "source_ability":ordinal,"source_pattern":ability.pattern,
                                 "evidence":evidence}));
                             program.actions.insert(0, action);
+                            continue;
+                        }
+                        if found.is_none()
+                            && let Some(mut record) =
+                                self.imported_key(source, native, ordinal, key, target == 255)?
+                        {
+                            // Rows of one key lower together, and a wildcard key may reach
+                            // several imported Supers through the one slot.
+                            if imported.insert(key) {
+                                ensure!(
+                                    keys.insert(key),
+                                    "Source grants overlap one imported ability property"
+                                );
+                                record["source_grant"] = json!(index);
+                                record["source_key"] = json!(key);
+                                report.push(record);
+                                program.actions.insert(
+                                    0,
+                                    Action::AbilityProperty {
+                                        target:
+                                            sundial::package_authoring::ability_bank::AbilityTarget::Super,
+                                        key,
+                                        option: PropertyOperation::Apply,
+                                    },
+                                );
+                            }
                             continue;
                         }
                         let (bank, slot, selected) = found.with_context(|| {

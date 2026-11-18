@@ -1,3 +1,5 @@
+//! The effective runtime graph: the selected runtime row with the selected component donors
+//! grafted in, before value and binary edits.
 use std::path::Path;
 
 pub(crate) mod compatibility;
@@ -7,9 +9,8 @@ use sundial::package_authoring::{
     entity::graft_weapon_component_bindings_or_rewire,
     open_shadowkeep_package_manager,
     runtime::{
-        WeaponRuntimeEntitySource, WeaponRuntimeGraph,
-        load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_entity_with_manager, load_weapon_runtime_graph_for_entity,
+        RuntimeEntitySource, RuntimeGraph, load_runtime_entity_at_pattern_index_with_manager,
+        load_runtime_entity_with_manager, load_runtime_graph_for_entity,
     },
 };
 
@@ -55,10 +56,10 @@ impl RuntimeGraphKey {
 pub(crate) fn load_effective_runtime_graph(
     packages: &Path,
     key: &RuntimeGraphKey,
-) -> Result<(WeaponRuntimeGraph, bool), String> {
+) -> Result<(RuntimeGraph, bool), String> {
     let manager = open_shadowkeep_package_manager(packages)?;
     let (pattern, carried) = load_effective_runtime_entity_reporting(&manager, key)?;
-    let graph = load_weapon_runtime_graph_for_entity(
+    let graph = load_runtime_graph_for_entity(
         &manager,
         pattern.item_hash,
         pattern.pattern_global_id_hash,
@@ -71,27 +72,27 @@ pub(crate) fn load_effective_runtime_graph(
 pub(crate) fn load_effective_runtime_entity(
     manager: &sundial::package_authoring::PackageManager,
     key: &RuntimeGraphKey,
-) -> Result<WeaponRuntimeEntitySource, String> {
+) -> Result<RuntimeEntitySource, String> {
     load_effective_runtime_entity_reporting(manager, key).map(|(pattern, _)| pattern)
 }
 
 pub(crate) fn load_effective_runtime_entity_reporting(
     manager: &sundial::package_authoring::PackageManager,
     key: &RuntimeGraphKey,
-) -> Result<(WeaponRuntimeEntitySource, bool), String> {
+) -> Result<(RuntimeEntitySource, bool), String> {
     let mut pattern = if let Some(pattern_index) = key.pattern_index {
-        load_weapon_runtime_entity_at_pattern_index_with_manager(manager, pattern_index)?
+        load_runtime_entity_at_pattern_index_with_manager(manager, pattern_index)?
     } else {
-        load_weapon_runtime_entity_with_manager(manager, key.fallback_item_hash)?
+        load_runtime_entity_with_manager(manager, key.fallback_item_hash)?
     };
     // Before the component donors, matching the order the package compiler uses so the
     // editor and the build agree about which owner every binding resolves to.
     let mut carried = false;
     if let Some((appearance_pattern, appearance_item)) = key.appearance_rig {
         let appearance = if let Some(pattern_index) = appearance_pattern {
-            load_weapon_runtime_entity_at_pattern_index_with_manager(manager, pattern_index)
+            load_runtime_entity_at_pattern_index_with_manager(manager, pattern_index)
         } else {
-            load_weapon_runtime_entity_with_manager(manager, appearance_item)
+            load_runtime_entity_with_manager(manager, appearance_item)
         };
         // A refusal is not an error: the build falls back to pinning the appearance's parts,
         // which leaves this entity exactly as it is.
@@ -107,9 +108,9 @@ pub(crate) fn load_effective_runtime_entity_reporting(
     let mut component_donors = Vec::with_capacity(key.component_donors.len());
     for &(binding_hash, donor_pattern_index, donor_item_hash) in &key.component_donors {
         let donor = if let Some(pattern_index) = donor_pattern_index {
-            load_weapon_runtime_entity_at_pattern_index_with_manager(manager, pattern_index)?
+            load_runtime_entity_at_pattern_index_with_manager(manager, pattern_index)?
         } else {
-            load_weapon_runtime_entity_with_manager(manager, donor_item_hash)?
+            load_runtime_entity_with_manager(manager, donor_item_hash)?
         };
         if donor.item_hash == pattern.item_hash {
             continue;
@@ -150,9 +151,8 @@ mod tests {
         let packages = crate::test_support::stock_packages();
         let manager = open_shadowkeep_package_manager(Path::new(&packages)).unwrap();
         let mut baseline =
-            load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, 370).unwrap();
-        let donor =
-            load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, 285).unwrap();
+            load_runtime_entity_at_pattern_index_with_manager(&manager, 370).unwrap();
+        let donor = load_runtime_entity_at_pattern_index_with_manager(&manager, 285).unwrap();
         let original = baseline.payload.clone();
         // Its nested event endpoints have no pair in this entity, so pairing leaves the entity
         // untouched. Only the rewire can connect this cross-family translator.

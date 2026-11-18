@@ -41,7 +41,7 @@ fn native_placement(
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
     pub stride: usize,
-    /// The root binding and binding mode, as two native-width words.
+    /// The body group and bone index, as two native-width words.
     pub binding: usize,
     /// The rotation, a unit quaternion in x, y, z, w order. A marker is a transform, not a
     /// point: a weapon can carry two rows of one name at one place facing different ways.
@@ -157,15 +157,49 @@ pub(crate) fn check_component(p: &Payload) -> Result<()> {
 
 /// Check the native runtime marker component and every marker before package allocation.
 pub fn validate(bytes: &[u8]) -> Result<()> {
+    validate_with_bounds(bytes, ROOT_BINDINGS)
+}
+
+/// Validate equipment markers against the emitted skeleton they actually address. The body
+/// group remains zero. Bone ordinals are independent of clip target modes and arm control slots.
+pub fn validate_equipment(bytes: &[u8], skeleton: &Payload) -> Result<()> {
+    validate_with_bounds(bytes, Bounds::equipment(skeleton)?)
+}
+
+#[derive(Clone, Copy)]
+struct Bounds {
+    group: u32,
+    bones: usize,
+}
+
+// The compatibility path admits the observed root-area indices. A larger palette must be
+// supplied explicitly and checked from its skeleton, rather than inferred from a marker row.
+const ROOT_BINDINGS: Bounds = Bounds { group: 0, bones: 3 };
+
+impl Bounds {
+    fn equipment(skeleton: &Payload) -> Result<Self> {
+        let bones = crate::tiger::animation::rig::bone_count(skeleton)?;
+        ensure!(
+            bones > 0 && bones <= usize::from(u16::MAX),
+            "Unsupported equipment marker palette"
+        );
+        Ok(Self { group: 0, bones })
+    }
+
+    fn accepts(self, binding: [u32; 2]) -> bool {
+        binding[0] == self.group && usize::try_from(binding[1]).is_ok_and(|bone| bone < self.bones)
+    }
+}
+
+fn validate_with_bounds(bytes: &[u8], bounds: Bounds) -> Result<()> {
     let p = Payload(bytes.to_vec());
     check_component(&p)?;
     for marker in read_native(&p)? {
         ensure!(
-            marker.binding[0] == 0
-                && marker.binding[1] <= 2
+            bounds.accepts(marker.binding)
                 && marker.position.iter().all(|x| x.is_finite())
                 && marker.orientation.iter().all(|x| x.is_finite()),
-            "runtime marker transform or root binding differs"
+            "runtime marker transform or palette binding differs"
         );
     }
     Ok(())
@@ -292,6 +326,27 @@ pub fn plan(carrier: &[Marker], source: &[Marker]) -> Plan {
 /// Write the matched transforms into a copy of the carrier's payload and append the markers
 /// only the source names. The rows of markers the source does not name are left alone.
 pub fn rewrite(payload: &Payload, source: &[Marker]) -> Result<(Payload, Plan)> {
+    rewrite_with_bounds(payload, source, ROOT_BINDINGS)
+}
+
+/// Rewrite or append bone-local equipment markers using the actual destination skeleton.
+/// Matching still preserves repeated marker names and each carrier-only row.
+pub fn rewrite_equipment(
+    payload: &Payload,
+    source: &[Marker],
+    skeleton: &Payload,
+) -> Result<(Payload, Plan)> {
+    let bounds = Bounds::equipment(skeleton)?;
+    let (converted, plan) = rewrite_with_bounds(payload, source, bounds)?;
+    validate_with_bounds(&converted.0, bounds)?;
+    Ok((converted, plan))
+}
+
+fn rewrite_with_bounds(
+    payload: &Payload,
+    source: &[Marker],
+    bounds: Bounds,
+) -> Result<(Payload, Plan)> {
     let carrier = read_native(payload)?;
     let plan = plan(&carrier, source);
     // A name can mark several points, such as three muzzle ports. Each carrier row takes the
@@ -312,6 +367,7 @@ pub fn rewrite(payload: &Payload, source: &[Marker]) -> Result<(Payload, Plan)> 
         write_binding(
             &mut out.0[marker.row..marker.row + NATIVE.stride],
             entry.binding,
+            bounds,
         )?;
         for (at, values) in [
             (NATIVE.position, entry.position),
@@ -324,29 +380,45 @@ pub fn rewrite(payload: &Payload, source: &[Marker]) -> Result<(Payload, Plan)> 
         }
     }
     if !plan.added.is_empty() {
-        append(&mut out, &plan.added, None)?;
+        append(&mut out, &plan.added, bounds)?;
     }
-    // The carrier's rows keep their names and order, followed by the added markers.
+    // Every carrier row and added marker is present once. With markers added the rows are in
+    // name order, each name's carrier rows first, as the stable sort in `append` leaves them.
     let after = read_native(&out)?;
+    let mut expected = carrier
+        .iter()
+        .map(|marker| marker.name)
+        .chain(plan.added.iter().map(|marker| marker.name))
+        .collect::<Vec<_>>();
+    if !plan.added.is_empty() {
+        expected.sort();
+    }
     ensure!(
-        after.len() == carrier.len() + plan.added.len()
-            && after.iter().zip(&carrier).all(|(a, b)| a.name == b.name)
-            && after[carrier.len()..]
-                .iter()
-                .zip(&plan.added)
-                .all(|(a, b)| {
-                    a.name == b.name
-                        && a.binding == b.binding
-                        && a.position == b.position
-                        && a.orientation == b.orientation
-                }),
+        after.iter().map(|marker| marker.name).eq(expected)
+            && plan.added.iter().all(|added| {
+                after.iter().any(|row| {
+                    row.name == added.name
+                        && row.binding == added.binding
+                        && row.position == added.position
+                        && row.orientation == added.orientation
+                })
+            }),
         "marker rewrite changed the component's shape"
     );
     Ok((out, plan))
 }
 
-/// Append explicitly native skeletal marker groups after validating their target rig range.
-/// Repeated names preserve occurrence order, as native multi-emitter groups do.
+/// The group an added effect marker names at row `+0`. The native resolver `00A1E8A0` admits a
+/// row only while its group is enabled in the marker set's part state, and a name with no
+/// admitted row yields no marker, only a fallback transform from its first row. Every locator
+/// marker of the stock Heavy Pike's effect flow names group zero, as do 52 of the stock
+/// Interceptor's 54 marker rows, while the Heavy Pike's group one holds attachment points such
+/// as its hand targets. Whether a summoned Heavy Pike enables group one is not established.
+/// These are not the model's draw groups: the Interceptor draws its body with group two.
+pub const EFFECT_GROUP: u32 = 0;
+
+/// Add explicitly native skeletal marker groups in [`EFFECT_GROUP`] after validating their
+/// target rig range. Repeated names preserve occurrence order, as native multi-emitter groups do.
 pub fn append_skeletal(payload: &Payload, source: &[Marker], bones: usize) -> Result<Payload> {
     let carrier = read_native(payload)?;
     let plan = plan(&carrier, source);
@@ -358,17 +430,22 @@ pub fn append_skeletal(payload: &Payload, source: &[Marker], bones: usize) -> Re
         "Skeletal marker groups need new names and a supported rig"
     );
     let mut out = payload.clone();
-    append(&mut out, &plan.added, Some(bones))?;
+    append(
+        &mut out,
+        &plan.added,
+        Bounds {
+            group: EFFECT_GROUP,
+            bones,
+        },
+    )?;
     read_native(&out)?;
     Ok(out)
 }
 
-fn write_binding(row: &mut [u8], binding: [u32; 2]) -> Result<()> {
-    // Root pairs through (0, 2) occur in paired modern and Shadowkeep weapon
-    // marker sets. Preserve the pair without treating its second word as a bone.
+fn write_binding(row: &mut [u8], binding: [u32; 2], bounds: Bounds) -> Result<()> {
     ensure!(
-        binding[0] == 0 && binding[1] <= 2,
-        "source marker has an unsupported root binding"
+        bounds.accepts(binding),
+        "source marker binds outside its supported body group or bone palette"
     );
     ensure!(
         row[8..16] == [0; 8],
@@ -384,25 +461,22 @@ fn write_binding(row: &mut [u8], binding: [u32; 2]) -> Result<()> {
 /// The rows are followed by the sight-and-fire references, which point backwards into the
 /// component, so the array is not grown in place. The descriptor is repointed, the old rows
 /// stay as unreferenced bytes and every other offset in the component keeps its meaning.
-fn append(payload: &mut Payload, added: &[Carried], bones: Option<usize>) -> Result<()> {
+///
+/// The rows are written in ascending order of name. The native lookup `00A1D3D0` finds a name's
+/// rows by binary search over the array, comparing each row's name at `+0x30` as an unsigned
+/// word, and stock arrays are sorted that way. A row added after them out of order is never
+/// found, so its marker does not exist to the game. The sort is stable, so the rows of one name
+/// keep their order, the carrier's first.
+fn append(payload: &mut Payload, added: &[Carried], bounds: Bounds) -> Result<()> {
     let data = payload.pointer(0x18)?;
     let descriptor = data + NATIVE_DESCRIPTOR;
     let mut rows = Vec::new();
     for row in payload.array(descriptor, NATIVE.stride, Some(NATIVE.row_class))? {
-        rows.extend_from_slice(&payload.0[row..row + NATIVE.stride]);
+        rows.push(payload.0[row..row + NATIVE.stride].to_vec());
     }
     for marker in added {
         let mut row = [0u8; NATIVE.stride];
-        if let Some(bones) = bones {
-            ensure!(
-                marker.binding[0] == 1 && usize::try_from(marker.binding[1])? < bones,
-                "Skeletal marker is outside its native rig"
-            );
-            row[..4].copy_from_slice(&marker.binding[0].to_le_bytes());
-            row[4..8].copy_from_slice(&marker.binding[1].to_le_bytes());
-        } else {
-            write_binding(&mut row, marker.binding)?;
-        }
+        write_binding(&mut row, marker.binding, bounds)?;
         for (at, values) in [
             (NATIVE.orientation, marker.orientation),
             (NATIVE.position, marker.position),
@@ -412,9 +486,18 @@ fn append(payload: &mut Payload, added: &[Carried], bones: Option<usize>) -> Res
             }
         }
         row[NATIVE.name..NATIVE.name + 4].copy_from_slice(&marker.name.to_le_bytes());
-        rows.extend_from_slice(&row);
+        rows.push(row.to_vec());
     }
-    let count = (rows.len() / NATIVE.stride) as u64;
+    rows.sort_by_key(|row| {
+        u32::from_le_bytes([
+            row[NATIVE.name],
+            row[NATIVE.name + 1],
+            row[NATIVE.name + 2],
+            row[NATIVE.name + 3],
+        ])
+    });
+    let count = rows.len() as u64;
+    let rows = rows.concat();
     let bytes = &mut payload.0;
     // Array headers are 16-byte aligned with their marker word just before them.
     let header = (bytes.len() + 19) & !15;

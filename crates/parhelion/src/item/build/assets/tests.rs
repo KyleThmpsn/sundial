@@ -4,14 +4,14 @@ use super::*;
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES, reads through an isolated package view"]
 fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
     let packages = crate::test_support::stock_packages();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|s| (*s).to_owned())
         .collect::<Vec<_>>();
     let view = crate::workflow::FilteredPackageView::create(&packages, &ignored).unwrap();
     let sources = sources::load_project_sources(view.path()).unwrap();
     let mut selected = None;
-    crate::icon_edit::package_icons::scan(&sources.manager, |_, _, entry| {
+    crate::icon::edit::package_icons::scan(&sources.manager, |_, _, entry| {
         if let Some(entry) = entry.filter(|entry| entry.white) {
             selected = Some(entry.tag);
             false
@@ -76,7 +76,7 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
     let container = &assets.packages.tag(authored_container).unwrap().payload;
     let layer_tag = TagHash(read_u32(container, 0x14).unwrap());
     let layer = &assets.packages.tag(layer_tag).unwrap().payload;
-    let glyph_textures = crate::icon_edit::texture_reference_offsets(layer, layer_tag).unwrap();
+    let glyph_textures = crate::icon::edit::texture_reference_offsets(layer, layer_tag).unwrap();
     let glyph_sizes = glyph_textures
         .iter()
         .map(|(_, tag)| {
@@ -115,15 +115,15 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
     pixels.write_to(&mut png, image::ImageFormat::Png).unwrap();
     let imported = crate::perk::Icon::Image {
         name: "test.png".into(),
-        image: crate::icon_edit::ImportedIcon::from_bytes(png.get_ref()).unwrap(),
+        image: crate::icon::edit::ImportedIcon::from_bytes(png.get_ref()).unwrap(),
     };
     let mut imported_nodes = Vec::new();
     let mut references = Vec::new();
-    let imported_container = crate::icon_edit::package_icons::author(
+    let imported_container = crate::icon::edit::package_icons::author(
         &sources.manager,
         &imported,
         stock_container,
-        (crate::package_profile::window().first(), 0),
+        (crate::package::profile::window().first(), 0),
         &mut imported_nodes,
         &mut references,
     )
@@ -185,7 +185,7 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES, writes only to temporary package views"]
 fn bundled_custom_images_reach_private_weapon_tooltip_rows() {
     let packages = crate::test_support::stock_packages();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|s| (*s).to_owned())
         .collect::<Vec<_>>();
@@ -300,8 +300,8 @@ fn assert_preserved_icon_layers(stock: &[u8], authored: &[u8]) {
 
 fn assert_stock_perk_quality(manager: &PackageManager, stock_container: TagHash) {
     let stock_texture =
-        crate::icon_edit::package_icons::primary_texture(manager, stock_container).unwrap();
-    let stock_icon = crate::icon_edit::package_icons::load_for(
+        crate::icon::edit::package_icons::primary_texture(manager, stock_container).unwrap();
+    let stock_icon = crate::icon::edit::package_icons::load_for(
         manager,
         stock_texture,
         crate::artwork_browser::Purpose::Badge,

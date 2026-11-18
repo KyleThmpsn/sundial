@@ -1,5 +1,5 @@
 //! Weapon-only rules that the item build applies: ammo, Exotic behaviors, type markers and
-//! first-person animations borrowed from other weapons, reload-hold element switching,
+//! first-person animations borrowed from other weapons, reload-hold damage type switching,
 //! cross-family rigs, and the projection into Sunrise's replicated weapon perk bank. The build
 //! itself, which every item kind goes through, is `crate::item`.
 pub(crate) mod ammo;
@@ -16,6 +16,8 @@ pub(crate) mod magazine;
 pub(crate) mod perk_bank;
 pub mod projectile;
 pub(crate) mod rig;
+#[cfg(feature = "d2-model-importer")]
+pub(crate) mod sword;
 pub(crate) mod variable_damage;
 #[cfg(feature = "d2-model-importer")]
 pub(crate) mod zoom;

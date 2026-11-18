@@ -66,6 +66,14 @@ impl Source {
 
     /// A source subclass item's inventory icon as a PNG.
     pub fn subclass_icon(&self, item: u32) -> Result<Option<Vec<u8>>> {
+        let tag = self.subclass_strings(item)?;
+        let container = self.read(tag)?.u32(0x60)?;
+        self.icon_png(container, None)
+    }
+
+    /// A source subclass item's strings tag, which names its inventory icon as a weapon's or an
+    /// armor piece's does.
+    pub fn subclass_strings(&self, item: u32) -> Result<u32> {
         let (_, definitions) = self.table(0x80801933)?;
         let (_, strings) = self.table(0x808034C7)?;
         let rows = definitions.array(8, 24, Some(0x808016BD))?;
@@ -76,9 +84,7 @@ impl Source {
         );
         for (row, text_row) in rows.into_iter().zip(text) {
             if definitions.u32(row)? == item {
-                let tag = strings.u32(text_row + 8)?;
-                let container = self.read(tag)?.u32(0x60)?;
-                return self.icon_png(container, None);
+                return strings.u32(text_row + 8);
             }
         }
         anyhow::bail!("Source subclass {item:08X} has no item strings")

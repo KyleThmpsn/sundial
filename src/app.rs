@@ -1,3 +1,5 @@
+//! Sundial's application: UI state and workflow orchestration. Native package layouts live in
+//! their own modules.
 use crate::app::account_workspace as account;
 
 use std::{
@@ -299,7 +301,7 @@ enum ConfirmationDialog {
     DeleteEquipment(PendingEquipmentDelete),
     Reload,
     RestoreSqliteBackup(PathBuf),
-    ResetSqliteDefaults(crate::persistence::sqlite_account::ResetPlan),
+    ResetSqliteDefaults(crate::persistence::sunrise_account::ResetPlan),
     ResetDefaults,
     Exit,
     UnsavedAuthoringWork(String),
@@ -861,7 +863,7 @@ fn draw_json_account_source_notice(ui: &mut egui::Ui, source: &AccountSourceInfo
             ..
         } => return,
         AccountSourceInfo {
-            kind: AccountSourceKind::Sqlite,
+            kind: AccountSourceKind::Sunrise,
             ..
         } => (
             "Account Data Is Stored Separately",

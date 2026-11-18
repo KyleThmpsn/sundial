@@ -6,7 +6,7 @@ use std::fs;
 fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
     let compatible = TestDirectory::new("check-compatible-sqlite");
     let compatible_settings = compatible.0.join("settings.json");
-    crate::persistence::sqlite_account::tests::create_fixture(
+    crate::persistence::sunrise_account::tests::create_fixture(
         &compatible.0.join("data").join("investment.sqlite3"),
         3,
     );

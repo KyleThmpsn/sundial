@@ -164,7 +164,7 @@ pub fn set_armor_equipment_class(data: &[u8], selected: Option<u8>) -> Result<Ve
     Ok(authored)
 }
 
-fn append_array(
+pub(super) fn append_array(
     data: &mut Vec<u8>,
     class: u32,
     count: usize,
@@ -188,7 +188,12 @@ fn append_array(
     Ok(header)
 }
 
-fn descriptor(data: &mut [u8], at: usize, count: usize, header: usize) -> Result<(), String> {
+pub(super) fn descriptor(
+    data: &mut [u8],
+    at: usize,
+    count: usize,
+    header: usize,
+) -> Result<(), String> {
     write_bytes(data, at, &(count as u64).to_le_bytes())?;
     let relative = i64::try_from(header).map_err(|_| "Armor condition offset exceeds i64")?
         - i64::try_from(at + 8).map_err(|_| "Armor condition pointer exceeds i64")?;

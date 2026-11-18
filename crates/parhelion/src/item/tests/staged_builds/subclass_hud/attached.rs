@@ -70,7 +70,7 @@ fn attached_ability_hud_survives_save_build_and_reset_without_changing_stock() {
     let artifacts = crate::test_support::artifact_dir("attached-hud");
     fs::create_dir_all(&artifacts).unwrap();
     let revision = std::env::var("SUNDIAL_TEST_REVISION").expect("source revision");
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
@@ -79,7 +79,7 @@ fn attached_ability_hud_survives_save_build_and_reset_without_changing_stock() {
     fs::write(install.join("destiny2.exe"), []).unwrap();
     let cache = artifacts.join("catalog.json");
     let catalog = InvestmentCatalog::load_with_cache_path(install, &cache, true, |_| {}).unwrap();
-    let subclasses = catalog.subclasses(crate::package_profile::is_stock_item_definition);
+    let subclasses = catalog.subclasses(crate::package::profile::is_stock_item_definition);
     let base = subclasses
         .iter()
         .find(|s| s.name == "Sunbreaker")
@@ -145,7 +145,7 @@ fn attached_ability_hud_survives_save_build_and_reset_without_changing_stock() {
                     Some(EntryIcon::Artwork {
                         artwork: crate::perk::Icon::Image {
                             name: "Square".into(),
-                            image: crate::icon_edit::ImportedIcon::from_bytes(png.get_ref())
+                            image: crate::icon::edit::ImportedIcon::from_bytes(png.get_ref())
                                 .unwrap(),
                         },
                     })
@@ -307,7 +307,7 @@ fn attached_ability_hud_survives_save_build_and_reset_without_changing_stock() {
                     let texture =
                         u32::from_le_bytes(layer[textures + 16..textures + 20].try_into().unwrap());
                     let pixels =
-                        crate::icon_edit::render_texture_preview(&staged, TagHash(texture))
+                        crate::icon::edit::render_texture_preview(&staged, TagHash(texture))
                             .unwrap();
                     let center = pixels[(pixels.size[0] / 2, pixels.size[1] / 2)];
                     assert!(

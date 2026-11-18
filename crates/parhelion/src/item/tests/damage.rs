@@ -70,7 +70,7 @@ fn independent_slot_and_damage_overrides_preserve_native_structure() {
                     let expected = match damage {
                         None => source_damage,
                         Some(ModernDamageType::Kinetic) => WeaponDamageDescriptor::Empty,
-                        Some(element) => WeaponDamageDescriptor::Elemental(element),
+                        Some(damage_type) => WeaponDamageDescriptor::Elemental(damage_type),
                     };
                     assert_eq!(weapon_damage_descriptor(&definition).unwrap(), expected);
                     assert_eq!(

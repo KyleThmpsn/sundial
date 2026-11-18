@@ -20,9 +20,9 @@ use sundial::{
         },
         open_shadowkeep_package_manager,
         runtime::{
-            WeaponRuntimeEntitySource, WeaponRuntimeResourceShape,
-            load_weapon_runtime_entity_at_pattern_index_with_manager,
-            load_weapon_runtime_entity_with_manager, load_weapon_runtime_resource_shape,
+            RuntimeEntitySource, RuntimeResourceShape,
+            load_runtime_entity_at_pattern_index_with_manager, load_runtime_entity_with_manager,
+            load_runtime_resource_shape,
         },
     },
 };
@@ -68,8 +68,8 @@ enum EntityKey {
 
 struct ScanCache<'a> {
     manager: &'a PackageManager,
-    entities: BTreeMap<EntityKey, Result<Arc<WeaponRuntimeEntitySource>, String>>,
-    shapes: BTreeMap<(u32, u32, u64), Result<WeaponRuntimeResourceShape, String>>,
+    entities: BTreeMap<EntityKey, Result<Arc<RuntimeEntitySource>, String>>,
+    shapes: BTreeMap<(u32, u32, u64), Result<RuntimeResourceShape, String>>,
     /// Component owner payloads a rewired graft reads, shared by every candidate.
     owners: RefCell<BTreeMap<u32, Result<Vec<u8>, String>>>,
     /// Composed candidates by donor runtime entity, and whether the donor is the baseline's own
@@ -103,38 +103,30 @@ impl<'a> ScanCache<'a> {
         &mut self,
         pattern: Option<u16>,
         item: u32,
-    ) -> Result<Arc<WeaponRuntimeEntitySource>, String> {
+    ) -> Result<Arc<RuntimeEntitySource>, String> {
         let key = pattern.map_or(EntityKey::Item(item), EntityKey::Pattern);
         self.entities
             .entry(key)
             .or_insert_with(|| {
                 match key {
                     EntityKey::Pattern(index) => {
-                        load_weapon_runtime_entity_at_pattern_index_with_manager(
-                            self.manager,
-                            index,
-                        )
+                        load_runtime_entity_at_pattern_index_with_manager(self.manager, index)
                     }
-                    EntityKey::Item(hash) => {
-                        load_weapon_runtime_entity_with_manager(self.manager, hash)
-                    }
+                    EntityKey::Item(hash) => load_runtime_entity_with_manager(self.manager, hash),
                 }
                 .map(Arc::new)
             })
             .clone()
     }
 
-    fn shape(
-        &mut self,
-        binding: &WeaponComponentBinding,
-    ) -> Result<WeaponRuntimeResourceShape, String> {
+    fn shape(&mut self, binding: &WeaponComponentBinding) -> Result<RuntimeResourceShape, String> {
         self.shapes
             .entry((
                 binding.owner_tag,
                 binding.concrete_class,
                 binding.resource_offset,
             ))
-            .or_insert_with(|| load_weapon_runtime_resource_shape(self.manager, binding))
+            .or_insert_with(|| load_runtime_resource_shape(self.manager, binding))
             .clone()
     }
 }
@@ -143,7 +135,7 @@ impl<'a> ScanCache<'a> {
 struct RequestedDonor {
     binding_hash: u32,
     item_hash: u32,
-    source: Arc<WeaponRuntimeEntitySource>,
+    source: Arc<RuntimeEntitySource>,
 }
 
 /// Run on a worker thread when a single component picker opens. Every result is relative to this
@@ -234,7 +226,7 @@ fn collect_bindings(entity: &[u8]) -> Result<Bindings, String> {
 }
 
 fn compose(
-    baseline: &WeaponRuntimeEntitySource,
+    baseline: &RuntimeEntitySource,
     requested: &[RequestedDonor],
     read_owner: &dyn Fn(u32) -> Result<Vec<u8>, String>,
 ) -> Composed {
@@ -307,7 +299,7 @@ fn effective_sources(
 fn baseline_summary<'a>(
     donors: &'a [WeaponDonorSummary],
     key: &RuntimeGraphKey,
-    baseline: &WeaponRuntimeEntitySource,
+    baseline: &RuntimeEntitySource,
 ) -> Option<&'a WeaponDonorSummary> {
     // Prefer the actual sandbox-row identity. Never infer compatibility from an arbitrary
     // catalog item that merely happens to represent the same row.
@@ -325,7 +317,7 @@ fn baseline_summary<'a>(
 #[allow(clippy::too_many_arguments)]
 fn assess_candidate(
     cache: &mut ScanCache<'_>,
-    baseline: &WeaponRuntimeEntitySource,
+    baseline: &RuntimeEntitySource,
     baseline_bindings: &Bindings,
     baseline_summary: Option<&WeaponDonorSummary>,
     baseline_hash: u32,
@@ -473,8 +465,8 @@ fn metadata_reasons(
 }
 
 fn shape_reasons(
-    before: Result<WeaponRuntimeResourceShape, String>,
-    after: Result<WeaponRuntimeResourceShape, String>,
+    before: Result<RuntimeResourceShape, String>,
+    after: Result<RuntimeResourceShape, String>,
     reasons: &mut Vec<String>,
 ) {
     match (before, after) {

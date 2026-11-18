@@ -31,7 +31,7 @@ use sundial::package_authoring::ability_bank::Modifier;
 use sundial::package_authoring::ability_modifier::{
     charge_key, parameter_key, recharge_key, recharge_modifier,
 };
-use sundial::package_authoring::runtime::WeaponRuntimeValueOverride;
+use sundial::package_authoring::runtime::RuntimeValueOverride;
 
 /// Sunrise keeps per-entry selection state for at most this many lists with a super lane.
 const SUNRISE_SUPER_LANE_LIST_CAPACITY: usize = 32;
@@ -164,7 +164,7 @@ pub(crate) struct AbilityEntity {
     pub(crate) row: u8,
     pub(crate) source: TagHash,
     pub(crate) imported: Option<super::ImportedAbility>,
-    pub(crate) values: Vec<WeaponRuntimeValueOverride>,
+    pub(crate) values: Vec<RuntimeValueOverride>,
     pub(crate) palettes: Vec<super::PaletteEdit>,
     pub(crate) tints: Vec<super::TintEdit>,
     pub(crate) grade: Option<super::EffectGrade>,
@@ -1290,6 +1290,17 @@ fn resolve_modifiers(
     let entries = native::entries(list)?;
     let mut rows = BTreeMap::<u8, Option<u8>>::new();
     let mut banks = BTreeMap::<u8, Option<AbilityBank>>::new();
+    // Keys the list's own custom perks add to a bank as private rows. A selection record applies
+    // one like a stock key, on a runtime that files a node's records and not its perks.
+    let private = authored
+        .iter()
+        .flat_map(|entry| &entry.custom_perks)
+        .flat_map(|perk| &perk.effects)
+        .filter_map(|effect| effect.program.as_ref())
+        .flat_map(|program| program.owned_programs())
+        .flat_map(|program| &program.ability_rows)
+        .map(|row| (row.bank, row.key))
+        .collect::<BTreeSet<_>>();
     let imported = authored
         .iter()
         .filter_map(|entry| {
@@ -1352,7 +1363,7 @@ fn resolve_modifiers(
             };
             let (key, bank_row) = match effect {
                 ModifierEffect::Key { key } => {
-                    if !bank.keys.contains(&key) {
+                    if !bank.keys.contains(&key) && !private.contains(&(bank.tag, key)) {
                         return Err(invalid(format!(
                             "{}: {target_label} has no key 0x{key:08X}",
                             entry.label

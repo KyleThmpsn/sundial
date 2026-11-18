@@ -31,7 +31,7 @@ pub(super) struct Prepared {
 struct PreparedModel {
     graph: GraphReference,
     donor: WeaponDonorReference,
-    icon: Option<crate::icon_edit::ImportedIcon>,
+    icon: Option<crate::icon::edit::ImportedIcon>,
 }
 
 fn source_hash(recipe: &WeaponRecipe) -> Option<u32> {

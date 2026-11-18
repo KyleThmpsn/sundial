@@ -388,7 +388,7 @@ pub(super) fn author_entities(
         let host_start = weapon_runtime_new_tags.len();
         let (assignments_before, animation_before) =
             (entity_assignments.clone(), animation_cache.clone());
-        let allocation = crate::appended_tags::checkpoint();
+        let allocation = crate::package::appended_tags::checkpoint();
         let authored = author_entity(
             EntityAuthoring {
                 manager,
@@ -670,6 +670,15 @@ fn author_entity(
         stat_patches
     };
     let overrides = with_stat_patches(overrides, stat_patches);
+    #[allow(unused_mut)]
+    let mut appends = markers;
+    #[cfg(feature = "d2-model-importer")]
+    appends.extend(imported.stat_appends(
+        manager,
+        &entity,
+        pattern_source.weapon_translation_group_hash,
+        &symbols,
+    )?);
     stages.lap("projectile and stats");
 
     // The runtime edits, with the donors the recipe's splices and single actions name.
@@ -684,7 +693,7 @@ fn author_entity(
             groups,
             splices: &splices,
             actions: &actions,
-            markers: &markers,
+            appends: &appends,
             projectile: projectile.root.or(bundled),
             trajectories: projectile.trajectories,
             source_trajectory: projectile.source_trajectory,
@@ -771,7 +780,7 @@ fn bundled_projectile(
 /// `overrides` with the stat translator `patches` appended, cloned only when there are any.
 fn with_stat_patches(
     mut overrides: Cow<'_, WeaponCloneOverrides>,
-    patches: Vec<WeaponRuntimeResourcePatch>,
+    patches: Vec<RuntimeResourcePatch>,
 ) -> Cow<'_, WeaponCloneOverrides> {
     if !patches.is_empty() {
         overrides.to_mut().runtime_resource_patches.extend(patches);
@@ -790,7 +799,7 @@ fn complete_vehicle(
     entity_assignments: &mut Vec<u8>,
 ) -> AuthoringResult<u32> {
     if let Some(key) = hud_key {
-        crate::hud_icon::runtime::write_prepared_key(packages, entity, key)?;
+        crate::icon::hud::runtime::write_prepared_key(packages, entity, key)?;
     }
     retain_imported_runtime(packages, tag, entity)?;
     *entity_assignments =
@@ -1033,7 +1042,7 @@ mod tests {
             .write_to(&mut png, image::ImageFormat::Png)
             .unwrap();
         donors[0].weapon.overrides.hud_icon =
-            Some(crate::hud_icon::HudImage::from_png(&png.into_inner()).unwrap());
+            Some(crate::icon::hud::HudImage::from_png(&png.into_inner()).unwrap());
         assert_eq!(key(&donors[0]), Some(donors[0].weapon.identity.type_hash));
         donors[0].weapon.overrides.hud_icon = None;
         assert_eq!(key(&donors[0]), Some(0x08491234));

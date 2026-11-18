@@ -30,10 +30,10 @@ pub(super) fn author(
     if project_rows.is_empty() {
         let mut nodes = std::mem::take(&mut sources.stock_nodes);
         let mut objectives = std::mem::take(&mut sources.stock_objectives);
-        if crate::package_profile::member().is_none()
+        if crate::package::profile::member().is_none()
             && let Some(family) = crate::mod_family::build::badges().filter(|family| *family > 0)
         {
-            crate::badge::arrange_root(&mut nodes)?;
+            crate::badge::arrange_root(&mut nodes, false)?;
             objectives = crate::badge::patch_badge_objectives(
                 objectives,
                 &nodes,
@@ -43,7 +43,7 @@ pub(super) fn author(
             )?;
         }
         // It also counts the importers' items in the stock pages they join.
-        if crate::package_profile::member().is_none() {
+        if crate::package::profile::member().is_none() {
             count_constant_entries(
                 (&mut objectives, &nodes, &sources.stock_pools),
                 &[],
@@ -72,6 +72,7 @@ pub(super) fn author(
             authored_collectible_index: row.authored_collectible_index,
             acquisition: row.acquisition,
             position: weapon.overrides.collection_position,
+            rank: row.badge_rank,
         })
         .collect::<Vec<_>>();
     // An importer's entries placed first take stock rows of the build's table
@@ -85,7 +86,7 @@ pub(super) fn author(
         stock_records: std::mem::take(&mut sources.stock_records),
         stock_record_strings: std::mem::take(&mut sources.stock_record_strings),
         shared_expression_pools: &sources.stock_pools,
-        localization_table_index: crate::package_profile::localization_table() as u32,
+        localization_table_index: crate::package::profile::localization_table() as u32,
         badge_icon_index: icons.badge_index,
         placements: &badge_placements,
     })?;
@@ -102,7 +103,7 @@ pub(super) fn author(
         &icons.custom_badges,
         &sources.stock_pools,
         collectibles,
-        crate::package_profile::localization_table() as u32,
+        crate::package::profile::localization_table() as u32,
     )?;
     let mut badge = crate::badge::append_source_badges(
         badge,
@@ -111,7 +112,7 @@ pub(super) fn author(
         &icons.source_badges,
         &sources.stock_pools,
         collectibles,
-        crate::package_profile::localization_table() as u32,
+        crate::package::profile::localization_table() as u32,
     )?;
     pages::append(
         &mut badge,
@@ -126,7 +127,7 @@ pub(super) fn author(
         crate::badge::set_sunrise_members(&mut badge, &sunrise_members, &sources.stock_pools)?;
     }
     // The build's badges take their places in the Badges root together.
-    crate::badge::arrange_root(&mut badge.nodes)?;
+    crate::badge::arrange_root(&mut badge.nodes, !sunrise_members.is_empty())?;
     let nodes = badge.nodes;
     let node_strings = badge.node_strings;
     let objective_strings = badge.objective_strings;
@@ -175,7 +176,7 @@ pub(super) fn author(
     // mod folders, each importer's badge. Sunrise keeps one mod's value of the root's total, so on
     // its mod loader the main mod's build counts every member's badges there and an importer's
     // build leaves the root as it is.
-    let objectives = if crate::package_profile::member().is_some() {
+    let objectives = if crate::package::profile::member().is_some() {
         objectives
     } else {
         let own = crate::badge::count(weapons);
@@ -237,7 +238,7 @@ pub(in crate::item) fn count_constant_entries(
         rows,
         crate::badge::STOCK_OBJECTIVE_COUNT,
     )?;
-    if crate::package_profile::member().is_some() {
+    if crate::package::profile::member().is_some() {
         if !counts.is_empty() {
             contribute(|contributions| {
                 for (&objective, &count) in &counts {

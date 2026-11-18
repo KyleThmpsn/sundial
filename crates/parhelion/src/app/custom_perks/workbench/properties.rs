@@ -210,14 +210,14 @@ pub(super) struct Properties {
     /// Summaries of recent assets' property changes.
     changes: Vec<Changes>,
     /// Text typed into an asset's value rows and not yet parsed, by asset.
-    text: BTreeMap<u32, BTreeMap<(WeaponRuntimeFieldLocator, u8), String>>,
+    text: BTreeMap<u32, BTreeMap<(RuntimeFieldLocator, u8), String>>,
     hud: hud::HudStatuses,
 }
 
 /// One asset's property change lines, read from a loaded graph and the asset's values.
 struct Changes {
     graph: Arc<PrivatePerkRuntimeGraph>,
-    values: Vec<WeaponRuntimeValueOverride>,
+    values: Vec<RuntimeValueOverride>,
     /// Whether every named value was in view, so only the rest are lines.
     named: bool,
     lines: Result<Vec<String>, String>,
@@ -456,7 +456,7 @@ impl Properties {
     fn change_lines(
         &mut self,
         graph: Arc<PrivatePerkRuntimeGraph>,
-        values: &[WeaponRuntimeValueOverride],
+        values: &[RuntimeValueOverride],
         named: bool,
     ) -> &Result<Vec<String>, String> {
         let position = self.changes.iter().position(|cached| {

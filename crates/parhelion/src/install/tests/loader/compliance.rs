@@ -87,10 +87,10 @@ fn old_transaction(
         .iter()
         .enumerate()
         .map(|(index, (name, bytes))| {
-            let incoming = if !removal && name == crate::package_profile::PARHELION_ASSET_FILE_NAME
+            let incoming = if !removal && name == crate::package::profile::PARHELION_ASSET_FILE_NAME
             {
                 build_test_package_with_physical_payload(
-                    crate::package_profile::PARHELION_ASSET_PACKAGE_ID,
+                    crate::package::profile::PARHELION_ASSET_PACKAGE_ID,
                     0,
                     b"interrupted assets",
                 )
@@ -212,9 +212,9 @@ fn committed_legacy_install_is_retired_to_its_backup_and_unknown_temporary_conte
     fs::write(temporary, bytes).unwrap();
     recover_interrupted_install(&recovery(&fixture)).unwrap();
     fixture.staged_bytes.insert(
-        crate::package_profile::PARHELION_ASSET_FILE_NAME.into(),
+        crate::package::profile::PARHELION_ASSET_FILE_NAME.into(),
         build_test_package_with_physical_payload(
-            crate::package_profile::PARHELION_ASSET_PACKAGE_ID,
+            crate::package::profile::PARHELION_ASSET_PACKAGE_ID,
             0,
             b"interrupted assets",
         )

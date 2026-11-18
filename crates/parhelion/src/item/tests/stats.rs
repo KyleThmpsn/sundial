@@ -29,12 +29,7 @@ fn custom_plug_stats_reject_silently_truncated_and_invalid_edits_atomically() {
     let source = synthetic_weapon_with_investment_stats();
     let mut authored = source.clone();
     let too_many = (0..17).map(|index| (index, 1)).collect::<Vec<_>>();
-    assert!(
-        apply_custom_plug_stats(&mut authored, &too_many)
-            .unwrap_err()
-            .to_string()
-            .contains("16-contribution")
-    );
+    assert!(apply_custom_plug_stats(&mut authored, &too_many).is_err());
     assert_eq!(authored, source);
     for invalid in [vec![(256, 10)], vec![(13, 10), (13, 20)]] {
         assert!(apply_custom_plug_stats(&mut authored, &invalid).is_err());

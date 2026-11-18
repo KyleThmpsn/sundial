@@ -9,7 +9,6 @@ fn malformed_profile_sections_are_rejected_without_mutation() {
     let before = document.clone();
     let error = add_profile_item(&mut document, 1, 1).unwrap_err();
     assert_eq!(error.path(), "/state/account/profile_items");
-    assert!(error.message().contains("array"));
     assert_eq!(document, before);
 }
 

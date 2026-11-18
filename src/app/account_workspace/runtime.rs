@@ -6,7 +6,7 @@ use super::{AccountDocument, WorkspaceDocument};
 impl WorkspaceDocument {
     pub(in crate::app) fn runtime_view(&self) -> Value {
         let mut view = self.json.clone();
-        if let AccountDocument::Sqlite(document) = &self.account {
+        if let AccountDocument::Sunrise(document) = &self.account {
             for parent in ["state", "server"] {
                 if !view.get(parent).is_some_and(Value::is_object) {
                     view[parent] = json!({});
@@ -20,7 +20,7 @@ impl WorkspaceDocument {
     }
 
     pub(in crate::app) fn apply_runtime_view(&mut self, mut view: Value) -> Result<(), String> {
-        if let AccountDocument::Sqlite(document) = &mut self.account {
+        if let AccountDocument::Sunrise(document) = &mut self.account {
             let account = view
                 .pointer("/state/account")
                 .ok_or("The runtime draft is missing active account data")?;

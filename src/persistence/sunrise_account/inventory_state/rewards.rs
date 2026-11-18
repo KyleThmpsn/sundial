@@ -1,0 +1,101 @@
+//! Update delivery rows in place so extension columns and queue order survive edits.
+
+use super::{PendingReward, Schema, SunriseAccountError, sql};
+use rusqlite::{Connection, params};
+use std::collections::BTreeMap;
+
+pub(super) fn load(
+    db: &Connection,
+    schema: Schema,
+) -> Result<Vec<PendingReward>, SunriseAccountError> {
+    // Schema 7 stores no kind, which reads as absent.
+    let kind = if schema.has_reward_kind() {
+        "kind"
+    } else {
+        "NULL"
+    };
+    let mut statement = db
+        .prepare(&format!(
+            "SELECT id, character_slot, {kind}, definition_hash, quantity FROM pending_rewards ORDER BY id"
+        ))
+        .map_err(sql)?;
+    statement
+        .query_map([], |row| {
+            Ok(PendingReward {
+                id: row.get(0)?,
+                character_slot: row.get(1)?,
+                kind: row.get(2)?,
+                definition_hash: row.get(3)?,
+                quantity: row.get(4)?,
+            })
+        })
+        .map_err(sql)?
+        .collect::<Result<_, _>>()
+        .map_err(sql)
+}
+
+pub(super) fn save(
+    db: &rusqlite::Transaction<'_>,
+    schema: Schema,
+    rewards: &[PendingReward],
+    preserved: &[super::super::writer::NativeRow],
+) -> Result<(), SunriseAccountError> {
+    // The caller holds an immediate transaction and has checked the source revision.
+    let mut original: BTreeMap<_, _> = load(db, schema)?
+        .into_iter()
+        .map(|reward| (reward.id, reward))
+        .collect();
+    let preserved = super::Preserved::new(preserved, &["id"]);
+    let mut ids = std::collections::BTreeSet::new();
+    for reward in rewards {
+        if reward.id <= 0 || !ids.insert(reward.id) {
+            return Err(SunriseAccountError::invalid_data(
+                "pending_rewards",
+                "Invalid or duplicate reward ID",
+            ));
+        }
+        if reward.kind.is_some() != schema.has_reward_kind() {
+            return Err(SunriseAccountError::invalid_data(
+                "pending_rewards",
+                "The reward kind does not match the account schema",
+            ));
+        }
+        if let Some(before) = original.remove(&reward.id) {
+            if before.character_slot != reward.character_slot
+                || before.kind != reward.kind
+                || before.definition_hash != reward.definition_hash
+            {
+                return Err(SunriseAccountError::invalid_data(
+                    "pending_rewards",
+                    "An existing reward cannot change its recipient or definition",
+                ));
+            }
+            if before.quantity != reward.quantity {
+                db.execute(
+                    "UPDATE pending_rewards SET quantity=? WHERE id=?",
+                    params![reward.quantity, reward.id],
+                )
+                .map_err(sql)?;
+            }
+        } else {
+            let mut row = preserved.get(&[reward.id]);
+            for (key, value) in [
+                ("id", Some(reward.id)),
+                ("character_slot", Some(reward.character_slot as i64)),
+                ("kind", reward.kind.map(i64::from)),
+                ("definition_hash", Some(i64::from(reward.definition_hash))),
+                ("quantity", Some(i64::from(reward.quantity))),
+            ] {
+                if let Some(value) = value {
+                    super::put(&mut row, key, value);
+                }
+            }
+            super::insert(db, "pending_rewards", row)?;
+        }
+    }
+    for id in original.keys() {
+        db.execute("DELETE FROM pending_rewards WHERE id=?", [id])
+            .map_err(sql)?;
+    }
+    Ok(())
+}

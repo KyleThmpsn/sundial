@@ -1,14 +1,7 @@
 //! Anatomical wrist axes avoid carrying the donor's grip into every source action.
+use crate::math::cross;
 use crate::{halo_reach::rig::normalize, tiger::animation::pose::Pose};
 use anyhow::Result;
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
 
 /// Rotation from an anatomical palm frame into the wrist's local coordinates.
 pub(super) fn frame(wrist: Pose, index: Pose, middle: Pose, pinky: Pose) -> Result<Pose> {

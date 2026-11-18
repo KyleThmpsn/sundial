@@ -1,11 +1,11 @@
-//! Reload-hold element switching: The Fundamentals grafted onto another body.
+//! Reload-hold damage type switching: The Fundamentals grafted onto another body.
 //!
 //! Proven in game on 2026-09-16. A SUROS Regime body with Hard Light as its appearance donor and
 //! Hard Light's Fundamentals plug in its trait socket stepped Void, Arc, Solar under a held Reload
 //! exactly like stock Hard Light: the plug's three action-state records flipped and the HUD pip
 //! followed. Nothing else was needed, not Hard Light's item hash, runtime entity, pattern
 //! selector, base perks or its declaration-only intrinsic perk 479. The hold follows the gear-art
-//! row the presentation donor supplies, and the element change is the plug's three
+//! row the presentation donor supplies, and the damage type change is the plug's three
 //! predicate-gated Set Host Mode effects.
 use crate::error::invalid;
 #[cfg(test)]
@@ -19,17 +19,17 @@ use crate::{
 pub(crate) const FUNDAMENTALS_PLUG_HASH: u32 = 0x9C33_04DA;
 /// The native socket type of weapon trait sockets, the lane the plug is pinned into.
 pub(crate) const TRAIT_SOCKET_TYPE: u16 = 92;
-/// The elements in the order the hold steps through them: selector 0, 1, then 2.
+/// The damage types in the order the hold steps through them: selector 0, 1, then 2.
 pub(crate) const SELECTOR_ORDER: [ModernDamageType; 3] = [
     ModernDamageType::Void,
     ModernDamageType::Arc,
     ModernDamageType::Solar,
 ];
 
-/// The stock finished-perk row on the plug that sets one element.
+/// The stock finished-perk row on the plug that sets one damage type.
 #[must_use]
-pub(crate) const fn element_perk_index(element: ModernDamageType) -> Option<u16> {
-    match element {
+pub(crate) const fn damage_type_perk_index(damage_type: ModernDamageType) -> Option<u16> {
+    match damage_type {
         ModernDamageType::Void => Some(464),
         ModernDamageType::Arc => Some(462),
         ModernDamageType::Solar => Some(463),
@@ -38,8 +38,8 @@ pub(crate) const fn element_perk_index(element: ModernDamageType) -> Option<u16>
 }
 
 #[must_use]
-pub(crate) const fn element_label(element: ModernDamageType) -> &'static str {
-    match element {
+pub(crate) const fn damage_type_label(damage_type: ModernDamageType) -> &'static str {
+    match damage_type {
         ModernDamageType::Kinetic => "Kinetic",
         ModernDamageType::Arc => "Arc",
         ModernDamageType::Solar => "Solar",
@@ -47,39 +47,39 @@ pub(crate) const fn element_label(element: ModernDamageType) -> &'static str {
     }
 }
 
-/// The element the weapon rests on: the first chosen element in selector order.
+/// The damage type the weapon rests on: the first chosen damage type in selector order.
 #[must_use]
-pub(crate) fn resting_element(elements: &[ModernDamageType]) -> Option<ModernDamageType> {
+pub(crate) fn resting_damage_type(damage_types: &[ModernDamageType]) -> Option<ModernDamageType> {
     SELECTOR_ORDER
         .into_iter()
-        .find(|element| elements.contains(element))
+        .find(|damage_type| damage_types.contains(damage_type))
 }
 
-/// The chosen elements in selector order, without repeats.
+/// The chosen damage types in selector order, without repeats.
 #[must_use]
-pub(crate) fn ordered_elements(elements: &[ModernDamageType]) -> Vec<ModernDamageType> {
+pub(crate) fn ordered_damage_types(damage_types: &[ModernDamageType]) -> Vec<ModernDamageType> {
     SELECTOR_ORDER
         .into_iter()
-        .filter(|element| elements.contains(element))
+        .filter(|damage_type| damage_types.contains(damage_type))
         .collect()
 }
 
-pub(crate) fn validate_elements(elements: &[ModernDamageType]) -> AuthoringResult<()> {
-    if elements
+pub(crate) fn validate_damage_types(damage_types: &[ModernDamageType]) -> AuthoringResult<()> {
+    if damage_types
         .iter()
-        .any(|element| element_perk_index(*element).is_none())
+        .any(|damage_type| damage_type_perk_index(*damage_type).is_none())
     {
         return Err(invalid(
             "This Fundamentals-based switcher cycles Arc, Solar and Void. Use a Perk Workbench Set Damage Type action to author Kinetic damage.",
         ));
     }
-    let unique = ordered_elements(elements);
-    if unique.len() != elements.len() {
-        return Err(invalid("Variable damage lists an element twice."));
+    let unique = ordered_damage_types(damage_types);
+    if unique.len() != damage_types.len() {
+        return Err(invalid("Variable damage lists a damage type twice."));
     }
     if unique.len() < 2 {
         return Err(invalid(
-            "Variable damage needs at least two elements. One element is a fixed damage type.",
+            "Variable damage needs at least two damage types. One is a fixed damage type.",
         ));
     }
     Ok(())
@@ -89,19 +89,19 @@ pub(crate) fn validate_spec(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
     let Some(variable) = &spec.overrides.variable_damage else {
         return Ok(());
     };
-    validate_elements(&variable.elements)?;
+    validate_damage_types(&variable.damage_types)?;
     if let Some(resting) = spec.overrides.modern_damage_type
-        && !variable.elements.contains(&resting)
+        && !variable.damage_types.contains(&resting)
     {
         return Err(invalid(format!(
-            "Variable damage rests on {}, which is not one of its elements.",
-            element_label(resting)
+            "Variable damage rests on {}, which is not one of its damage types.",
+            damage_type_label(resting)
         )));
     }
     Ok(())
 }
 
-/// The expanded spec when the weapon switches elements, or `None` when nothing changes.
+/// The expanded spec when the weapon switches damage types, or `None` when nothing changes.
 pub(crate) fn expand_spec(
     spec: &WeaponCloneSpec,
     definition: &[u8],
@@ -117,7 +117,7 @@ pub(crate) fn expand_spec(
     Ok(Some(expanded))
 }
 
-/// Pins The Fundamentals into the first trait socket and, for a subset of elements, adds a
+/// Pins The Fundamentals into the first trait socket and, for a subset of damage types, adds a
 /// private variant of the plug carrying only the chosen stock rows.
 pub(crate) fn expand_overrides(
     overrides: &WeaponCloneOverrides,
@@ -126,7 +126,7 @@ pub(crate) fn expand_overrides(
     let Some(variable) = &overrides.variable_damage else {
         return Ok(overrides.clone());
     };
-    validate_elements(&variable.elements)?;
+    validate_damage_types(&variable.damage_types)?;
     // An author can turn one of the donor's columns into a trait socket, or append one, and can
     // put The Fundamentals there themselves. Read the lanes the way the socket list draws them
     // and use the socket they chose, so the build does not lead a second lane with the same perk.
@@ -161,11 +161,11 @@ pub(crate) fn expand_overrides(
     if !expanded
         .additional_behaviors
         .iter()
-        .any(|id| id == crate::weapon::behavior::ELEMENT_SWITCH)
+        .any(|id| id == crate::weapon::behavior::DAMAGE_TYPE_SWITCH)
     {
         expanded
             .additional_behaviors
-            .push(crate::weapon::behavior::ELEMENT_SWITCH.to_owned());
+            .push(crate::weapon::behavior::DAMAGE_TYPE_SWITCH.to_owned());
     }
     if expanded.socket_columns.is_empty() {
         expanded.socket_columns = vec![None; socket_types.len()];
@@ -178,7 +178,7 @@ pub(crate) fn expand_overrides(
         )));
     }
     // The Fundamentals leads the lane rather than emptying it, so an author's own choices for
-    // that socket stay behind it and the element still steps from the first plug.
+    // that socket stay behind it and the damage type still steps from the first plug.
     let column = expanded.socket_columns[lane].get_or_insert_with(|| WeaponSocketColumnOverride {
         choices: Vec::new(),
         socket_type: None,
@@ -202,11 +202,11 @@ pub(crate) fn expand_overrides(
             lane + 1
         )));
     }
-    let elements = ordered_elements(&variable.elements);
-    if elements.len() < SELECTOR_ORDER.len() {
-        let labels = elements
+    let damage_types = ordered_damage_types(&variable.damage_types);
+    if damage_types.len() < SELECTOR_ORDER.len() {
+        let labels = damage_types
             .iter()
-            .map(|element| element_label(*element))
+            .map(|damage_type| damage_type_label(*damage_type))
             .collect::<Vec<_>>();
         expanded
             .socket_plug_variants
@@ -225,12 +225,12 @@ pub(crate) fn expand_overrides(
                     labels.join(", ")
                 )),
                 additional_sandbox_perks: Vec::new(),
-                sandbox_perks: elements
+                sandbox_perks: damage_types
                     .iter()
-                    .map(|element| WeaponSandboxPerkRuntimeOverride {
+                    .map(|damage_type| WeaponSandboxPerkRuntimeOverride {
                         program: None,
                         projectiles: Vec::new(),
-                        source_perk_index: element_perk_index(*element)
+                        source_perk_index: damage_type_perk_index(*damage_type)
                             .expect("validated elemental rows"),
                         activation: None,
                         runtime_values: Vec::new(),
@@ -248,10 +248,10 @@ mod tests {
 
     const SOCKET_TYPES: [u16; 8] = [176, 65, 177, TRAIT_SOCKET_TYPE, 183, u16::MAX, 454, 448];
 
-    fn overrides(elements: &[ModernDamageType]) -> WeaponCloneOverrides {
+    fn overrides(damage_types: &[ModernDamageType]) -> WeaponCloneOverrides {
         WeaponCloneOverrides {
             variable_damage: Some(WeaponVariableDamage {
-                elements: elements.to_vec(),
+                damage_types: damage_types.to_vec(),
             }),
             ..WeaponCloneOverrides::default()
         }
@@ -286,16 +286,18 @@ mod tests {
     }
 
     #[test]
-    fn element_sets_are_validated() {
-        assert!(validate_elements(&SELECTOR_ORDER).is_ok());
-        assert!(validate_elements(&[ModernDamageType::Arc, ModernDamageType::Void]).is_ok());
-        assert!(validate_elements(&[ModernDamageType::Arc]).is_err());
-        assert!(validate_elements(&[ModernDamageType::Arc, ModernDamageType::Arc]).is_err());
-        assert!(validate_elements(&[ModernDamageType::Kinetic, ModernDamageType::Arc]).is_err());
+    fn damage_type_sets_are_validated() {
+        assert!(validate_damage_types(&SELECTOR_ORDER).is_ok());
+        assert!(validate_damage_types(&[ModernDamageType::Arc, ModernDamageType::Void]).is_ok());
+        assert!(validate_damage_types(&[ModernDamageType::Arc]).is_err());
+        assert!(validate_damage_types(&[ModernDamageType::Arc, ModernDamageType::Arc]).is_err());
+        assert!(
+            validate_damage_types(&[ModernDamageType::Kinetic, ModernDamageType::Arc]).is_err()
+        );
         assert_eq!(
-            resting_element(&[ModernDamageType::Solar, ModernDamageType::Arc]),
+            resting_damage_type(&[ModernDamageType::Solar, ModernDamageType::Arc]),
             Some(ModernDamageType::Arc)
         );
-        assert_eq!(resting_element(&[]), None);
+        assert_eq!(resting_damage_type(&[]), None);
     }
 }

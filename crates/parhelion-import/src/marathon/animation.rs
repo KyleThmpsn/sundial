@@ -5,19 +5,24 @@
 //! class at `+310`, and the arm selection `808025AA` through the Tag64 at `+338`. The selection's
 //! default arm entity at `+10` owns the arm skeleton, controls and `80803936` action lookup.
 //! Runner alternatives at selection `+20` are not selected for a Guardian. Every action the
-//! native state table can request is specialized through the source selector, and the clips it
-//! selects are retargeted onto the native arm controls and a private weapon section.
+//! native state table can request is evaluated through the source selector. Qualified native
+//! stance, awareness, sprint and ammunition names retain dynamic branches. Selected clips are
+//! retargeted onto the native arm controls and a private weapon section.
 use super::*;
 use crate::tiger::animation::{clip as native_clip, control, pose::Pose};
 use std::collections::{BTreeMap, BTreeSet};
+mod character;
 mod clip;
 mod compile;
 mod controller;
 mod cue;
 mod donor;
+pub(super) mod driver;
 mod native;
 mod retarget;
+mod selection;
 mod source;
+pub use character::inspect as inspect_character;
 pub(super) use compile::compile;
 pub(super) use donor::choose as choose_donor;
 pub(super) use donor::plain as plain_behavior;
@@ -27,7 +32,7 @@ pub(super) use native::equipment_bones;
 /// class.
 type Component = (u32, std::sync::Arc<Payload>, usize, u32);
 
-fn components(r: &mut Reader, entity: u32) -> Result<Vec<Component>> {
+pub(super) fn components(r: &mut Reader, entity: u32) -> Result<Vec<Component>> {
     let p = r.tag(entity, Some(0x8080BAAD))?;
     p.array(8, 12, Some(0x8080BAA2))?
         .into_iter()
@@ -54,20 +59,8 @@ pub(super) fn palette(
         "entity",
     )?;
     let owners = components(source, root)?;
-    let owner = |class: u32| -> Result<std::sync::Arc<Payload>> {
-        let found = owners
-            .iter()
-            .filter(|owner| owner.3 == class)
-            .map(|owner| owner.1.clone())
-            .collect::<Vec<_>>();
-        ensure!(
-            found.len() == 1,
-            "Source weapon needs one {class:08X} component"
-        );
-        Ok(found[0].clone())
-    };
-    let (skeleton, controls) = (owner(source::SKELETON)?, owner(source::CONTROLS)?);
-    let weapon = source::Rig::read(&skeleton, &controls)?;
+    let driver = driver::Driver::read(source, root, &owners)?;
+    let weapon = source::Rig::read(&driver.skeleton.1, &driver.controls.1)?;
     let carrier = native::Carrier::read(native, item_tag)?;
     // The extension writes private skeletons, which a worn camo does not keep.
     let scratch = tempfile::tempdir()?;
@@ -80,31 +73,15 @@ pub(super) fn palette(
 /// rotations on the right and adding translations. A sight can store its optic folded in the bind
 /// pose and swing it onto its sight line in such a layer, which the attachment's own controller
 /// plays and no lookup state routes. The geometry chooses among these by its aperture. An
-/// attachment without a single skeleton, control rig, lookup and `idle` state, or whose idle
+/// attachment without a connected animation driver and `idle` state, or whose idle
 /// state cannot be sampled, keeps its bind. Layers that cannot be sampled are left out. Both are
 /// reported.
 pub(super) fn local_pose(source: &mut Reader, entity: u32) -> Result<(Vec<Vec<Pose>>, Value)> {
     let owners = components(source, entity)?;
-    let one = |class: u32| {
-        let found = owners
-            .iter()
-            .filter(|owner| owner.3 == class)
-            .collect::<Vec<_>>();
-        (found.len() == 1).then(|| found[0].1.clone())
-    };
-    let (Some(skeleton), Some(controls), Some(lookup)) = (
-        one(source::SKELETON),
-        one(source::CONTROLS),
-        one(controller::LOOKUP),
-    ) else {
-        return Ok((
-            Vec::new(),
-            json!({"pose":"bind","reason":"The attachment has no single skeleton, control rig and action lookup"}),
-        ));
-    };
     let sampled = (|| -> Result<_> {
-        let rig = source::Rig::read(&skeleton, &controls)?;
-        let local = controller::Controller::read(source, &lookup)?;
+        let driver = driver::Driver::read(source, entity, &owners)?;
+        let rig = source::Rig::read(&driver.skeleton.1, &driver.controls.1)?;
+        let local = controller::Controller::read(source, &driver.lookup.1)?;
         let idle = source::fnv("idle");
         ensure!(
             local.names.contains_key(&idle),
@@ -119,9 +96,9 @@ pub(super) fn local_pose(source: &mut Reader, entity: u32) -> Result<(Vec<Vec<Po
             .context("The attachment idle state plays no clip")?;
         let (values, additive) = compile::values(source, local.clips[ordinal], &rig, 0)?;
         ensure!(!additive, "The attachment idle clip is additive");
-        Ok((rig, local, values))
+        Ok((rig, local, values, driver.report))
     })();
-    let (rig, local, values) = match sampled {
+    let (rig, local, values, driver) = match sampled {
         Ok(sampled) => sampled,
         Err(error) => {
             if crate::cancellation::is_cancelled(&error) {
@@ -165,7 +142,7 @@ pub(super) fn local_pose(source: &mut Reader, entity: u32) -> Result<(Vec<Vec<Po
     }
     Ok((
         rests,
-        json!({"pose":"idle","layers":layers,
+        json!({"pose":"idle","layers":layers,"driver":driver,
             "policy":"Rest 0 is the first frame of the attachment's own idle state. Each layer rest adds the end of an additive clip in its bank. The source transitions are not translated."}),
     ))
 }
@@ -222,9 +199,25 @@ fn entities(source: &mut Reader, parts: &[Value], directory: &Path) -> Result<(R
                 if ![0, u32::MAX].contains(&entity) {
                     entities.entry(entity).or_default().insert("default_arms");
                 }
+                let mut alternatives = Vec::new();
+                let mut names = BTreeSet::new();
+                for row in data.array(0x20, 32, Some(0x808025AD))? {
+                    let name = data.u32(row)?;
+                    let alternative = source.ref64(&data, row + 0x10)?;
+                    ensure!(
+                        names.insert(name) && ![0, u32::MAX].contains(&alternative),
+                        "Source runner arm selection is ambiguous or empty"
+                    );
+                    entities
+                        .entry(alternative)
+                        .or_default()
+                        .insert("runner_arms");
+                    alternatives.push(json!({"name":name,"entity":alternative}));
+                }
                 selections.push(json!({"owner":owner,"selection":selection,"default_entity":entity,
+                    "runner_alternatives":alternatives,
                     "file":save(directory,selection,"arm-selection",&data)?,
-                    "limits":"Default arm selection only. Runner alternatives and native character retargeting are untranslated."}));
+                    "limits":"Default and runner arm resources are exported separately. Native runner selection and character retargeting are untranslated."}));
             }
         }
     }

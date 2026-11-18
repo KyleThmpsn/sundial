@@ -47,8 +47,8 @@ pub use validation::validate_values;
 
 use crate::package_runtime::reader::PackageManager;
 use crate::runtime::{
-    WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimePathElement,
-    WeaponRuntimeRoot, WeaponRuntimeValue, WeaponRuntimeValueOverride,
+    RuntimeField, RuntimeFieldSource, RuntimeGraph, RuntimePathElement, RuntimeRoot, RuntimeValue,
+    RuntimeValueOverride,
 };
 
 const HEALTH: u32 = 0x8080_4B8A;
@@ -987,14 +987,14 @@ impl Kind {
 pub struct Setting {
     pub kind: Kind,
     pub owner_tag: u32,
-    pub field: WeaponRuntimeField,
+    pub field: RuntimeField,
     /// Where in an opaque field the setting's bytes sit, for a setting kept that way. A declared
     /// field's setting has none.
     pub lane: Option<Lane>,
     /// The group does not force a delay, so its maximum is read only with a positive minimum.
     pub requires_positive_minimum: bool,
     /// Fields a setting writes together with `field`, such as a Falloff Start's two slope rows.
-    pub linked: Vec<WeaponRuntimeField>,
+    pub linked: Vec<RuntimeField>,
 }
 
 impl Setting {
@@ -1035,7 +1035,7 @@ impl Setting {
         self.field.owner_offset + self.lane.map_or(0, |lane| lane.at as u32)
     }
     /// `value` as this setting reads it: a number, one or zero for a flag, or a factor's lane.
-    fn read(&self, value: &WeaponRuntimeValue) -> Option<f32> {
+    fn read(&self, value: &RuntimeValue) -> Option<f32> {
         if let Some(lane) = self.lane {
             let number = lane.read(value)?;
             return Some(if self.kind.unit() == Unit::Flag {
@@ -1045,30 +1045,28 @@ impl Setting {
             });
         }
         match (self.kind, value) {
-            (Kind::RetireOnRemoval, WeaponRuntimeValue::Unsigned(flags)) => {
+            (Kind::RetireOnRemoval, RuntimeValue::Unsigned(flags)) => {
                 Some(if flags & RETIRE == 0 { 0.0 } else { 1.0 })
             }
-            (Kind::SourceFilter, WeaponRuntimeValue::Unsigned(key)) => {
+            (Kind::SourceFilter, RuntimeValue::Unsigned(key)) => {
                 Some(if *key == NO_SOURCE_PROPERTY { 0.0 } else { 1.0 })
             }
-            (_, WeaponRuntimeValue::Boolean(on)) => Some(if *on { 1.0 } else { 0.0 }),
-            (Kind::Native(_), WeaponRuntimeValue::Signed(value)) => {
+            (_, RuntimeValue::Boolean(on)) => Some(if *on { 1.0 } else { 0.0 }),
+            (Kind::Native(_), RuntimeValue::Signed(value)) => {
                 Some(*value as f32 * self.kind.scale())
             }
-            (Kind::Native(_), WeaponRuntimeValue::Unsigned(value)) => {
+            (Kind::Native(_), RuntimeValue::Unsigned(value)) => {
                 Some(*value as f32 * self.kind.scale())
             }
             (Kind::FalloffStart, _) => falloff::read(value).map(|start| start * self.kind.scale()),
-            (_, WeaponRuntimeValue::Float32Bits(bits)) => {
-                Some(f32::from_bits(*bits) * self.kind.scale())
-            }
+            (_, RuntimeValue::Float32Bits(bits)) => Some(f32::from_bits(*bits) * self.kind.scale()),
             // A program's constant, whose first lane is its whole result.
-            (_, WeaponRuntimeValue::Vector4Float32Bits(lanes)) => Some(f32::from_bits(lanes[0])),
+            (_, RuntimeValue::Vector4Float32Bits(lanes)) => Some(f32::from_bits(lanes[0])),
             _ => None,
         }
     }
 
-    fn current<'a>(&'a self, draft: &'a [WeaponRuntimeValueOverride]) -> &'a WeaponRuntimeValue {
+    fn current<'a>(&'a self, draft: &'a [RuntimeValueOverride]) -> &'a RuntimeValue {
         draft
             .iter()
             .find(|entry| entry.locator == self.field.locator)
@@ -1081,7 +1079,7 @@ impl Setting {
     }
 
     #[must_use]
-    pub fn value(&self, draft: &[WeaponRuntimeValueOverride]) -> f32 {
+    pub fn value(&self, draft: &[RuntimeValueOverride]) -> f32 {
         self.read(self.current(draft))
             .unwrap_or_else(|| self.stock())
     }
@@ -1089,7 +1087,7 @@ impl Setting {
     /// Whether `draft` changes it. A lane compares only its own bytes, so a change to another
     /// setting of the same field leaves it unchanged.
     #[must_use]
-    pub fn is_modified(&self, draft: &[WeaponRuntimeValueOverride]) -> bool {
+    pub fn is_modified(&self, draft: &[RuntimeValueOverride]) -> bool {
         if self.kind == Kind::FalloffStart {
             return falloff::is_modified(self, draft);
         }
@@ -1100,11 +1098,7 @@ impl Setting {
     }
 
     /// Sets it to `value`, keeping every other bit, lane and flag of its field as they are.
-    pub fn set(
-        &self,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
-        value: f32,
-    ) -> Result<(), String> {
+    pub fn set(&self, draft: &mut Vec<RuntimeValueOverride>, value: f32) -> Result<(), String> {
         // A few settings keep a negative stock value that means none, such as -1 updates.
         let lowest = self.kind.range().0.min(0.0);
         if !value.is_finite() || value < lowest {
@@ -1141,7 +1135,7 @@ impl Setting {
         };
         draft.retain(|entry| entry.locator != self.field.locator);
         if next != self.field.value {
-            draft.push(WeaponRuntimeValueOverride {
+            draft.push(RuntimeValueOverride {
                 locator: self.field.locator.clone(),
                 value: next,
             });
@@ -1152,36 +1146,36 @@ impl Setting {
     /// The value its declared field takes for `value`.
     fn declared_value(
         &self,
-        draft: &[WeaponRuntimeValueOverride],
+        draft: &[RuntimeValueOverride],
         value: f32,
-    ) -> Result<WeaponRuntimeValue, String> {
+    ) -> Result<RuntimeValue, String> {
         let on = value >= 0.5;
         Ok(match (self.kind, self.current(draft)) {
-            (Kind::RetireOnRemoval, WeaponRuntimeValue::Unsigned(flags)) => {
-                WeaponRuntimeValue::Unsigned(if on { flags | RETIRE } else { flags & !RETIRE })
+            (Kind::RetireOnRemoval, RuntimeValue::Unsigned(flags)) => {
+                RuntimeValue::Unsigned(if on { flags | RETIRE } else { flags & !RETIRE })
             }
             // On restores the stock key, never another ability's or an edited one.
-            (Kind::SourceFilter, WeaponRuntimeValue::Unsigned(_)) => {
+            (Kind::SourceFilter, RuntimeValue::Unsigned(_)) => {
                 if on {
                     self.field.value.clone()
                 } else {
-                    WeaponRuntimeValue::Unsigned(NO_SOURCE_PROPERTY)
+                    RuntimeValue::Unsigned(NO_SOURCE_PROPERTY)
                 }
             }
-            (_, WeaponRuntimeValue::Boolean(_)) => WeaponRuntimeValue::Boolean(on),
-            (_, WeaponRuntimeValue::Float32Bits(_)) => {
-                WeaponRuntimeValue::Float32Bits((value / self.kind.scale()).to_bits())
+            (_, RuntimeValue::Boolean(_)) => RuntimeValue::Boolean(on),
+            (_, RuntimeValue::Float32Bits(_)) => {
+                RuntimeValue::Float32Bits((value / self.kind.scale()).to_bits())
             }
-            (Kind::Native(_), WeaponRuntimeValue::Signed(_)) => {
-                WeaponRuntimeValue::Signed((value / self.kind.scale()).round() as i64)
+            (Kind::Native(_), RuntimeValue::Signed(_)) => {
+                RuntimeValue::Signed((value / self.kind.scale()).round() as i64)
             }
-            (Kind::Native(_), WeaponRuntimeValue::Unsigned(_)) => {
-                WeaponRuntimeValue::Unsigned((value / self.kind.scale()).round() as u64)
+            (Kind::Native(_), RuntimeValue::Unsigned(_)) => {
+                RuntimeValue::Unsigned((value / self.kind.scale()).round() as u64)
             }
-            (_, WeaponRuntimeValue::Vector4Float32Bits(lanes)) => {
+            (_, RuntimeValue::Vector4Float32Bits(lanes)) => {
                 let mut lanes = *lanes;
                 lanes[0] = value.to_bits();
-                WeaponRuntimeValue::Vector4Float32Bits(lanes)
+                RuntimeValue::Vector4Float32Bits(lanes)
             }
             _ => {
                 return Err(format!(
@@ -1194,7 +1188,7 @@ impl Setting {
 
     /// Restores its stock value. A lane restores only its own bytes, so the field's other settings
     /// keep their edits.
-    pub fn reset(&self, draft: &mut Vec<WeaponRuntimeValueOverride>) {
+    pub fn reset(&self, draft: &mut Vec<RuntimeValueOverride>) {
         if self.kind == Kind::FalloffStart {
             falloff::reset(self, draft);
             return;
@@ -1207,7 +1201,7 @@ impl Setting {
         };
         draft.retain(|entry| entry.locator != self.field.locator);
         if let Some(next) = next.filter(|next| *next != self.field.value) {
-            draft.push(WeaponRuntimeValueOverride {
+            draft.push(RuntimeValueOverride {
                 locator: self.field.locator.clone(),
                 value: next,
             });
@@ -1216,13 +1210,13 @@ impl Setting {
 }
 
 /// A declared field of `class` at `offset` with a value of the expected kind.
-fn declared(field: &WeaponRuntimeField, class: u32, offset: u32) -> bool {
-    field.source == WeaponRuntimeFieldSource::NativeDeclaration
+fn declared(field: &RuntimeField, class: u32, offset: u32) -> bool {
+    field.source == RuntimeFieldSource::NativeDeclaration
         && field.locator.type_handle.get() == class
         && field.locator.value_offset == offset
 }
 
-fn through(field: &WeaponRuntimeField, class: u32, offset: u32) -> bool {
+fn through(field: &RuntimeField, class: u32, offset: u32) -> bool {
     field
         .locator
         .path
@@ -1230,16 +1224,16 @@ fn through(field: &WeaponRuntimeField, class: u32, offset: u32) -> bool {
         .any(|step| step.type_handle.get() == class && step.byte_offset == offset)
 }
 
-fn is_float(field: &WeaponRuntimeField) -> bool {
-    matches!(field.value, WeaponRuntimeValue::Float32Bits(_))
+fn is_float(field: &RuntimeField) -> bool {
+    matches!(field.value, RuntimeValue::Float32Bits(_))
 }
 
-fn is_flag(field: &WeaponRuntimeField) -> bool {
-    matches!(field.value, WeaponRuntimeValue::Boolean(_))
+fn is_flag(field: &RuntimeField) -> bool {
+    matches!(field.value, RuntimeValue::Boolean(_))
 }
 
 /// Every setting of the graph's parts its native readers act on.
-pub fn discover(manager: &PackageManager, graph: &WeaponRuntimeGraph) -> Vec<Setting> {
+pub fn discover(manager: &PackageManager, graph: &RuntimeGraph) -> Vec<Setting> {
     let roots = graph
         .resources
         .iter()
@@ -1361,7 +1355,7 @@ pub fn discover(manager: &PackageManager, graph: &WeaponRuntimeGraph) -> Vec<Set
 /// destination skip building their callback). `None` when the entity's rows cannot be read.
 fn connected_sources(
     manager: &PackageManager,
-    graph: &WeaponRuntimeGraph,
+    graph: &RuntimeGraph,
 ) -> Option<BTreeSet<(u32, u64)>> {
     let entity = manager.read_tag(graph.entity_tag).ok()?;
     let rows = crate::entity::owner::event_ends(&entity).ok()?;
@@ -1381,7 +1375,7 @@ fn connected_sources(
 /// interpreter, which reads its constant: its descriptor's fast-path index is zero. The holder
 /// at +0x70 keeps the row count, then a relative pointer to the array, whose rows follow a
 /// 16-byte header. A row past the payload counts as not read.
-fn interpreted_rows(root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -> Vec<bool> {
+fn interpreted_rows(root: &RuntimeRoot, payload: Option<&[u8]>) -> Vec<bool> {
     let Some(payload) = payload else {
         return Vec::new();
     };
@@ -1410,7 +1404,7 @@ fn interpreted_rows(root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -> Vec<boo
 }
 
 /// The health region rows whose own recovery values the reader takes.
-fn regions(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -> Vec<Setting> {
+fn regions(owner: u32, root: &RuntimeRoot, payload: Option<&[u8]>) -> Vec<Setting> {
     let Some(payload) = payload else {
         return Vec::new();
     };
@@ -1420,8 +1414,7 @@ fn regions(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -> Vec<
         (0x3C, Kind::DepletedRecoveryDelay),
         (0x40, Kind::RecoveryTime),
     ];
-    let mut rows =
-        BTreeMap::<Vec<WeaponRuntimePathElement>, Vec<(Kind, &WeaponRuntimeField)>>::new();
+    let mut rows = BTreeMap::<Vec<RuntimePathElement>, Vec<(Kind, &RuntimeField)>>::new();
     for field in &root.fields {
         let Some(&(_, kind)) = FIELDS
             .iter()
@@ -1465,7 +1458,7 @@ fn regions(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -> Vec<
 
 /// An incoming damage filter's owner and source tests, and its base multiplier. Owner Damage
 /// Only is read only while the filter's own branch at +0xE9, which takes precedence, is off.
-fn damage_filter(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -> Vec<Setting> {
+fn damage_filter(owner: u32, root: &RuntimeRoot, payload: Option<&[u8]>) -> Vec<Setting> {
     let direct = |offset: u32| {
         root.fields
             .iter()
@@ -1489,9 +1482,9 @@ fn damage_filter(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -
             linked: Vec::new(),
         });
     }
-    let source = direct(SOURCE_PROPERTY).filter(|field| {
-        matches!(field.value, WeaponRuntimeValue::Unsigned(key) if key != NO_SOURCE_PROPERTY)
-    });
+    let source = direct(SOURCE_PROPERTY).filter(
+        |field| matches!(field.value, RuntimeValue::Unsigned(key) if key != NO_SOURCE_PROPERTY),
+    );
     if let Some(field) = source {
         found.push(Setting {
             kind: Kind::SourceFilter,
@@ -1528,12 +1521,11 @@ fn damage_filter(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -
 }
 
 /// The constant row of the filter's base program, when the program pushes it and stores it.
-fn base_multiplier(root: &WeaponRuntimeRoot) -> Option<WeaponRuntimeField> {
+fn base_multiplier(root: &RuntimeRoot) -> Option<RuntimeField> {
     let mut bytecode = Vec::<(u32, u8)>::new();
-    let mut constants = Vec::<&WeaponRuntimeField>::new();
+    let mut constants = Vec::<&RuntimeField>::new();
     for field in &root.fields {
-        if field.source != WeaponRuntimeFieldSource::NativeDeclaration
-            || field.locator.value_offset != 0
+        if field.source != RuntimeFieldSource::NativeDeclaration || field.locator.value_offset != 0
         {
             continue;
         }
@@ -1557,10 +1549,10 @@ fn base_multiplier(root: &WeaponRuntimeRoot) -> Option<WeaponRuntimeField> {
             continue;
         };
         match (element.type_handle.get(), &field.value) {
-            (BYTECODE_ROW, WeaponRuntimeValue::Unsigned(byte)) => {
+            (BYTECODE_ROW, RuntimeValue::Unsigned(byte)) => {
                 bytecode.push((element.byte_offset, u8::try_from(*byte).unwrap_or(u8::MAX)));
             }
-            (CONSTANT_ROW, WeaponRuntimeValue::Vector4Float32Bits(_)) => constants.push(field),
+            (CONSTANT_ROW, RuntimeValue::Vector4Float32Bits(_)) => constants.push(field),
             _ => {}
         }
     }
@@ -1592,7 +1584,7 @@ struct Gates<'a> {
 impl Gates<'_> {
     /// The four words of the descriptor of the program at `slot` of `root`: its input count, a
     /// second count, its output count and its fast-path index.
-    fn descriptor(self, root: &WeaponRuntimeRoot, slot: u32) -> Option<[u32; 4]> {
+    fn descriptor(self, root: &RuntimeRoot, slot: u32) -> Option<[u32; 4]> {
         let at = root.owner_offset as usize + slot as usize + PROGRAM_WORDS;
         let bytes = self.payload?.get(at..at + 16)?;
         let mut words = [0; 4];
@@ -1652,12 +1644,12 @@ struct Programs {
 impl Programs {
     /// Reads the programs of `root`, which `owner` holds, with what its readers depend on beyond
     /// a program's place.
-    fn read(&mut self, owner: u32, root: &WeaponRuntimeRoot, gates: Gates<'_>) {
+    fn read(&mut self, owner: u32, root: &RuntimeRoot, gates: Gates<'_>) {
         // Each body's bytecode and constants, by their row.
-        type Rows<'a> = (Vec<(u32, u8)>, Vec<(u32, &'a WeaponRuntimeField)>);
+        type Rows<'a> = (Vec<(u32, u8)>, Vec<(u32, &'a RuntimeField)>);
         let mut bodies = BTreeMap::<Place, Rows<'_>>::new();
         for field in &root.fields {
-            if field.source != WeaponRuntimeFieldSource::NativeDeclaration
+            if field.source != RuntimeFieldSource::NativeDeclaration
                 || field.locator.value_offset != 0
             {
                 continue;
@@ -1687,10 +1679,10 @@ impl Programs {
                 .collect::<Place>();
             let (bytecode, constants) = bodies.entry(place).or_default();
             match (element.type_handle.get(), &field.value) {
-                (BYTECODE_ROW, WeaponRuntimeValue::Unsigned(byte)) => {
+                (BYTECODE_ROW, RuntimeValue::Unsigned(byte)) => {
                     bytecode.push((element.byte_offset, u8::try_from(*byte).unwrap_or(u8::MAX)));
                 }
-                (CONSTANT_ROW, WeaponRuntimeValue::Vector4Float32Bits(_)) => {
+                (CONSTANT_ROW, RuntimeValue::Vector4Float32Bits(_)) => {
                     constants.push((element.byte_offset, field));
                 }
                 _ => {}
@@ -1706,7 +1698,7 @@ impl Programs {
             bytecode.sort_by_key(|(row, _)| *row);
             constants.sort_by_key(|(row, _)| *row);
             let code = bytecode.iter().map(|(_, byte)| *byte).collect::<Vec<_>>();
-            let setting = |kind: Kind, constant: &WeaponRuntimeField| Setting {
+            let setting = |kind: Kind, constant: &RuntimeField| Setting {
                 kind,
                 owner_tag: owner,
                 field: constant.clone(),
@@ -1772,7 +1764,7 @@ impl Programs {
 /// Whether a target query emitter's accepted response sets its projectile's timer, which only
 /// then reads Triggered Duration. Neither flag is a declared field: +0x1A8 opens an opaque block
 /// and +0x14A has no field, so both are read from the owner's payload.
-fn query_timed(root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -> bool {
+fn query_timed(root: &RuntimeRoot, payload: Option<&[u8]>) -> bool {
     let Some(payload) = payload else {
         return false;
     };
@@ -1785,7 +1777,7 @@ fn query_timed(root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -> bool {
 }
 
 /// An invisibility attachment's break and movement thresholds, and its timed retirement.
-fn invisibility(owner: u32, root: &WeaponRuntimeRoot) -> Vec<Setting> {
+fn invisibility(owner: u32, root: &RuntimeRoot) -> Vec<Setting> {
     const SETTINGS: [(u32, Kind, bool); 5] = [
         (0x10, Kind::DamageBreakThreshold, false),
         (0x170, Kind::SuppressionTime, false),
@@ -1820,7 +1812,7 @@ fn invisibility(owner: u32, root: &WeaponRuntimeRoot) -> Vec<Setting> {
             .find(|field| declared(field, INVISIBILITY, offset) && field.locator.path.len() == 2)
     };
     if let Some(flags) = direct(ATTACHMENT_FLAGS) {
-        let WeaponRuntimeValue::Unsigned(_) = flags.value else {
+        let RuntimeValue::Unsigned(_) = flags.value else {
             return found;
         };
         found.push(Setting {

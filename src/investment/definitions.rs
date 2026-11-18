@@ -76,7 +76,7 @@ pub enum WeaponDamageCarrierFamily {
 }
 
 impl WeaponDamageCarrierFamily {
-    /// Returns the stock base-item sandbox-perk index for this carrier family and element.
+    /// Returns the stock base-item sandbox-perk index for this carrier family and damage type.
     #[must_use]
     pub const fn base_sandbox_perk_index(self, damage_type: WeaponDamageType) -> Option<u16> {
         use crate::investment::schema::{

@@ -444,11 +444,13 @@ impl Source {
         let activation = source_controller.u32(source_controller.pointer(24)? + 0x708)?;
         let effects = self.effects(manager, native, &anchor, activation, &graph, symbol)?;
         let (upgrades, passives) = upgrades(&anchor, &effects.resources, choice)?;
+        let granted = self.granted_keys(catalog)?;
         let bank_keys = upgrades
             .iter()
             .filter(|upgrade| upgrade.available)
             .chain(&passives)
             .flat_map(|upgrade| upgrade.keys.iter().copied())
+            .chain(granted.iter().copied())
             .collect::<BTreeSet<_>>();
         let bank_template = graph
             .originals
@@ -558,7 +560,7 @@ impl Source {
             "source":"d1_roi","choice":choice,"source_variant":anchor.variant,"native_graph":native_graph,
             "ability":anchor.ability,"foundation_source":anchor.foundation_source,
             "controller":controller.evidence,"bank":bank.evidence,"closure":closure,
-            "upgrades":upgrades,"passives":passives,
+            "upgrades":upgrades,"passives":passives,"granted_keys":granted,
             "presentation":presentation.evidence,"shared_resources":effects.shared.evidence,
             "activation_entity":{"source":activation,"symbol":effects.resources.get(&activation)},
             "effects":effect_evidence,"refused_effects":effects.refused,
@@ -566,6 +568,7 @@ impl Source {
             "animation":effects.actions,
             "gameplay_verified":false,
             "limits":["Each exclusive upgrade keeps its own complete property groups. Upgrades whose effect graphs are not translated are excluded.",
+                "Granted keys are bank keys no grid step applies. They take effect only when another item's perk applies them on the Super slot.",
                 "The foundation identifies the equipped Super. Its additional source grants are recorded, not certified by this preparation.",
                 "Source charge count, activation cost, active drain and qualified flags replace the presentation donor's settings.",
                 "Source presentation sequences replace the native ones. Their untranslated event kinds keep timing as native delays.",
@@ -585,6 +588,28 @@ impl Source {
             human: effects.human,
             evidence,
         })
+    }
+
+    /// The keys of a revival-family Super's bank that other items grant: no step of the
+    /// subclass's own grid grants them and their rows select no effect graph. An armor talent
+    /// grants such a key to the Super, so the private bank keeps its rows, and a perk that applies
+    /// the key on the Super slot reaches the imported Super alone. Empty for any other Super.
+    pub fn granted_keys(&self, catalog: &super::SubclassCatalog) -> Result<BTreeSet<u32>> {
+        if catalog.controller_class != 0x808025B8 {
+            return Ok(BTreeSet::new());
+        }
+        let mut own = BTreeSet::new();
+        for step in catalog.nodes.iter().flat_map(|node| &node.steps) {
+            let variants = step.source["variants"]
+                .as_array()
+                .context("Source subclass step variants are absent")?;
+            for variant in variants {
+                for record in grants(variant)? {
+                    own.insert(record.u32(0)?);
+                }
+            }
+        }
+        Ok(controller::ungranted_keys(self, catalog.bank, &own)?.unwrap_or_default())
     }
 
     /// The revival choice a preparation anchors on, checked against the source as it is now.

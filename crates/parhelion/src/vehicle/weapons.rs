@@ -7,7 +7,7 @@ use crate::{
 };
 use std::collections::BTreeSet;
 use sundial::package_authoring::{
-    PackageManager, entity::validate_weapon_entity, runtime::load_weapon_runtime_graph_for_entity,
+    PackageManager, entity::validate_weapon_entity, runtime::load_runtime_graph_for_entity,
 };
 use tiger_pkg::TagHash;
 
@@ -30,8 +30,7 @@ fn checked_projectile(manager: &PackageManager, tag: u32) -> AuthoringResult<()>
         .read_tag(TagHash(tag))
         .map_err(|e| invalid(format!("Projectile 0x{tag:08X}: {e}")))?;
     validate_weapon_entity(&payload).map_err(invalid)?;
-    let graph =
-        load_weapon_runtime_graph_for_entity(manager, 0, 0, tag, &payload).map_err(invalid)?;
+    let graph = load_runtime_graph_for_entity(manager, 0, 0, tag, &payload).map_err(invalid)?;
     if read_u16(&payload, 0x96)? != 18
         || !graph
             .resources
@@ -64,8 +63,7 @@ pub(super) fn projectile(
     let payload = manager
         .read_tag(TagHash(source))
         .map_err(|e| invalid(format!("Projectile donor: {e}")))?;
-    let graph =
-        load_weapon_runtime_graph_for_entity(manager, 0, 0, source, &payload).map_err(invalid)?;
+    let graph = load_runtime_graph_for_entity(manager, 0, 0, source, &payload).map_err(invalid)?;
     let mut choices = BTreeSet::new();
     for resource in &graph.resources {
         let Some(root) = resource.definition.as_ref().filter(|r| r.schema == BARREL) else {

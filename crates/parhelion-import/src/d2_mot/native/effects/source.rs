@@ -871,6 +871,18 @@ void main(
     Ok((name, side, evidence))
 }
 
+/// Keep a reticle or its lens out of the view that draws while not aiming. Bit 4 of a draw
+/// record's flags draws a part while aiming and bit 1 otherwise. A reticle shows only where
+/// its lens set the mask, and stock sights draw both while aiming alone: of 61 stock reticle
+/// draws, 56 carry bit 4 without bit 1, as do 45 of 53 lens draws. Modern reticles carry both
+/// bits while their lenses carry bit 4 alone, so the reticle would also draw at the hip
+/// against a mask no lens wrote.
+fn aim_only(record: &mut [u8]) {
+    if let Some(flags) = record.get_mut(0x18).filter(|flags| **flags & 5 == 5) {
+        *flags &= !1;
+    }
+}
+
 /// Native reticle pixel programs discard every pixel whose integer mask lacks bit 2, which
 /// a native sight gets from the stage-14 lens drawn in front of it. When the source has no
 /// stage-14 draw, each reticle gets a lens over its own faces from the native lens material
@@ -908,6 +920,14 @@ fn lenses(
                 .last_mut()
                 .context("lens draw record")?
                 .0[0x18] &= !0x10;
+            // The lens takes its record from the reticle it serves, so it follows the
+            // reticle out of the hip view.
+            aim_only(
+                &mut c.draws.records[14]
+                    .last_mut()
+                    .context("lens draw record")?
+                    .0,
+            );
         }
     }
     c.draws.layout(14)?;
@@ -997,9 +1017,28 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
         records.push((draw, created[&key].clone()));
     }
     c.draws.records[stage].clear();
+    // The source models whose lens also draws outside aiming: a stage-14 draw with view bit 1.
+    let hip_lenses = if stage == 16 {
+        c.source
+            .draws(14)?
+            .iter()
+            .filter(|lens| lens.record.get(24).is_some_and(|flags| flags & 1 != 0))
+            .map(|lens| lens.model)
+            .collect::<BTreeSet<_>>()
+    } else {
+        BTreeSet::new()
+    };
     for (draw, symbol) in &records {
         for (channel, faces) in &draw.groups {
             c.draws.add(stage, draw, *channel, faces, symbol)?;
+            if stage == 16 && !hip_lenses.contains(&draw.model) {
+                aim_only(
+                    &mut c.draws.records[16]
+                        .last_mut()
+                        .context("reticle draw record")?
+                        .0,
+                );
+            }
         }
     }
     c.draws.layout(stage)?;
@@ -1401,6 +1440,18 @@ fn build_material(
     // Preserve this source override independently of the native blend/depth state.
     if material.u8(0x32)? == 0x81 {
         mat[0x22] = 0x81;
+    }
+    // Header word `+0C` holds state flags that both eras spell alike: transparents hold 0, 2,
+    // 8 and 0xA in the source and in Shadowkeep. The carrier's word belongs to the carrier's
+    // own material, so a transparent takes the source's. With the carrier's 0 in place of
+    // the source's 2, a sight's holographic panel cut in and out as the weapon moved, and
+    // setting 2 in an installed package stopped it. A value Shadowkeep's transparents never
+    // hold keeps the carrier's.
+    if stage == 7 {
+        let flags = material.u32(0x0C)?;
+        if matches!(flags, 0 | 2 | 8 | 0xA) {
+            put(&mut mat, 0x0C, &flags.to_le_bytes())?;
+        }
     }
     for at in [24, 28] {
         // These source atlases are fixed resident resources. The gear

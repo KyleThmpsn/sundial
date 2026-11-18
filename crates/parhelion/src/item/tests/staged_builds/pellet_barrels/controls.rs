@@ -88,7 +88,7 @@ fn saved_barrel_controls_emit_geometry_and_capacity_without_changing_stock() {
     let shotgun = named("Felwinter's Lie");
     let tractor = named("Tractor Cannon");
     let source = |donor: &sundial::investment::WeaponDonorSummary| {
-        load_weapon_runtime_entity_at_pattern_index_with_manager(
+        load_runtime_entity_at_pattern_index_with_manager(
             &stock,
             donor.weapon_pattern_index.unwrap(),
         )
@@ -228,7 +228,7 @@ fn saved_barrel_controls_emit_geometry_and_capacity_without_changing_stock() {
         let manager = open_manager(view.path()).unwrap();
         let mut readbacks = Vec::new();
         for (i, recipe) in recipes.iter().enumerate() {
-            let authored = load_weapon_runtime_entity_with_manager(
+            let authored = load_runtime_entity_with_manager(
                 &manager,
                 recipe.identity.item_hash.parse_u32().unwrap(),
             )

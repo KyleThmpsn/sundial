@@ -158,7 +158,7 @@ pub(super) fn prepare(
         ));
     }
     host_new_tags.extend(assets.watermark.new_tags);
-    if crate::package_profile::host().first + host_new_tags.len() != assets.weapon_runtime_start {
+    if crate::package::profile::host().first + host_new_tags.len() != assets.weapon_runtime_start {
         return Err(validation(
             "Authored host runtime-tag allocation did not converge",
         ));
@@ -166,7 +166,7 @@ pub(super) fn prepare(
     host_new_tags.extend(runtime.weapon_tags);
     // An importer's own build keeps its text in a bank of its own after its records, since two
     // mods' text in the stock bank can't merge.
-    let localization = match crate::package_profile::member() {
+    let localization = match crate::package::profile::member() {
         Some(importer) => {
             crate::item::localization::own_bank(localization, importer, &mut host_new_tags)?
         }
@@ -180,6 +180,7 @@ pub(super) fn prepare(
             .into_iter()
             .chain(assets.subclass_hud_table)
             .chain(assets.subclass_ui)
+            .chain(assets.artifact_ui)
             .collect(),
         table_tags: sources.table_tags,
         has_custom_plugs,

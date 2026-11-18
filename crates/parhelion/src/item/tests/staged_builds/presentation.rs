@@ -32,7 +32,7 @@ fn clean_stock_sunrise_build_enrolls_the_weapon_icon_graph_in_the_native_host() 
         HOST_EXPECTED_ENTRY_COUNT + appended.len()
     );
     let bytes = host.bytes();
-    let layout = crate::format::PackageLayout::parse(bytes).unwrap();
+    let layout = crate::package::format::PackageLayout::parse(bytes).unwrap();
     let enrollment = layout.shared_tag_enrollment_rows(bytes).unwrap();
     let icon = weapon_plan.icon_definition_tag;
     let companion = TagHash::new(icon.pkg_id(), icon.entry_index() + 1);

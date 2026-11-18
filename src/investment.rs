@@ -985,6 +985,12 @@ impl InvestmentCatalog {
             return None;
         }
         let metadata = self.catalog.item_package_metadata(item.hash);
+        // Bucket 49 also contains display variants using the Ghost equipment slot. Only the
+        // functional artifact slot can be offered as an artifact base.
+        if item.bucket_hash == 1_506_418_338 && metadata.and_then(|m| m.equipment_slot) != Some(18)
+        {
+            return None;
+        }
         Some(WeaponDonorSummary {
             hash: u32::try_from(item.hash).ok()?,
             name: item.name.clone(),

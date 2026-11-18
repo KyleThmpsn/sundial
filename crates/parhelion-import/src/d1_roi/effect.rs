@@ -20,6 +20,7 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+mod assignment;
 mod choice;
 mod component;
 mod emission;
@@ -30,6 +31,7 @@ mod retained;
 mod shared;
 mod volume;
 mod wiring;
+pub(crate) use assignment::Assignment;
 pub use shared::{OMITTED, Resources, Shared, merge, occurrences};
 
 /// Native graphs whose owners serve as templates. Each holds one owner of every family it
@@ -94,10 +96,24 @@ pub use shared::{OMITTED, Resources, Shared, merge, occurrences};
 /// is the only one of 35 stock graphs with exactly those families that also has those three rows,
 /// that bank shape, a built-in network and a one-row receiver, the form of With a Laser Beam's
 /// `80A88C36`, whose network is built-in.
-const TEMPLATES: [u32; 20] = [
+// `80BB7376` holds a sight query and the shared network, with no external query connections.
+// Its query `80FEEB6C` supplies the native range scalar and output provider correspondence.
+// `80BB734A` has exactly a status, a sequence and a channel bank. Its status lifetime request
+// (`+60`) reads the sequence and the bank's getter (`+168`) feeds status input `+3E0`, the two
+// connections of Silimar's Joust's feedback graph `80A88C37` (status `+B8` to the sequence and
+// bank `+150` to status `+3F0`). It is one of 23 stock graphs with those families and one of
+// three with both connections.
+// `80B4C215` has exactly a Duration host and a sequence whose one event is a screen color event
+// (`808093C2`), the form of the Rise of Iron lens graphs such as Grayscale's `80A88C43`. It is
+// one of five stock graphs with exactly those two owners.
+// `80BAADA3` has a status with both lifetime requests unbound, an ability restriction owner
+// (`80803A78`) with default settings beside its masks, and a channel bank no row names. No stock
+// graph holds a status and a restriction alone. It is the form of Felwinter's Covenant's graph
+// `80A890D6`, a status with its lifetime request unbound beside restriction `80A890FC`.
+const TEMPLATES: [u32; 24] = [
     0x81A69987, 0x80BB7555, 0x8152BB5C, 0x80BFA463, 0x80B80F16, 0x80BC299F, 0x80FF06FD, 0x80C1934A,
     0x81A699C6, 0x80B810D2, 0x80FF0758, 0x80B5839E, 0x80FEEBEF, 0x815B5BC7, 0x8162AB5C, 0x80BAB153,
-    0x80EFAE57, 0x80FD754E, 0x80B81ACE, 0x80C199A2,
+    0x80EFAE57, 0x80FD754E, 0x80B81ACE, 0x80C199A2, 0x80BB7376, 0x80BB734A, 0x80B4C215, 0x80BAADA3,
 ];
 
 /// Template owners with no source counterpart, left out of the translated graph. Category provider
@@ -162,8 +178,12 @@ const FRAMEWORK: [(u32, u32); 7] = [
 /// Force Multiplier's created-graph bank `80A74B3F`. A scan of all 240,543 stock owners found them
 /// among a few banks of each shape. Bank `80B4681D` (graph `80B4681E`) has one incoming declaration
 /// it also exports publicly at `+F8`, the shape of source bank `80A89155` that In Your Element and
-/// Bomb Disposal Shield share.
-const BANKS: [(u32, u32); 9] = [
+/// Bomb Disposal Shield share. Bank `815789EE` has one private incoming declaration and no
+/// inherited rows or span, including the `414428AF` channel used by assignment victim graphs.
+/// Bank `80BC2D0A` (graph `80B8045B`) has four declarations, incoming ones at ordinals 0 and 1,
+/// inherited ones at 2 and 3, a public row for ordinal 1 and span `00000100`, the shape of
+/// Skorri's Harmony's bank `80A89113`. It is one of 12 such banks among 5,676 stock banks.
+const BANKS: [(u32, u32); 11] = [
     (0x80BC2F21, 0x80BC38B7),
     (0x80B81B42, 0x815B204C),
     (0x80B82431, 0x80C001F6),
@@ -173,6 +193,8 @@ const BANKS: [(u32, u32); 9] = [
     (0x80B8070F, 0x80BC2E5B),
     (0x80B3A133, 0x80B74225),
     (0x80B4681E, 0x80B4681D),
+    (0x80EFAE57, 0x815789EE),
+    (0x80B8045B, 0x80BC2D0A),
 ];
 
 /// Stock Duration hosts for source hosts whose lifetime form the template host lacks, with the
@@ -182,8 +204,10 @@ const DURATIONS: [(u32, u32); 1] = [(0x80BEBFE8, 0x80FD758F)];
 
 /// Stock statuses for source statuses whose lifetime receiver policy the template status lacks,
 /// with the graph that registers each. `81A699C5`, Eliksni Immunity's template status, keeps
-/// policy 2 with its two lifetime requests unbound.
-const STATUSES: [(u32, u32); 1] = [(0x81A699C6, 0x81A699C5)];
+/// policy 2 with its two lifetime requests unbound. `81A6998B` has policy 2 and a lifetime
+/// input request at `+578` that reads its graph's channel bank, the only examined policy 2
+/// status with that request, for a source status whose lifetime program reads a channel.
+const STATUSES: [(u32, u32); 2] = [(0x81A699C6, 0x81A699C5), (0x81A69990, 0x81A6998B)];
 
 /// Source owner definitions without a translation. Their graphs leave them out and say why.
 const UNTRANSLATED: [(u32, &str); 1] = [(
@@ -193,10 +217,19 @@ const UNTRANSLATED: [(u32, &str); 1] = [(
 
 /// Owners left out only when no connection row names them, since nothing in the graph then
 /// reads what they publish.
-const UNCONNECTED: [(u32, &str); 1] = [(
-    0x80802818,
-    "State selector has no connection or reader in this graph",
-)];
+/// Definition `808010FB` temporarily overrides the actor's tuning tier. Assignment adaptation
+/// retains native AI tuning and supplies a separate timed cancellation marker. It requires a
+/// validated companion action plan before this owner can be omitted.
+const UNCONNECTED: [(u32, &str); 2] = [
+    (
+        0x80802818,
+        "State selector has no connection or reader in this graph",
+    ),
+    (
+        0x808010FB,
+        "Native AI tuning is retained instead of the source temporary tuning override. Team assignment and delayed cancellation use native components",
+    ),
+];
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Family {
@@ -218,6 +251,10 @@ enum Family {
     Volume,
     /// A component that owns a child action controller for its lifetime.
     Nested,
+    /// An ordered target query with named scalar outputs.
+    Query,
+    /// Four ability masks that restrict the host's ability slots while the graph is attached.
+    Restriction,
 }
 
 impl Family {
@@ -237,6 +274,8 @@ impl Family {
             Self::IncomingDamage => "incoming",
             Self::Volume => "volume",
             Self::Nested => "nested",
+            Self::Query => "query",
+            Self::Restriction => "restriction",
         }
     }
 }
@@ -390,6 +429,8 @@ fn source_family(source: &Source, owner: &Payload) -> Result<Option<Family>> {
         0x808029C3 => Family::Duration,
         0x808027FA => Family::IncomingDamage,
         0x80802A94 => Family::Nested,
+        0x80803136 => Family::Query,
+        0x80802518 => Family::Restriction,
         _ if source.reference(class).ok() == Some(0x80800000)
             && source.read(class)?.u32(16)? == 0x80800362 =>
         {
@@ -450,6 +491,8 @@ fn native_family(native: &mut Reader, owner: &Payload) -> Result<Family> {
         0x80804BEE => Family::Damage,
         0x80803F8B => Family::IncomingDamage,
         0x80803E51 => Family::Nested,
+        0x8080381F => Family::Query,
+        0x80803A77 => Family::Restriction,
         // Generated network instances name the built-in network as their schema base.
         _ if native
             .tag(class, Some(0x80800000))
@@ -646,6 +689,7 @@ pub fn translate_without(
     let choice = choice::choose(native, &intake.owners, &intake.families)?;
     intake.check_unconnected()?;
     let scope = component::Scope {
+        graph: tag,
         source,
         shared,
         envelopes,
@@ -662,7 +706,8 @@ pub fn translate_without(
     wiring::stock_rows(template, &translated.components, &mut rows)?;
     retained::connect(native, &mut translated.components, &mut rows)?;
     wiring::check_inputs(&translated.components, &translated.inputs, &rows)?;
-    let emitted = emission::resources(template, translated.components, rows, symbol)?;
+    let mut emitted = emission::resources(template, translated.components, rows, symbol)?;
+    emitted.pending.extend(translated.additional);
     source.unchanged()?;
     Ok(Graph {
         hud: translated.hud,

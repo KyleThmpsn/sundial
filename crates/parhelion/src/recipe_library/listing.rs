@@ -156,7 +156,7 @@ fn entry(path: &Path) -> Result<RecipeLibraryEntry, crate::recipe::RecipeError> 
     Ok(RecipeLibraryEntry {
         perk_icon,
         // Read first, while the fields below have not yet moved out of the recipe.
-        art: crate::icon_art::Art::of(&recipe),
+        art: crate::icon::art::Art::of(&recipe),
         armor_origin,
         import_revision,
         import_ornaments,

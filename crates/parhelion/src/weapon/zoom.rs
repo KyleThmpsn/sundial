@@ -4,7 +4,7 @@ use super::rig::{
     TRANSLATOR_TABLE_SIZE, translator_array,
 };
 use crate::tag_payload::{array_at, read_u32};
-use crate::{AuthoringResult, error::invalid, item::WeaponRuntimeResourcePatch};
+use crate::{AuthoringResult, error::invalid, item::RuntimeResourcePatch};
 use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::entity::{
     WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, weapon_component_bindings,
@@ -38,7 +38,7 @@ pub(crate) fn patches(
     entity: &[u8],
     group: u32,
     magnification: f32,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     validate(magnification)?;
     let bindings =
         weapon_component_bindings(entity, WEAPON_STAT_TRANSLATOR_COMPONENT_KEY).map_err(invalid)?;
@@ -149,7 +149,7 @@ pub(crate) fn patches(
                 .checked_sub(resource)
                 .and_then(|value| u32::try_from(value).ok())
                 .ok_or_else(|| invalid("Magnification patch offset overflow"))?;
-            Ok(WeaponRuntimeResourcePatch {
+            Ok(RuntimeResourcePatch {
                 binding_hash: WEAPON_STAT_TRANSLATOR_COMPONENT_KEY,
                 resource_index: 0,
                 offset,

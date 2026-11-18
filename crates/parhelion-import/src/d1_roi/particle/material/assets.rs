@@ -137,6 +137,43 @@ fn resource(
     });
 }
 
+/// The surface description of a private texture copy.
+pub(in crate::d1_roi) struct Surface {
+    pub format: u32,
+    pub mips: u8,
+    pub layers: u16,
+    pub width: u16,
+    pub height: u16,
+    pub depth: u16,
+}
+
+/// Add a private copy of a source texture under `symbol`: its native header and backing data.
+pub(in crate::d1_roi) fn texture(
+    source: &Source,
+    native: &mut Reader,
+    tag: u32,
+    symbol: String,
+    nodes: &mut Vec<Node>,
+) -> Result<Surface> {
+    let texture = source.linear_texture(tag, None)?;
+    let header = template(native, 32, texture.subtype())?;
+    let data = pair(native, header, 32, texture.subtype())?;
+    let volume = (texture.depth > 1)
+        .then(|| native.tag(header, None))
+        .transpose()?;
+    let payload = texture.native_header(volume.as_deref())?;
+    let surface = Surface {
+        format: texture.format,
+        mips: texture.mips,
+        layers: texture.layers,
+        width: texture.width,
+        height: texture.height,
+        depth: texture.depth,
+    };
+    resource(nodes, symbol, header, data, payload, texture.bytes);
+    Ok(surface)
+}
+
 impl Material {
     /// Resolve every shader, texture and sampler obligation into private native resources.
     /// Paired material variants retain separate shader identities even when their source tag agrees.
@@ -204,25 +241,12 @@ impl Material {
                         evidence.push(json!({"kind":suffix,"source":reference.source,"symbol":symbol,"program":program.receipt()}));
                     }
                     Kind::Texture => {
-                        let texture = source.linear_texture(reference.source, None)?;
-                        let header = template(native, 32, texture.subtype())?;
-                        let data = pair(native, header, 32, texture.subtype())?;
-                        let volume = (texture.depth > 1)
-                            .then(|| native.tag(header, None))
-                            .transpose()?;
-                        let payload = texture.native_header(volume.as_deref())?;
+                        let texture =
+                            texture(source, native, reference.source, symbol.clone(), &mut nodes)?;
                         evidence.push(
                             json!({"kind":suffix,"source":reference.source,"symbol":symbol,
                             "format":texture.format,"mips":texture.mips,"layers":texture.layers,
                             "width":texture.width,"height":texture.height,"depth":texture.depth}),
-                        );
-                        resource(
-                            &mut nodes,
-                            symbol.clone(),
-                            header,
-                            data,
-                            payload,
-                            texture.bytes,
                         );
                     }
                     Kind::Sampler => {

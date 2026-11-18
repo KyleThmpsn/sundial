@@ -60,14 +60,14 @@ pub(crate) fn project(
         .collect::<Vec<_>>();
     let mut maximum_count = defaults.len();
     // Variable damage pins The Fundamentals into the first trait socket at build time, so that
-    // lane contributes the chosen element rows instead of the donor's trait perk.
+    // lane contributes the chosen damage type rows instead of the donor's trait perk.
     let variable_lane = recipe.overrides.variable_damage.as_ref().map(|variable| {
         let rows = variable
-            .elements
+            .damage_types
             .iter()
             .copied()
             .map(crate::ModernDamageType::from)
-            .filter_map(super::variable_damage::element_perk_index)
+            .filter_map(super::variable_damage::damage_type_perk_index)
             .collect::<Vec<_>>();
         let lane = donor
             .sockets

@@ -1,8 +1,7 @@
 //! Validate related native configuration after all draft edits have been composed.
 use super::*;
 use crate::runtime::{
-    encode_weapon_runtime_field_value, load_weapon_runtime_graph_for_entity,
-    resolve_weapon_runtime_field,
+    encode_runtime_field_value, load_runtime_graph_for_entity, resolve_runtime_field,
 };
 
 /// Refuses native edits that change a field's validated storage contract or reverse a timer
@@ -10,7 +9,7 @@ use crate::runtime::{
 pub fn validate_values(
     manager: &PackageManager,
     entity: &[u8],
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
 ) -> Result<(), String> {
     if values.is_empty() {
         return Ok(());
@@ -19,8 +18,8 @@ pub fn validate_values(
     let mut writes = BTreeMap::<u32, Vec<std::ops::Range<usize>>>::new();
     let mut encoded = Vec::new();
     for value in values {
-        let resolved = resolve_weapon_runtime_field(manager, entity, &value.locator)?;
-        let bytes = encode_weapon_runtime_field_value(&resolved.field, &value.value)?;
+        let resolved = resolve_runtime_field(manager, entity, &value.locator)?;
+        let bytes = encode_runtime_field_value(&resolved.field, &value.value)?;
         let end = resolved
             .owner_offset
             .checked_add(bytes.len())
@@ -42,7 +41,7 @@ pub fn validate_values(
         target.copy_from_slice(&bytes);
         writes.entry(owner).or_default().push(start..end);
     }
-    let graph = load_weapon_runtime_graph_for_entity(manager, 0, 0, 0, entity)?;
+    let graph = load_runtime_graph_for_entity(manager, 0, 0, 0, entity)?;
     let mut seen = BTreeSet::new();
     for (owner, binding, index, root) in graph
         .resources
@@ -97,9 +96,9 @@ pub fn validate_values(
                 let setting = native::setting(owner, root, current, Some(payload))
                     .ok_or("Native setting cannot be validated")?;
                 let number = match &current.value {
-                    WeaponRuntimeValue::Float32Bits(bits) => f32::from_bits(*bits),
-                    WeaponRuntimeValue::Signed(value) => *value as f32,
-                    WeaponRuntimeValue::Unsigned(value) => *value as f32,
+                    RuntimeValue::Float32Bits(bits) => f32::from_bits(*bits),
+                    RuntimeValue::Signed(value) => *value as f32,
+                    RuntimeValue::Unsigned(value) => *value as f32,
                     _ => return Err("Native setting has an incompatible value".into()),
                 };
                 if let Kind::Native(property) = setting.kind {

@@ -63,8 +63,9 @@ fn member_id(origin: Option<&str>) -> String {
 }
 
 /// Each member owns its source's records, registrations, patches, maps and scripts, and needs no
-/// other member to load. `origins` are the importers whose items the build holds. Every map the
-/// scenario selects is a Halo: Reach map.
+/// other source to load. A source may need the main mod, which holds its rows of the tables
+/// Sunrise can't merge, and the main mod needs no member. `origins` are the importers whose items
+/// the build holds. Every map the scenario selects is a Halo: Reach map.
 fn assert_independent(
     staged: &serde_json::Value,
     origins: &BTreeSet<String>,
@@ -73,11 +74,15 @@ fn assert_independent(
     let mods = staged["mods"].as_array().expect("split mod manifests");
     for member in mods {
         let id = member["manifest"]["id"].as_str().unwrap();
+        let needs = member["manifest"]["dependencies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|dependency| dependency["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
         assert!(
-            member["manifest"]["dependencies"]
-                .as_array()
-                .is_none_or(Vec::is_empty),
-            "{id} needs another member to load"
+            needs.is_empty() || (id != mod_content::ID && needs == [mod_content::ID]),
+            "{id} needs {needs:?} to load"
         );
         let paths = member["receipt"]["artifacts"]
             .as_array()
@@ -246,16 +251,16 @@ fn installation(prefix: &str) -> Installation {
     account.execute_batch("BEGIN").unwrap();
     for sql in [
         include_str!(
-            "../../../../../../src/persistence/sqlite_account/fixtures/investment_schema.sql"
+            "../../../../../../src/persistence/sunrise_account/fixtures/investment_schema.sql"
         ),
         include_str!(
-            "../../../../../../src/persistence/sqlite_account/fixtures/account_settings_schema.sql"
+            "../../../../../../src/persistence/sunrise_account/fixtures/account_settings_schema.sql"
         ),
         include_str!(
-            "../../../../../../src/persistence/sqlite_account/fixtures/investment_defaults.sql"
+            "../../../../../../src/persistence/sunrise_account/fixtures/investment_defaults.sql"
         ),
         include_str!(
-            "../../../../../../src/persistence/sqlite_account/fixtures/account_settings_defaults.sql"
+            "../../../../../../src/persistence/sunrise_account/fixtures/account_settings_defaults.sql"
         ),
     ] {
         account.execute_batch(sql).unwrap();

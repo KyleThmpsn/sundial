@@ -23,7 +23,7 @@ use crate::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sundial::investment::MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES;
 use sundial::package_authoring::{
-    entity::WEAPON_BARREL_COMPONENT_KEY, runtime::WeaponRuntimeValueOverride,
+    entity::WEAPON_BARREL_COMPONENT_KEY, runtime::RuntimeValueOverride,
 };
 
 pub const RECIPE_SCHEMA: u32 = 1;
@@ -252,20 +252,21 @@ pub enum RecipeBehaviorFiring {
     Weapon,
 }
 
-/// Element switching by holding Reload, the way Hard Light and Borealis work.
+/// Damage type switching by holding Reload, the way Hard Light and Borealis work.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VariableDamageRecipe {
-    /// Elements the hold can settle on: any two or all three of Arc, Solar and Void.
-    pub elements: Vec<RecipeDamageType>,
+    /// Damage types the hold can settle on: any two or all three of Arc, Solar and Void.
+    #[serde(rename = "elements")]
+    pub damage_types: Vec<RecipeDamageType>,
 }
 
 impl VariableDamageRecipe {
-    /// Every element, in the order the hold steps through them.
+    /// Every damage type, in the order the hold steps through them.
     #[must_use]
     pub fn all() -> Self {
         Self {
-            elements: vec![
+            damage_types: vec![
                 RecipeDamageType::Void,
                 RecipeDamageType::Arc,
                 RecipeDamageType::Solar,
@@ -303,7 +304,7 @@ pub struct ComponentSpliceRecipe {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WeaponRuntimeComponentRecipe {
+pub struct RuntimeComponentRecipe {
     pub binding_hash: HexHash,
     pub donor: WeaponDonorReference,
 }
@@ -402,7 +403,7 @@ pub struct WeaponSandboxPerkRuntimeRecipe {
     /// Experimental kill-filter override. Omitted means the original activation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation: Option<sundial::package_authoring::sandbox_perk::activation::PerkActivation>,
-    pub runtime_values: Vec<WeaponRuntimeValueOverride>,
+    pub runtime_values: Vec<RuntimeValueOverride>,
     #[serde(default)]
     pub action_float_values: Vec<WeaponSandboxPerkActionFloatRecipe>,
 }
@@ -645,7 +646,7 @@ pub struct WeaponRawPayloadPatchRecipe {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct WeaponRuntimeResourcePatchRecipe {
+pub struct RuntimeResourcePatchRecipe {
     pub binding_hash: HexHash,
     /// Zero-based resource within a native binding that selects more than one resource.
     pub resource_index: u16,
@@ -656,7 +657,7 @@ pub struct WeaponRuntimeResourcePatchRecipe {
     /// When present, bytes identify a stock graph to clone and edit before linking it here.
     /// This is weapon-scoped, not conditional on a socket perk being equipped.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub graph_values: Vec<WeaponRuntimeValueOverride>,
+    pub graph_values: Vec<RuntimeValueOverride>,
 }
 
 /// A private keyed sword profile with source-derived angular scale bits.
@@ -668,7 +669,7 @@ pub struct SwordProfileRecipe {
     pub far_scale_bits: u32,
 }
 
-impl Default for WeaponRuntimeResourcePatchRecipe {
+impl Default for RuntimeResourcePatchRecipe {
     fn default() -> Self {
         Self {
             binding_hash: HexHash::new(WEAPON_BARREL_COMPONENT_KEY),
@@ -738,7 +739,7 @@ pub struct WeaponRecipeOverrides {
     pub icon_edit: WeaponIconEdit,
     /// Independent transparent artwork for the ammunition HUD.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hud_icon: Option<crate::hud_icon::HudImage>,
+    pub hud_icon: Option<crate::icon::hud::HudImage>,
     pub investment_stats: Vec<WeaponStatOverride>,
     /// Gameplay-donor investment-stat rows removed from the authored definition.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -773,9 +774,10 @@ pub struct WeaponRecipeOverrides {
     /// The private damage talent added when an imported weapon has no retained damage choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub damage_talent_socket: Option<u16>,
-    /// Reload-hold element switching. Compilation pins Hard Light's Fundamentals plug into the
+    /// Reload-hold damage type switching. Compilation pins Hard Light's Fundamentals plug into the
     /// first trait socket, so the appearance donor must be Hard Light or Borealis.
-    /// [`Self::modern_damage_type`] is then the element the weapon rests on and must be in the set.
+    /// [`Self::modern_damage_type`] is then the damage type the weapon rests on and must be in the
+    /// set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variable_damage: Option<VariableDamageRecipe>,
     /// Exotic behaviors grafted from weapons that share this weapon's content component owner.
@@ -849,7 +851,8 @@ pub struct WeaponRecipeOverrides {
     pub power_cap_groups: Option<Vec<u16>>,
     /// Optional stock rarity tier. `None` preserves the gameplay donor byte.
     pub rarity: Option<RecipeRarity>,
-    /// Armor equip eligibility. Omitted follows the donor, Any removes its class requirement.
+    /// Armor and artifact equip eligibility. Omitted follows the donor, Any removes its class
+    /// requirement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub armor_class: Option<crate::ArmorClass>,
     /// Optional stock gear-art/runtime row used as the runtime entity source. Compilation combines
@@ -945,13 +948,13 @@ pub struct WeaponRecipeOverrides {
     /// Typed package-backed runtime values. Every locator is re-resolved against the effective
     /// donor graph before compilation, so stale offsets cannot be written silently.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub runtime_values: Vec<WeaponRuntimeValueOverride>,
+    pub runtime_values: Vec<RuntimeValueOverride>,
     /// Private sword profile selected by a matching effect in an authored private perk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sword_profile: Option<SwordProfileRecipe>,
     /// Technical same-size edits inside concrete runtime-component resources.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub runtime_resource_patches: Vec<WeaponRuntimeResourcePatchRecipe>,
+    pub runtime_resource_patches: Vec<RuntimeResourcePatchRecipe>,
     /// Final byte patches for technical fields not yet represented structurally.
     pub raw_payload_patches: Vec<WeaponRawPayloadPatchRecipe>,
 }
@@ -981,7 +984,7 @@ pub struct WeaponRecipe {
     /// Sparse concrete runtime-component donors. Each row replaces one abstract binding in a
     /// private clone of the selected weapon pattern's runtime entity.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub runtime_component_donors: Vec<WeaponRuntimeComponentRecipe>,
+    pub runtime_component_donors: Vec<RuntimeComponentRecipe>,
     pub identity: WeaponIdentity,
     pub name: String,
     /// Optional authored item-type label. `None` preserves the gameplay donor's label.
@@ -1315,11 +1318,10 @@ impl WeaponRecipe {
         self.runtime_component_donors
             .retain(|component| component.binding_hash.parse_u32() != Ok(binding_hash));
         if let Some(donor) = donor {
-            self.runtime_component_donors
-                .push(WeaponRuntimeComponentRecipe {
-                    binding_hash: binding_hash.into(),
-                    donor,
-                });
+            self.runtime_component_donors.push(RuntimeComponentRecipe {
+                binding_hash: binding_hash.into(),
+                donor,
+            });
             self.runtime_component_donors
                 .sort_by_key(|component| component.binding_hash.parse_u32().unwrap_or(u32::MAX));
         }

@@ -534,7 +534,7 @@ fn per_ability_colors_reach_private_tree_icons_and_hud_with_independent_inherita
     let packages = crate::test_support::stock_packages();
     let artifacts = PathBuf::from(std::env::var_os("SUNDIAL_TEST_ARTIFACTS").unwrap());
     let revision = std::env::var("SUNDIAL_TEST_REVISION").unwrap();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|s| (*s).to_owned())
         .collect::<Vec<_>>();
@@ -544,7 +544,7 @@ fn per_ability_colors_reach_private_tree_icons_and_hud_with_independent_inherita
     let temporary = tempfile::tempdir().unwrap();
     let cache = temporary.path().join("catalog.json");
     let baseline = InvestmentCatalog::load_with_cache_path(install, &cache, true, |_| {}).unwrap();
-    let stock = baseline.subclasses(crate::package_profile::is_stock_item_definition);
+    let stock = baseline.subclasses(crate::package::profile::is_stock_item_definition);
     assert!(!stock.is_empty());
     let base = stock.iter().find(|s| s.name == "Voidwalker").unwrap();
     let source = open_manager(view.path()).unwrap();
@@ -893,7 +893,7 @@ fn subclass_hud_colors_survive_saved_recipes_and_private_package_builds() {
     let artifacts =
         PathBuf::from(std::env::var_os("SUNDIAL_TEST_ARTIFACTS").expect("artifact root"));
     let revision = std::env::var("SUNDIAL_TEST_REVISION").expect("source revision");
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
@@ -903,7 +903,7 @@ fn subclass_hud_colors_survive_saved_recipes_and_private_package_builds() {
     let temporary = tempfile::tempdir().unwrap();
     let cache = temporary.path().join("catalog.json");
     let baseline = InvestmentCatalog::load_with_cache_path(install, &cache, true, |_| {}).unwrap();
-    let subclasses = baseline.subclasses(crate::package_profile::is_stock_item_definition);
+    let subclasses = baseline.subclasses(crate::package::profile::is_stock_item_definition);
     assert!(
         !subclasses.is_empty(),
         "the configured corpus must contain subclasses"

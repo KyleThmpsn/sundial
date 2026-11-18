@@ -9,9 +9,7 @@ use super::*;
 use crate::subclass::{Place, SubclassAbilities};
 use sundial::package_authoring::ability_palette::ability_graphs;
 use sundial::package_authoring::ability_settings::{self, Kind, Setting};
-use sundial::package_authoring::runtime::{
-    WeaponRuntimeValueOverride, load_weapon_runtime_graph_for_entity,
-};
+use sundial::package_authoring::runtime::{RuntimeValueOverride, load_runtime_graph_for_entity};
 use sundial::package_authoring::sandbox_perk::entity::projectile::parameters::{
     self, Curve, CurveKind,
 };
@@ -23,8 +21,7 @@ fn found(
 ) -> (Vec<Curve>, Vec<Setting>) {
     let (mut curves, mut settings) = (Vec::new(), Vec::new());
     for (graph, payload) in ability_graphs(manager, entity, crate::subclass::SPAWN_DEPTH).unwrap() {
-        let Ok(mut runtime) = load_weapon_runtime_graph_for_entity(manager, 0, 0, graph, &payload)
-        else {
+        let Ok(mut runtime) = load_runtime_graph_for_entity(manager, 0, 0, graph, &payload) else {
             continue;
         };
         runtime.scope_fields();
@@ -216,7 +213,7 @@ fn author(
     manager: &sundial::package_authoring::PackageManager,
     entity: u32,
     authored: &Authored,
-) -> (Vec<WeaponRuntimeValueOverride>, Vec<(Kind, f32)>) {
+) -> (Vec<RuntimeValueOverride>, Vec<(Kind, f32)>) {
     let (curves, settings) = found(manager, entity);
     let mut values = Vec::new();
     for (kind, value) in &authored.curves {
@@ -306,8 +303,7 @@ fn read_back_reversed_curve(
 ) -> serde_json::Value {
     let mut matched = BTreeMap::new();
     for (graph, payload) in ability_graphs(manager, entity, crate::subclass::SPAWN_DEPTH).unwrap() {
-        let Ok(runtime) = load_weapon_runtime_graph_for_entity(manager, 0, 0, graph, &payload)
-        else {
+        let Ok(runtime) = load_runtime_graph_for_entity(manager, 0, 0, graph, &payload) else {
             continue;
         };
         for resource in runtime.resources {
@@ -390,7 +386,7 @@ fn read_back_reversed_curve(
 )]
 fn real_ability_settings_build_into_private_copies() {
     let packages = crate::test_support::stock_packages();
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
@@ -401,7 +397,7 @@ fn real_ability_settings_build_into_private_copies() {
     let cache_path = temporary.path().join("catalog.json");
     let baseline =
         InvestmentCatalog::load_with_cache_path(install, &cache_path, true, |_| {}).unwrap();
-    let subclasses = baseline.subclasses(crate::package_profile::is_stock_item_definition);
+    let subclasses = baseline.subclasses(crate::package::profile::is_stock_item_definition);
     let base = |name: &str| {
         subclasses
             .iter()

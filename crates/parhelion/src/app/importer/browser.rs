@@ -290,6 +290,12 @@ fn row_background(
 
 fn missing_donor_text(row: &Row<'_>) -> &'static str {
     let weapon = row.weapon;
+    if weapon.family() == service::Family::Artifact {
+        return "No installed native artifact equipment template is available.";
+    }
+    if weapon.family() == service::Family::Subclass {
+        return "No installed stock solar Warlock subclass to build on.";
+    }
     if row.source.is_some() {
         if weapon.family() == service::Family::Sparrow {
             "No installed native Sparrow to build on."

@@ -179,7 +179,7 @@ fn vehicle_reimport_preserves_selection_through_native_staging() -> Result<()> {
     renamed.name = "My Custom Vehicle".into();
     if let Some(path) = &case.custom_icon {
         renamed.overrides.icon_edit.imported_image = Some(
-            crate::icon_edit::ImportedIcon::from_bytes(&fs::read(path)?)
+            crate::icon::edit::ImportedIcon::from_bytes(&fs::read(path)?)
                 .map_err(anyhow::Error::msg)?,
         );
     }

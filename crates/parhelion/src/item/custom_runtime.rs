@@ -26,6 +26,8 @@ pub(in crate::item) mod palettes;
 pub(in crate::item) mod particles;
 mod payload;
 mod private_perk;
+#[cfg(feature = "d2-model-importer")]
+pub(in crate::item) mod reload;
 mod residency;
 mod swaps;
 mod sword_profiles;
@@ -61,7 +63,7 @@ pub(crate) fn runtime_hud_key(
     let Some((entity, content_group)) = appearance()? else {
         return Ok(None);
     };
-    crate::hud_icon::runtime::inherited_key(manager, &entity, content_group).map(Some)
+    crate::icon::hud::runtime::inherited_key(manager, &entity, content_group).map(Some)
 }
 
 /// Check a saved firing selection against the same prepared group the native build consumes.
@@ -143,7 +145,7 @@ pub(crate) fn preflight_runtime_edits(
             },
             splices,
             actions: &[],
-            markers: &[],
+            appends: &[],
             projectile,
             trajectories,
             source_trajectory,
@@ -163,7 +165,7 @@ pub(crate) fn splice_writes(
     manager: &PackageManager,
     entity: &[u8],
     splices: &[(u32, Vec<u8>)],
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     component_splice_edits(manager, entity, splices, &mut Vec::new())
 }
 
@@ -173,8 +175,8 @@ fn component_splice_edits(
     manager: &PackageManager,
     entity: &[u8],
     splices: &[(u32, Vec<u8>)],
-    appends: &mut Vec<WeaponRuntimeResourceAppend>,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    appends: &mut Vec<RuntimeResourceAppend>,
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let mut patches = Vec::new();
     for (binding, donor) in splices {
         let plan = sundial::package_authoring::entity::plan_component_splice(
@@ -187,7 +189,7 @@ fn component_splice_edits(
                 .ok_or_else(|| invalid("A spliced component edit lies before its resource"))
         };
         for (at, bytes) in plan.writes {
-            patches.push(WeaponRuntimeResourcePatch {
+            patches.push(RuntimeResourcePatch {
                 binding_hash: *binding,
                 resource_index: 0,
                 offset: relative(at)?,
@@ -198,7 +200,7 @@ fn component_splice_edits(
             });
         }
         for (descriptor, bytes, count) in plan.arrays {
-            appends.push(WeaponRuntimeResourceAppend {
+            appends.push(RuntimeResourceAppend {
                 binding_hash: *binding,
                 resource_index: 0,
                 bytes,
@@ -206,10 +208,12 @@ fn component_splice_edits(
                 arrays: vec![(relative(descriptor)?, 0, count)],
                 pointers: Vec::new(),
                 references: Vec::new(),
+                retained_pointers: Vec::new(),
+                retained_bytes: Vec::new(),
             });
         }
         for record in plan.records {
-            appends.push(WeaponRuntimeResourceAppend {
+            appends.push(RuntimeResourceAppend {
                 binding_hash: *binding,
                 resource_index: 0,
                 bytes: record.bytes,
@@ -221,6 +225,8 @@ fn component_splice_edits(
                     .map(|(at, target)| relative(at).map(|at| (at, target)))
                     .collect::<AuthoringResult<_>>()?,
                 references: record.references,
+                retained_pointers: Vec::new(),
+                retained_bytes: Vec::new(),
             });
         }
     }
@@ -229,10 +235,10 @@ fn component_splice_edits(
 
 /// The parts of a copied-value write that no other patch of the same component covers.
 fn trim(
-    splice: WeaponRuntimeResourcePatch,
+    splice: RuntimeResourcePatch,
     resource: usize,
     others: &[std::ops::Range<usize>],
-) -> Vec<WeaponRuntimeResourcePatch> {
+) -> Vec<RuntimeResourcePatch> {
     let start = resource + splice.offset as usize;
     let mut kept = vec![true; splice.bytes.len()];
     for other in others {
@@ -250,7 +256,7 @@ fn trim(
             continue;
         }
         let run = kept[index..].iter().take_while(|keep| **keep).count();
-        pieces.push(WeaponRuntimeResourcePatch {
+        pieces.push(RuntimeResourcePatch {
             offset: splice.offset + index as u32,
             bytes: splice.bytes[index..index + run].to_vec(),
             ..splice.clone()
@@ -265,11 +271,11 @@ fn trim(
 fn trim_splices(
     manager: &PackageManager,
     entity: &[u8],
-    values: &[WeaponRuntimeValueOverride],
-    patches: &[WeaponRuntimeResourcePatch],
-    spliced: Vec<WeaponRuntimeResourcePatch>,
-    appends: &mut Vec<WeaponRuntimeResourceAppend>,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    values: &[RuntimeValueOverride],
+    patches: &[RuntimeResourcePatch],
+    spliced: Vec<RuntimeResourcePatch>,
+    appends: &mut Vec<RuntimeResourceAppend>,
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     if spliced.is_empty() && appends.is_empty() {
         return Ok(spliced);
     }
@@ -282,8 +288,7 @@ fn trim_splices(
             .ok_or_else(|| invalid("A spliced component override has no selected resource"))
     };
     for value in values {
-        let field =
-            resolve_weapon_runtime_field(manager, entity, &value.locator).map_err(invalid)?;
+        let field = resolve_runtime_field(manager, entity, &value.locator).map_err(invalid)?;
         let end = field
             .owner_offset
             .checked_add(value.locator.byte_size as usize)
@@ -361,8 +366,8 @@ pub(super) struct Sources<'a> {
         crate::recipe::AnimationAction,
         crate::weapon::animations::Profile,
     )],
-    /// The moved rig's marker set, grown by the base's own markers.
-    pub markers: &'a [WeaponRuntimeResourceAppend],
+    /// Prepared component records, including moved rig markers and imported stat curves.
+    pub appends: &'a [RuntimeResourceAppend],
     /// A validated projectile root allocated with the imported asset group.
     pub projectile: Option<TagHash>,
     /// Rows in that root's trajectory pool, when its layout is known.
@@ -383,7 +388,7 @@ pub(super) fn author_runtime_edits(
         groups,
         splices,
         actions,
-        markers,
+        appends: prepared,
         projectile,
         trajectories,
         source_trajectory,
@@ -402,7 +407,7 @@ pub(super) fn author_runtime_edits(
     let mut splice_appends = Vec::new();
     let spliced = component_splice_edits(manager, entity, splices, &mut splice_appends)?;
     if let Some(key) = hud_key {
-        patches.extend(crate::hud_icon::runtime::patches(manager, entity, key)?);
+        patches.extend(crate::icon::hud::runtime::patches(manager, entity, key)?);
     }
     if let Some(hold) = groups.hold {
         patches.extend(crate::weapon::animations::hold_patches(
@@ -436,7 +441,7 @@ pub(super) fn author_runtime_edits(
         appends.extend(edits.appends);
     }
     appends.extend(grafts.appends);
-    appends.extend_from_slice(markers);
+    appends.extend_from_slice(prepared);
     patches.extend(grafts.patches);
     // A chosen row's presentation replaces what restoring the base's own block wrote there. A
     // fired graph below still takes the graph slot.
@@ -597,13 +602,13 @@ pub(super) fn resolve_runtime_weapon_entity(
 fn resolve_value_patches(
     manager: &PackageManager,
     entity: &[u8],
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
     patches_by_owner: &mut BTreeMap<u32, Vec<ResolvedRuntimeResourcePatch>>,
 ) -> AuthoringResult<()> {
     for (value_index, value) in values.iter().enumerate() {
-        let resolved = resolve_weapon_runtime_field(manager, entity, &value.locator)
+        let resolved = resolve_runtime_field(manager, entity, &value.locator)
             .map_err(|error| invalid(format!("Runtime value {value_index} is stale: {error}")))?;
-        let bytes = sundial::package_authoring::runtime::encode_weapon_runtime_field_value(
+        let bytes = sundial::package_authoring::runtime::encode_runtime_field_value(
             &resolved.field,
             &value.value,
         )
@@ -639,7 +644,7 @@ fn resolve_value_patches(
 /// Gives each appended record's owner an entry, so an owner that is only appended to is written.
 fn include_append_owners(
     entity: &[u8],
-    appends: &[WeaponRuntimeResourceAppend],
+    appends: &[RuntimeResourceAppend],
     patches_by_owner: &mut BTreeMap<u32, Vec<ResolvedRuntimeResourcePatch>>,
 ) -> AuthoringResult<()> {
     for append in appends {
@@ -651,12 +656,27 @@ fn include_append_owners(
     Ok(())
 }
 
+/// Pads the owner so the bytes `append` adds start where their contents need.
+fn align_for_append(owner: &mut Vec<u8>, append: &RuntimeResourceAppend) {
+    if !append.arrays.is_empty() {
+        // A native array's header sits on a 16-byte boundary with its typed-array marker in the
+        // four bytes before it, as every stock array is laid out, so the padding leaves room
+        // for the marker.
+        owner.resize((owner.len() + 8).next_multiple_of(16), 0);
+    } else if !append.pointers.is_empty()
+        || !append.references.is_empty()
+        || !append.retained_pointers.is_empty()
+    {
+        owner.resize(owner.len().next_multiple_of(16), 0);
+    }
+}
+
 pub(super) fn append_patched_runtime_resource_owners(
     manager: &PackageManager,
     entity: &mut [u8],
-    values: &[WeaponRuntimeValueOverride],
-    patches: &[WeaponRuntimeResourcePatch],
-    appends: &[WeaponRuntimeResourceAppend],
+    values: &[RuntimeValueOverride],
+    patches: &[RuntimeResourcePatch],
+    appends: &[RuntimeResourceAppend],
     runtime_tag_allocator: AppendedTagAllocator,
     runtime_new_tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
@@ -746,7 +766,7 @@ pub(super) fn append_patched_runtime_resource_owners(
     // An appended record has to reach its owner even when nothing else patches that owner. The
     // loop below is keyed on the patch map, so a graft that only appends, which is what a record
     // copied across content owners produces, was dropped without a word. That is the shape every
-    // element switch takes on a family with no record of its own.
+    // damage type switch takes on a family with no record of its own.
     include_append_owners(entity, appends, &mut patches_by_owner)?;
 
     for (owner_tag, mut owner_patches) in patches_by_owner {
@@ -768,7 +788,14 @@ pub(super) fn append_patched_runtime_resource_owners(
         }
         // Growth first, so the slots that point into the new bytes are ordinary patches from here.
         let mut grown = Vec::new();
+        let mut retained = Vec::new();
         let original_owner_len = owner_payload.len();
+        // The client copies only the span between the owner's instance and schema roots for each
+        // weapon. A descriptor inside it names live state, so bytes appended for one must end up
+        // inside the span too.
+        let instance_span =
+            relative_target(&owner_payload, 16)?..relative_target(&owner_payload, 24)?;
+        let mut instance_grown = false;
         for append in appends {
             let bindings =
                 weapon_component_bindings(entity, append.binding_hash).map_err(invalid)?;
@@ -785,16 +812,17 @@ pub(super) fn append_patched_runtime_resource_owners(
             }
             let resource = usize::try_from(binding.resource_offset)
                 .map_err(|_| invalid("Appended record resource offset does not fit"))?;
-            if !append.arrays.is_empty() {
-                // A native array's header sits on a 16-byte boundary with its typed-array marker
-                // in the four bytes before it, as every stock array is laid out, so the padding
-                // leaves room for the marker.
-                owner_payload.resize((owner_payload.len() + 8).next_multiple_of(16), 0);
-            } else if !append.pointers.is_empty() || !append.references.is_empty() {
-                owner_payload.resize(owner_payload.len().next_multiple_of(16), 0);
-            }
+            align_for_append(&mut owner_payload, append);
             let at = owner_payload.len();
             owner_payload.extend_from_slice(&append.bytes);
+            retain_resource_data(
+                &mut owner_payload,
+                append,
+                at,
+                resource,
+                original_owner_len,
+                &mut retained,
+            )?;
             for &(word, target) in &append.references {
                 let word = word
                     .checked_add(8)
@@ -819,6 +847,7 @@ pub(super) fn append_patched_runtime_resource_owners(
                     .ok_or_else(|| {
                         invalid("Appended pointer slot is outside the original owner")
                     })?;
+                instance_grown |= instance_span.contains(&slot);
                 let target = at
                     .checked_add(target)
                     .filter(|target| *target < owner_payload.len())
@@ -839,6 +868,7 @@ pub(super) fn append_patched_runtime_resource_owners(
                 let descriptor = resource
                     .checked_add(usize::try_from(*descriptor).unwrap_or(usize::MAX))
                     .ok_or_else(|| invalid("Appended array descriptor offset overflows"))?;
+                instance_grown |= instance_span.contains(&descriptor);
                 let header = at
                     .checked_add(*header)
                     .filter(|header| header + 16 <= owner_payload.len())
@@ -866,6 +896,7 @@ pub(super) fn append_patched_runtime_resource_owners(
                 let slot = resource
                     .checked_add(usize::try_from(*slot).unwrap_or(usize::MAX))
                     .ok_or_else(|| invalid("Appended record slot offset overflows"))?;
+                instance_grown |= instance_span.contains(&slot);
                 let target = at
                     .checked_add(*target)
                     .filter(|target| *target <= owner_payload.len())
@@ -922,6 +953,9 @@ pub(super) fn append_patched_runtime_resource_owners(
                 })?;
             target.copy_from_slice(&patch.bytes);
         }
+        for (destination, source, count) in retained {
+            owner_payload.copy_within(source..source + count, destination);
+        }
         // Byte-range edits can include native references. Retarget the final payload
         // so copying source bytes cannot restore a link to the stock owner.
         retarget_weapon_component_owner_payload(
@@ -933,6 +967,9 @@ pub(super) fn append_patched_runtime_resource_owners(
         .map_err(invalid)?;
         retarget_weapon_component_owner(entity, owner_tag.0, authored_owner_tag.0)
             .map_err(invalid)?;
+        if instance_grown {
+            seal_instance_span(&mut owner_payload)?;
+        }
         runtime_new_tags.push(NewTagSpec {
             template_tag: owner_tag,
             payload: owner_payload,
@@ -940,6 +977,86 @@ pub(super) fn append_patched_runtime_resource_owners(
         });
     }
     validate_weapon_entity(entity).map_err(invalid)
+}
+
+/// Moves an owner's schema root past everything appended to it, so the instance span the client
+/// copies and walks for each weapon holds the appended live state. The loader takes the span
+/// from the instance and schema roots at header `+10` and `+18`, with its extent at `+48`, and
+/// discards a larger serialized size alone. Every record keeps its address: the whole record
+/// stream is copied after the appended bytes, where relative references keep their meaning, and
+/// the schema root names the copy. Typed references store offsets from the start of the payload,
+/// so the instance records and their copies keep naming the original definition records.
+fn seal_instance_span(owner: &mut Vec<u8>) -> AuthoringResult<()> {
+    let instance = relative_target(owner, 16)?;
+    let schema = relative_target(owner, 24)?;
+    let first = relative_target(owner, 8)?
+        .checked_sub(4)
+        .ok_or_else(|| invalid("Component owner has no record stream"))?;
+    let original = owner.len();
+    if !(first >= 0x60
+        && first < instance
+        && instance < schema
+        && schema < original
+        && read_u32(owner, first)? & 0xFFFF_0000 == 0x8080_0000)
+    {
+        return Err(invalid(
+            "Component owner's record stream cannot hold grown instance data",
+        ));
+    }
+    let delta = original.next_multiple_of(16);
+    let copy = owner[first..].to_vec();
+    owner.resize(delta + first, 0);
+    owner.extend_from_slice(&copy);
+    let schema = delta + schema;
+    owner[24..32].copy_from_slice(&((schema - 24) as u64).to_le_bytes());
+    owner[0x48..0x50].copy_from_slice(&((schema - instance) as u64).to_le_bytes());
+    let length = owner.len() as u64;
+    owner[..8].copy_from_slice(&length.to_le_bytes());
+    Ok(())
+}
+
+/// Retained pointers target the original private owner. Byte copies are deferred until its
+/// ordinary edits have been applied, so the added storage also receives authored overrides.
+fn retain_resource_data(
+    owner_payload: &mut [u8],
+    append: &RuntimeResourceAppend,
+    at: usize,
+    resource: usize,
+    original_owner_len: usize,
+    retained: &mut Vec<(usize, usize, usize)>,
+) -> AuthoringResult<()> {
+    for &(destination, source, count) in &append.retained_bytes {
+        let destination = destination
+            .checked_add(count)
+            .filter(|end| *end <= append.bytes.len())
+            .map(|end| at + end - count)
+            .ok_or_else(|| invalid("Retained bytes exceed the appended record"))?;
+        let source = resource
+            .checked_add(source as usize)
+            .filter(|start| {
+                start
+                    .checked_add(count)
+                    .is_some_and(|end| end <= original_owner_len)
+            })
+            .ok_or_else(|| invalid("Retained bytes exceed the original resource"))?;
+        retained.push((destination, source, count));
+    }
+    for &(word, target) in &append.retained_pointers {
+        let word = word
+            .checked_add(8)
+            .filter(|end| *end <= append.bytes.len())
+            .map(|end| at + end - 8)
+            .ok_or_else(|| invalid("Retained pointer is outside the added bytes"))?;
+        let target = resource
+            .checked_add(target as usize)
+            .filter(|target| *target < original_owner_len)
+            .ok_or_else(|| invalid("Retained pointer target is outside the original owner"))?;
+        let delta = i64::try_from(target)
+            .and_then(|target| i64::try_from(word).map(|word| target - word))
+            .map_err(|_| invalid("Retained pointer overflows"))?;
+        owner_payload[word..word + 8].copy_from_slice(&delta.to_le_bytes());
+    }
+    Ok(())
 }
 
 /// Writes each edit that lies wholly inside a wider one over the wider one's bytes, so the
@@ -974,7 +1091,7 @@ fn nest_runtime_patches(
 pub(super) fn append_private_referenced_graph(
     manager: &PackageManager,
     source: TagHash,
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<TagHash> {
@@ -982,7 +1099,7 @@ pub(super) fn append_private_referenced_graph(
 }
 
 /// A private graph clone's edits: its values, the owners it leaves out and its trajectory pool.
-type GraphEdit = (Vec<WeaponRuntimeValueOverride>, Vec<u32>, Option<u16>);
+type GraphEdit = (Vec<RuntimeValueOverride>, Vec<u32>, Option<u16>);
 
 /// As [`append_private_patched_graph`], with whole component owners left out of the clone and
 /// its projectile given room for `trajectories` at once. Behavior grafts and attachment edits use
@@ -990,7 +1107,7 @@ type GraphEdit = (Vec<WeaponRuntimeValueOverride>, Vec<u32>, Option<u16>);
 fn append_private_graph_edit(
     manager: &PackageManager,
     source: TagHash,
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
     removals: &BTreeSet<u32>,
     trajectories: Option<u16>,
     allocator: AppendedTagAllocator,
@@ -1097,10 +1214,7 @@ fn projectile_patches(
     manager: &PackageManager,
     entity: &[u8],
     edits: &crate::weapon::projectile::Edits,
-    (patches, spliced): (
-        &mut Vec<WeaponRuntimeResourcePatch>,
-        &[WeaponRuntimeResourcePatch],
-    ),
+    (patches, spliced): (&mut Vec<RuntimeResourcePatch>, &[RuntimeResourcePatch]),
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
@@ -1117,7 +1231,7 @@ fn projectile_patches(
             "The Projectile values were set for 0x{graph:08X}, which the weapon no longer fires. Reset them on the Gameplay tab."
         )));
     }
-    let field = |value: &WeaponRuntimeValueOverride| {
+    let field = |value: &RuntimeValueOverride| {
         let mut locator = value.locator.clone();
         locator.graph_tag = None;
         locator
@@ -1220,7 +1334,7 @@ pub(super) fn retarget_exact_tag_occurrences(
 fn validate_projectile_values(
     manager: &PackageManager,
     entity: &[u8],
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
 ) -> AuthoringResult<()> {
     if values
         .iter()
@@ -1229,7 +1343,7 @@ fn validate_projectile_values(
             .map_err(invalid)?
             .is_some()
     {
-        let graph = sundial::package_authoring::runtime::load_weapon_runtime_graph_for_entity(
+        let graph = sundial::package_authoring::runtime::load_runtime_graph_for_entity(
             manager, 0, 0, 0, entity,
         )
         .map_err(invalid)?;

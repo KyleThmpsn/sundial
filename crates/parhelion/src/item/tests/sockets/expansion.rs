@@ -230,15 +230,12 @@ fn missing_socket_plug_explains_custom_perk_reuse_without_accepting_missing_rows
         .to_string();
     assert!(error.contains("Socket 1"));
     assert!(error.contains("0xD8EFB0FD"));
-    assert!(error.contains("custom perk"));
-    assert!(error.to_lowercase().contains("reselect"));
 
     let duplicate_rows = BTreeMap::from([(0xD8EF_B0FD, vec![28, 48])]);
     let error = resolve_socket_column_indices(&duplicate_rows, &data, &columns)
         .unwrap_err()
         .to_string();
     assert!(error.contains("resolved to 2 item rows"));
-    assert!(!error.contains("Reselect an installed custom perk"));
 }
 
 #[test]

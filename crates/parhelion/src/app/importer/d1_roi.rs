@@ -6,6 +6,11 @@ pub(super) struct Inspected {
     pub artifact: PathBuf,
     pub armor: Vec<d1_roi::Armor>,
     pub weapons: Vec<d1_roi::Weapon>,
+    pub artifacts: Vec<d1_roi::Artifact>,
+    /// The source subclasses a whole grid import covers, each by its self-revive choice.
+    pub subclasses: Vec<d1_roi::AbilityChoice>,
+    /// Each listed subclass's strings tag, which the list draws its source icon from.
+    pub subclass_strings: BTreeMap<u32, u32>,
 }
 
 impl PackageAuthoringApp {
@@ -47,12 +52,34 @@ impl PackageAuthoringApp {
                 } else {
                     Vec::new()
                 };
+                let artifacts = if source.report().missing_armor_tables.is_empty() {
+                    source.artifacts()?
+                } else {
+                    Vec::new()
+                };
+                // A package set without the subclass tables lists none. Only a subclass whose
+                // grid holds a self-revive choice has a whole grid import so far.
+                let mut subclasses = source.revival_choices().unwrap_or_default();
+                subclasses.sort_by_key(|choice| choice.subclass);
+                subclasses.dedup_by_key(|choice| choice.subclass);
+                let subclass_strings = subclasses
+                    .iter()
+                    .filter_map(|choice| {
+                        Some((
+                            choice.subclass,
+                            source.subclass_strings(choice.subclass).ok()?,
+                        ))
+                    })
+                    .collect();
                 let artifact = write_inspection(&root.join("importer"), source.report())?;
                 Ok(Inspected {
                     report: source.report().clone(),
                     artifact,
                     armor,
                     weapons,
+                    artifacts,
+                    subclasses,
+                    subclass_strings,
                 })
             })()
             .map_err(|error| format!("{error:#}"));
@@ -110,7 +137,12 @@ impl PackageAuthoringApp {
         let mut items = Vec::new();
         for item in &inspected.armor {
             if selected.contains(&item.hash) {
-                items.push((item.hash, item.name.clone(), None));
+                items.push((item.hash, item.name.clone(), ItemKind::Armor, None));
+            }
+        }
+        for item in &inspected.artifacts {
+            if selected.contains(&item.hash) {
+                items.push((item.hash, item.name.clone(), ItemKind::Artifact, None));
             }
         }
         for item in &inspected.weapons {
@@ -118,10 +150,26 @@ impl PackageAuthoringApp {
                 items.push((
                     item.hash,
                     item.name.clone(),
+                    ItemKind::Weapon,
                     Some(self.roi_weapon_bases(item)),
                 ));
             }
         }
+        let subclasses: BTreeMap<u32, d1_roi::AbilityChoice> = inspected
+            .subclasses
+            .iter()
+            .filter(|choice| selected.contains(&choice.subclass))
+            .map(|choice| (choice.subclass, choice.clone()))
+            .collect();
+        for choice in subclasses.values() {
+            items.push((
+                choice.subclass,
+                choice.subclass_name.trim().to_owned(),
+                ItemKind::Subclass,
+                None,
+            ));
+        }
+        let subclass_base = self.roi_subclass_base();
         if items.is_empty() {
             return;
         }
@@ -135,20 +183,74 @@ impl PackageAuthoringApp {
                 Some((*hash, self.saved_namespace(Source::D1RiseOfIron, *hash)?))
             })
             .collect();
-        let gear = self.gear_donors_for(ItemKind::Armor).iter().filter(|donor| self.catalog.as_ref().and_then(|catalog|catalog.item_definition_tag(donor.hash)).is_none_or(crate::package_profile::is_stock_item_definition))
+        let gear = self.gear_donors_for(ItemKind::Armor).iter().filter(|donor| self.catalog.as_ref().and_then(|catalog|catalog.item_definition_tag(donor.hash)).is_none_or(crate::package::profile::is_stock_item_definition))
             .map(|donor| serde_json::json!({"hash":donor.hash,"name":donor.name,"bucket_hash":donor.bucket_hash,
                 "class_type":self.catalog.as_ref().and_then(|catalog|catalog.item_class_type(donor.hash)),"collection_backed":donor.collection_backed})).collect::<Vec<_>>();
         let donors = serde_json::json!({"gear":gear});
-        let names = items.iter().map(|(_, name, _)| name.clone()).collect();
+        let names = items.iter().map(|(_, name, ..)| name.clone()).collect();
         self.run_import(ctx, names, move |index, native, progress| {
-            let (hash, _, bases) = &items[index];
+            let (hash, _, item_kind, bases) = &items[index];
             let item = service::item_directory(
                 &root.join(service::IMPORTS),
                 Source::D1RiseOfIron.folder(),
                 *hash,
             )?;
-            let kind = if bases.is_some() { "weapon" } else { "armor" };
+            let kind = match item_kind {
+                ItemKind::Weapon => "weapon",
+                ItemKind::Artifact => "artifact",
+                ItemKind::Subclass => "subclass",
+                _ => "armor",
+            };
             let output = service::reserve_assets(&item, kind)?;
+            if *item_kind == ItemKind::Subclass {
+                let choice = subclasses
+                    .get(hash)
+                    .ok_or_else(|| anyhow::anyhow!("The source subclass is no longer listed"))?;
+                let (base, base_name) = subclass_base.clone().ok_or_else(|| {
+                    anyhow::anyhow!("No installed stock solar Warlock subclass to build on")
+                })?;
+                let namespace = reimport
+                    .get(hash)
+                    .map(|saved| saved.namespace.clone())
+                    .or_else(|| namespaces.get(hash).cloned())
+                    .unwrap_or_else(|| d1_roi::namespace(&choice.subclass_name, *hash));
+                let draft = crate::subclass::import::draft(
+                    &namespace,
+                    base,
+                    &base_name,
+                    choice.subclass_name.trim(),
+                )
+                .map_err(anyhow::Error::msg)?;
+                // The grid preparation loads the native catalog, which accepts a game folder only. A
+                // stock view holds the packages and the decoder but no executable, so it gets an
+                // empty one. The game's own folder already has its executable and is left alone.
+                if let Some(root) = native.parent() {
+                    let executable = root.join("destiny2.exe");
+                    let view = root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(".parhelion-package-view-"));
+                    if view && !executable.exists() {
+                        std::fs::write(&executable, [])?;
+                    }
+                }
+                progress("Translating the subclass grid…".into());
+                // The self-revive choice takes a passive node of the middle tree, whose Super
+                // node holds the source Super.
+                let prepared =
+                    crate::subclass::import::prepare_grid(&crate::subclass::import::Request {
+                        source_packages: &folder,
+                        native_packages: native,
+                        output: &output.join("prepared"),
+                        recipe: &draft,
+                        choice,
+                        entry: crate::subclass::AttunementPath::Middle.entries()[3],
+                    })
+                    .map_err(anyhow::Error::msg)?;
+                let recipe = output.join("recipe.parhelion.json");
+                prepared.recipe().save_json(&recipe)?;
+                return Ok(recipe);
+            }
             let source = d1_roi::Source::open(&folder, |_, _| {})?;
             // A reimported item brings ornaments as its recipe did, and any other as the
             // importer's Ornaments choice says.
@@ -164,9 +266,26 @@ impl PackageAuthoringApp {
                 Some(bases) => {
                     source.prepare_weapon_on_base(*hash, native, bases, &output, &options, progress)
                 }
+                None if *item_kind == ItemKind::Artifact => {
+                    source.prepare_artifact(*hash, native, &output, &options, progress)
+                }
                 None => source.prepare_armor(*hash, native, &donors, &output, &options, progress),
             }
         });
+    }
+
+    /// The one stock solar Warlock subclass, which a source subclass grid is laid out on.
+    pub(super) fn roi_subclass_base(&self) -> Option<(u32, String)> {
+        let subclasses = self
+            .catalog
+            .as_ref()?
+            .subclasses(crate::package::profile::is_stock_item_definition);
+        let mut bases = subclasses.into_iter().filter(|candidate| {
+            candidate.class_type == 2
+                && candidate.damage_type == Some(sundial::investment::WeaponDamageType::Solar)
+        });
+        let base = bases.next()?;
+        bases.next().is_none().then_some((base.hash, base.name))
     }
 
     /// Stock native weapons of the source's type in the order the import tries them: a weapon of
@@ -182,7 +301,7 @@ impl PackageAuthoringApp {
                         .catalog
                         .as_ref()
                         .and_then(|c| c.item_definition_tag(donor.hash))
-                        .is_some_and(crate::package_profile::is_stock_item_definition)
+                        .is_some_and(crate::package::profile::is_stock_item_definition)
             })
             .collect::<Vec<_>>();
         bases.sort_by_key(|donor| {
@@ -246,6 +365,30 @@ impl Inspected {
                 ..Weapon::default()
             })
             .collect();
+        rows.extend(self.artifacts.iter().map(|item| Weapon {
+            hash: item.hash,
+            name: item.name.clone(),
+            weapon_type: item.kind.clone(),
+            bucket_hash: Some(1_506_418_338),
+            class_type: Some(item.class_type),
+            rarity: Some(item.rarity),
+            icon_index: Some(item.strings as usize),
+            ..Weapon::default()
+        }));
+        rows.extend(self.subclasses.iter().map(|choice| {
+            Weapon {
+                hash: choice.subclass,
+                name: choice.subclass_name.trim().to_owned(),
+                weapon_type: "Subclass".to_owned(),
+                bucket_hash: Some(3_284_755_031),
+                class_type: Some(2),
+                icon_index: self
+                    .subclass_strings
+                    .get(&choice.subclass)
+                    .map(|strings| *strings as usize),
+                ..Weapon::default()
+            }
+        }));
         rows.extend(self.weapons.iter().map(|item| Weapon {
             hash: item.hash,
             name: item.name.clone(),

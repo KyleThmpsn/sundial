@@ -5,8 +5,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{io::Read, process::Command, time::Instant};
 use sundial::package_authoring::runtime::{
-    load_weapon_runtime_entity_at_pattern_index_with_manager,
-    load_weapon_runtime_entity_with_manager,
+    load_runtime_entity_at_pattern_index_with_manager, load_runtime_entity_with_manager,
 };
 
 const TEST: &str =
@@ -186,8 +185,7 @@ fn child(output: &Path, phase: &str) {
     );
     let staged = staged_view(&source, ".parhelion-rebuild-readback-", &bundle);
     let manager = open_manager(&staged.path().join("packages")).unwrap();
-    let authored =
-        load_weapon_runtime_entity_with_manager(&manager, later.identity.item_hash).unwrap();
+    let authored = load_runtime_entity_with_manager(&manager, later.identity.item_hash).unwrap();
     let profile = crate::weapon::animations::profile(
         &manager,
         &authored.payload,
@@ -202,14 +200,14 @@ fn child(output: &Path, phase: &str) {
         .find(|donor| donor.hash == 0x31B7_14B4)
         .and_then(|donor| donor.weapon_pattern_index)
         .expect("The donor must have a native pattern row");
-    let donor = load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern).unwrap();
+    let donor = load_runtime_entity_at_pattern_index_with_manager(&stock, pattern).unwrap();
     let donor_profile = crate::weapon::animations::profile(
         &stock,
         &donor.payload,
         Some(donor.weapon_content_group_hash),
     )
     .unwrap();
-    let base = load_weapon_runtime_entity_with_manager(&stock, later.donor_item_hash).unwrap();
+    let base = load_runtime_entity_with_manager(&stock, later.donor_item_hash).unwrap();
     let base_profile = crate::weapon::animations::profile(
         &stock,
         &base.payload,

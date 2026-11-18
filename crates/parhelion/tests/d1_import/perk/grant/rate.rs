@@ -8,6 +8,9 @@ pub(super) fn check(
     emitted: &Payload,
     row: usize,
 ) -> CheckResult<Value> {
+    if source.u32(source.pointer(24)? - 4)? == 0x808029B5 {
+        return movement(source, source_row, stock, emitted, row);
+    }
     let source_body = source.pointer(source_row + 32)?;
     assert_eq!(source.u32(source_body - 4)?, 0x8080243C);
     assert_eq!(source.u32(source.pointer(16)? - 4)?, 0x808031E7);
@@ -136,4 +139,79 @@ pub(super) fn check(
         "callback_class":0x8080428Au32,
         "gameplay_verified":false
     }))
+}
+
+/// The sprint bank already owns a rate slot. A private zero-rate grant must reuse that
+/// slot without replacing its stock row, callbacks or priority storage.
+fn movement(
+    source: &Payload,
+    source_row: usize,
+    stock: &Payload,
+    emitted: &Payload,
+    row: usize,
+) -> CheckResult<Value> {
+    assert_eq!(source.u32(source.pointer(16)? - 4)?, 0x808027BE);
+    let source_body = source.pointer(source_row + 32)?;
+    assert_eq!(source.u32(source_body - 4)?, 0x8080243C);
+    assert_eq!(source.u32(source_row + 8)?, 255);
+    assert_eq!(source.u32(source_row + 16)?, 255);
+    assert_eq!(source.u64(source_row + 24)?, 0);
+    let bits = source.u32(source_body)?;
+    let before = stock.pointer(16)?;
+    let live = emitted.pointer(16)?;
+    let definition = emitted.pointer(24)?;
+    for p in [stock, emitted] {
+        assert_eq!(p.u32(p.pointer(16)? - 4)?, 0x80804112);
+        assert_eq!(p.u32(p.pointer(24)? - 4)?, 0x80804113);
+        let callbacks = p.array(0x20, 8, Some(0x8080919F))?;
+        assert_eq!(callbacks.len(), 3);
+        for (entry, (offset, class, method)) in callbacks.into_iter().zip([
+            (0x30, 0x80804112, 0),
+            (0x48, 0x80804112, 1),
+            (0x60, 0x808044FC, 12),
+        ]) {
+            let at = p.pointer(entry)? - 8;
+            assert_eq!(at, p.pointer(16)? + offset);
+            assert_eq!((p.u32(at)?, p.u32(at + 4)?), (class, method));
+        }
+    }
+    let old_rows = stock.array(stock.pointer(24)? + 0x88, 56, Some(0x8080453B))?;
+    let witnesses = old_rows
+        .into_iter()
+        .filter(|&r| stock.pointer(r + 48).and_then(|m| stock.u32(m + 4)).ok() == Some(0x8080452E))
+        .collect::<Vec<_>>();
+    assert_eq!(witnesses.len(), 1);
+    let witness = witnesses[0];
+    assert_eq!(emitted.u32(row + 28)?, stock.u32(witness + 28)?);
+    assert_ne!(emitted.u32(row + 16)?, stock.u32(witness + 16)?);
+    assert_eq!(emitted.u32(row + 20)?, source.u32(source_row + 4)?);
+    assert_eq!(emitted.u32(row + 24)?, 255);
+    assert_eq!(emitted.u32(row + 32)?, 255);
+    assert_eq!(emitted.u64(row + 40)?, 0);
+    let old_priorities = stock.array(before + 0x190, 1, Some(0x80800009))?;
+    let priorities = emitted.array(live + 0x190, 1, Some(0x80800009))?;
+    assert_eq!(old_priorities.len(), priorities.len());
+    assert_eq!(emitted.u64(definition + 0xB8)?, priorities.len() as u64);
+    for (old, current) in old_priorities.into_iter().zip(&priorities) {
+        assert_eq!(stock.u8(old)?, emitted.u8(*current)?);
+        assert!(*current >= live && *current < definition);
+    }
+    let body = emitted.pointer(row + 48)?;
+    let twin = usize::try_from(emitted.u64(body + 8)?)?;
+    assert_eq!(emitted.u32(body - 4)?, 0x8080452F);
+    assert_eq!(emitted.u32(body + 4)?, 0x8080452E);
+    assert_eq!(emitted.u32(twin - 4)?, 0x8080452E);
+    assert_eq!(emitted.u32(twin + 4)?, 0x8080452F);
+    assert_eq!(emitted.u64(twin + 8)?, body as u64);
+    assert_eq!(emitted.u32(body + 16)?, bits);
+    assert_eq!(emitted.u32(body + 20)?, 0);
+    assert_eq!(
+        emitted.pointer(twin + 16)?,
+        usize::try_from(emitted.u64(row + 8)?)?
+    );
+    Ok(
+        json!({"source_bits":bits,"emitted_bits":emitted.u32(body + 16)?,
+        "priority_slot":emitted.u32(row + 28)?,"priority_bytes":priorities.len(),
+        "callback_class":0x80804112u32,"gameplay_verified":false}),
+    )
 }

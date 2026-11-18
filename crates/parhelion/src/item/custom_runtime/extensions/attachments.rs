@@ -26,7 +26,7 @@ pub(super) fn patches(
     manager: &PackageManager,
     edits: &[AttachmentEdit],
     entity: &[u8],
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let mut patches = Vec::new();
     for edit in edits {
         if edit.remove_owners.is_empty() {
@@ -57,7 +57,7 @@ pub(super) fn patches(
         if entry.reference != WEAPON_ENTITY_CLASS {
             return Err(invalid("Attached reference is not a native entity"));
         }
-        patches.push(WeaponRuntimeResourcePatch {
+        patches.push(RuntimeResourcePatch {
             binding_hash: edit.binding_hash,
             resource_index: 0,
             offset: edit.offset,

@@ -2,6 +2,7 @@
 // Each readback walks one native record field by field, which reads best as one function.
 #![allow(clippy::cognitive_complexity)]
 use super::*;
+mod assignment;
 mod direct;
 mod event;
 mod feedback;
@@ -9,10 +10,24 @@ mod fraction;
 mod grant;
 mod hud;
 mod pattern;
+mod stat;
 mod timer;
 mod transfer;
 mod weighted;
 type CheckResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+/// Holds a staged private graph to the source graph it translates, for a caller outside the
+/// perk checks, such as a sword attack that spawns a translated entity.
+pub(super) fn translated_graph(
+    reader: &Source,
+    stock: &mut Reader,
+    emitted: &mut Reader,
+    source: &Payload,
+    native_tag: u32,
+) -> Result<()> {
+    pattern::translated_graph(reader, stock, emitted, source, native_tag)
+        .map_err(|error| anyhow::anyhow!("{error}"))
+}
 
 #[allow(clippy::cognitive_complexity)]
 pub(super) fn check(
@@ -79,7 +94,9 @@ pub(super) fn check(
     // Discover mutually exclusive damage steps from the source payloads, independently of
     // the translator's report. Every alternative must resolve through one selectable socket.
     let source_grid: Value = serde_json::from_slice(&fs::read(source_directory.join(
-        if receipt["graph"]["kind"] == "armor" {
+        if receipt["graph"]["kind"] == "artifact" {
+            "artifact.json"
+        } else if receipt["graph"]["kind"] == "armor" {
             "armor.json"
         } else {
             "weapon.json"
@@ -118,7 +135,7 @@ pub(super) fn check(
         }
     }
     // Every damage effect any source talent carries, beside other perks and stat rows or not.
-    // Rise of Iron applies an element only through such an effect.
+    // Rise of Iron applies a damage type only through such an effect.
     let mut damage_nodes = BTreeSet::new();
     let mut source_modes = BTreeSet::new();
     for node in source_grid["talents"]["nodes"]
@@ -168,7 +185,7 @@ pub(super) fn check(
                 .flatten()
         }))
         .collect::<Vec<_>>();
-    if receipt["graph"]["kind"] != "armor" && source_modes.len() <= 1 {
+    if receipt["graph"]["kind"] == "weapon" && source_modes.len() <= 1 {
         // One source type, or none at all, fixes the weapon's damage. Source selectors are
         // Kinetic 0, Solar 1, Arc 2 and Void 3. Native markers number Arc 1, Solar 2, Void 3.
         let mode = match source_modes.first().copied().unwrap_or(0) {
@@ -307,6 +324,32 @@ pub(super) fn check(
         let sources = translated["source_actions"]
             .as_array()
             .ok_or("Source actions")?;
+        // An action left out of the choice must be one Shadowkeep cannot gate: its activation is
+        // a hit that requires a target under a temporary team assignment. It is read from the
+        // source record, and the choice must still carry other actions.
+        for omitted in translated["omitted_source_actions"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let tag = u32::try_from(omitted["action"].as_u64().ok_or("Omitted action tag")?)?;
+            assert!(
+                !sources
+                    .iter()
+                    .any(|kept| kept.as_u64() == Some(u64::from(tag))),
+                "An omitted action was also translated"
+            );
+            assert!(!sources.is_empty(), "A choice kept only omitted actions");
+            let action = source_reader.read(tag)?;
+            let mut gated = false;
+            for row in action.array(0x20, 8, None)? {
+                let at = action.pointer(row)?;
+                gated |= action.u32(at - 4)? == 0x8080307B
+                    && action.u8(at + 5)? == 4
+                    && action.u8(at + 0x175)? == 1;
+            }
+            assert!(gated, "Omitted action {tag:08X} has no assignment gate");
+        }
         grant::origins(source_reader, stock, &source_grid, translated)?;
         assert_eq!(
             perks.len(),
@@ -326,7 +369,10 @@ pub(super) fn check(
             .ok_or("Stat adjustments")?;
         assert_eq!(
             stats.len(),
-            adjustments.len(),
+            adjustments
+                .iter()
+                .filter(|row| row["value"].is_i64())
+                .count(),
             "Private choice stats differ from the source adjustments"
         );
         let mut actual_stats = stats
@@ -365,13 +411,17 @@ pub(super) fn check(
             let raw = Payload(hex::decode(
                 original["record"].as_str().ok_or("Stat bytes")?,
             )?);
-            let multiplier = if receipt["graph"]["kind"] == "armor" {
-                assert_eq!(original["hash"].as_u64(), Some(0x1769266F));
-                10i64
+            let expected = if receipt["graph"]["kind"] != "weapon" {
+                let slot = number(&source_grid["item"]["slot"])? as u8;
+                let value = stat::expected(source_reader, number(&original["hash"])?, &raw, slot)?;
+                let Some(value) = value else {
+                    assert!(adjusted.get("value").is_none());
+                    continue;
+                };
+                value
             } else {
-                1
+                i64::from(i32::from_le_bytes(raw.bytes::<4>(0)?))
             };
-            let expected = i64::from(i32::from_le_bytes(raw.bytes::<4>(0)?)) * multiplier;
             expected_stats.push((
                 original["hash"].as_u64().ok_or("Source stat hash")?,
                 expected,
@@ -410,6 +460,7 @@ pub(super) fn check(
                 let native_plug = match source["hash"].as_u64().ok_or("Source perk identity")? {
                     0x4E9855BC => 0x2A1CBFD4,
                     0x5D32FF95 => 0x39169B67,
+                    0xEFD82FBF => 0xCAB3DB58,
                     _ => return Err("Unverified stock perk equivalent".into()),
                 };
                 let (_, bytes) = item(stock, native_plug)?;
@@ -474,6 +525,7 @@ pub(super) fn check(
                 translated,
             )?);
         }
+        let mut emitted_actions = BTreeMap::new();
         for (perk, source_tag) in perks.into_iter().take(sources.len()).zip(sources) {
             let source_tag = source_tag.as_u64().ok_or("Source action tag")?;
             let source = source_reader.read(u32::try_from(source_tag)?)?;
@@ -485,8 +537,9 @@ pub(super) fn check(
                 .collect::<Vec<_>>();
             assert_eq!(assigned.len(), 1);
             let action_tag = runtime.u32(assigned[0] + 4)?;
+            emitted_actions.insert(u32::try_from(source_tag)?, action_tag);
             let action = readback.tag(action_tag, Some(0x808040B5))?;
-            if receipt["graph"]["kind"] == "armor" {
+            if receipt["graph"]["kind"] != "weapon" {
                 for row in source.array(0x38, 8, None)? {
                     let at = source.pointer(row)?;
                     if source.u8(at)? == 34 {
@@ -511,8 +564,32 @@ pub(super) fn check(
                     "timer_extensions": timer::evidence(&source, &action)?}),
             );
         }
+        if let Some(report) = assignment::check(source_reader, stock, readback, &emitted_actions)? {
+            behaviors.push(json!({"plug":plug_hash,"team_assignment":report}));
+        }
     }
     Ok(json!(behaviors))
+}
+
+fn property_target(source: &Payload, at: usize) -> CheckResult<u8> {
+    let target = source.u8(at + 2)?;
+    if target != 3 {
+        return Ok(target);
+    }
+    let events = source
+        .array(0x20, 8, None)?
+        .into_iter()
+        .map(|row| source.u8(source.pointer(row)? + 5))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    // Draw and holster have no other combatant. D1's absent-handle fallback
+    // selects the owner, which Shadowkeep names explicitly with selector zero.
+    Ok(
+        if !events.is_empty() && events.iter().all(|kind| matches!(kind, 17 | 18)) {
+            0
+        } else {
+            target
+        },
+    )
 }
 
 /// The same independent controller contract applies at the root and inside private wrappers.
@@ -526,14 +603,25 @@ fn check_action(
     feedback::check(source_reader, stock, readback, source, action)?;
     assert_eq!(source.u8(0xB0)?, action.u8(0xB8)?);
     assert_eq!(source.u8(0xB1)?, action.u8(0xB9)?);
-    if source.u8(0xB0)? == 1 {
-        let s = source.pointer(0x78)?;
-        let n = action.pointer(0x78)?;
-        assert_eq!(source.u32(s - 4)?, 0x808031C4);
-        assert_eq!(action.u32(n - 4)?, 0x80803E07);
-        assert_eq!(source.bytes::<8>(s)?, action.bytes::<8>(n)?);
-    } else {
-        assert_eq!(action.u64(0x78)?, 0);
+    match source.u8(0xB0)? {
+        0 => assert_eq!(action.u64(0x78)?, 0),
+        1 => {
+            let s = source.pointer(0x78)?;
+            let n = action.pointer(0x78)?;
+            assert_eq!(source.u32(s - 4)?, 0x808031C4);
+            assert_eq!(action.u32(n - 4)?, 0x80803E07);
+            assert_eq!(source.bytes::<8>(s)?, action.bytes::<8>(n)?);
+        }
+        4 => {
+            let s = source.pointer(0x78)?;
+            let n = action.pointer(0x78)?;
+            assert_eq!(source.u32(s - 4)?, 0x80802FBB);
+            assert_eq!(action.u32(n - 4)?, 0x80803E08);
+            // Both original shot handlers use the first byte as the burst length
+            // and the second as the maximum rounds earned by misses.
+            assert_eq!(source.bytes::<2>(s)?, action.bytes::<2>(n)?);
+        }
+        other => return Err(format!("Execution policy {other} needs independent readback").into()),
     }
     let source_effects = source.array(0x38, 8, None)?;
     let effects = action.array(0x38, 8, Some(0x808040AC))?;
@@ -560,9 +648,56 @@ fn check_action(
             )?;
             continue;
         }
+        if source.u8(s)? == 30 {
+            assert_eq!(source.u32(s - 4)?, 0x808020EB);
+            assert_eq!(source.u8(s + 1)?, 1);
+            assert!(matches!(source.u8(s + 2)?, 0 | 2));
+            // The original callbacks write builtin 9 then 3 for selector 9.
+            // Native Full Auto names the same firing context through builtin 14.
+            let builtins: &[u8] = match source.u8(s + 3)? {
+                3 => &[3],
+                9 => &[14, 3],
+                other => return Err(format!("Unchecked context selector {other}").into()),
+            };
+            let mut written = BTreeSet::new();
+            for _ in builtins {
+                let at = *effects.get(next_effect).ok_or("Missing context write")?;
+                next_effect += 1;
+                let n = action.pointer(at)?;
+                assert_eq!(action.u32(n - 4)?, 0x80803E1C);
+                assert_eq!(action.bytes::<3>(n)?, [35, 1, source.u8(s + 2)?]);
+                assert!(
+                    written.insert(action.u8(n + 3)?),
+                    "Repeated context destination"
+                );
+                assert_eq!(action.u32(n + 4)?, source.u32(s + 4)?);
+                assert_eq!(action.u32(n + 8)?, 0, "Unexpected controller-player write");
+            }
+            // The original wrappers store separate context slots and increment a shared
+            // change counter. Their final names and retained state are independent of
+            // the order of these distinct destinations, which authoring may canonicalize.
+            assert_eq!(written, builtins.iter().copied().collect());
+            continue;
+        }
+        if source.u8(s)? == 0 {
+            let taken = pattern::detached_bank(
+                source_reader,
+                stock,
+                readback,
+                source,
+                s,
+                action,
+                &effects[next_effect.min(effects.len())..],
+            )?;
+            if taken != 0 {
+                next_effect += taken;
+                continue;
+            }
+        }
         let at = effects.get(next_effect).ok_or("Missing native effect")?;
         next_effect += 1;
         let n = if source.u8(s)? == 9 {
+            let target = property_target(source, s)?;
             let matching = effects
                 .iter()
                 .map(|&at| action.pointer(at))
@@ -570,7 +705,7 @@ fn check_action(
                 .into_iter()
                 .filter(|&at| {
                     action.u8(at).ok() == Some(10)
-                        && action.u8(at + 2).ok() == source.u8(s + 2).ok()
+                        && action.u8(at + 2).ok() == Some(target)
                         && action.u32(at + 8).ok() == source.u32(s + 8).ok()
                 })
                 .collect::<Vec<_>>();
@@ -676,9 +811,17 @@ fn check_action(
                 assert_eq!(source.u8(s + 1)?, action.u8(n + 1)?);
                 assert_eq!(source.u8(s + 0x94)?, action.u8(n + 0xb8)?);
                 assert_eq!(action.u8(n + 0x148)?, 0);
-                assert_eq!(action.bytes::<0x90>(n + 8)?, [0; 0x90]);
-                assert_eq!(action.u8(n + 0xa0)?, 255);
-                assert_eq!(action.bytes::<2>(n + 0xb0)?, [1; 2]);
+                assert_eq!(source.bytes::<6>(s + 2)?, [0; 6]);
+                assert_eq!(action.bytes::<0x20>(n + 8)?, [0; 0x20]);
+                if source.bytes::<4>(s + 0x90)? == [1; 4] {
+                    assert_eq!(action.bytes::<0x70>(n + 0x28)?, [0; 0x70]);
+                    assert_eq!(action.u8(n + 0xa0)?, 255);
+                    assert_eq!(action.bytes::<2>(n + 0xb0)?, [1; 2]);
+                } else {
+                    // The source damage filter at +08 keeps its damage types and its ability
+                    // labels, read back from the original record.
+                    event::damage_filter(source_reader, stock, source, s + 8, action, n + 0x28)?;
+                }
                 for (original, emitted) in [(0x170, 0x120), (0x180, 0x130)] {
                     let originals = source.array(s + original, 12, Some(0x80802069))?;
                     let rows = action.array(n + emitted, 12, Some(0x80803E22))?;
@@ -730,7 +873,7 @@ fn check_action(
                 assert_eq!(action.u8(n)?, 10);
                 assert_eq!(action.u32(n - 4)?, 0x808029ED);
                 assert_eq!(source.u8(s + 1)?, action.u8(n + 1)?);
-                assert_eq!(source.u8(s + 2)?, action.u8(n + 2)?);
+                assert_eq!(property_target(source, s)?, action.u8(n + 2)?);
                 assert_eq!(source.u8(s + 3)?, action.u8(n + 3)?);
                 assert_eq!(source.u32(s + 4)?, action.u32(n + 4)?);
                 assert_eq!(source.u32(s + 8)?, action.u32(n + 8)?);
@@ -754,6 +897,24 @@ fn check_action(
                 let length = if source.u8(s)? == 24 { 24 } else { 16 };
                 assert_eq!(source.0[s + 1..s + length], action.0[n + 1..n + length]);
             }
+            38 => {
+                // The temporary team assignment keeps both times. Neither record holds
+                // anything else, and the native class is the kind's own.
+                assert_eq!(source.u32(s - 4)?, 0x80801101);
+                assert_eq!(action.u32(n - 4)?, 0x80803E16);
+                assert_eq!(source.bytes::<3>(s + 1)?, [0; 3]);
+                assert_eq!(action.bytes::<4>(n)?, [44, 0, 0, 0]);
+                assert_eq!(source.bytes::<8>(s + 4)?, action.bytes::<8>(n + 4)?);
+                assert!(source.f32(s + 4)? > 0.0 && source.f32(s + 8)? >= 0.0);
+            }
+            35 => {
+                // A weapon key write keeps its retained flag, weapon selector, slot mask and
+                // name. `sword::check` holds the name to a staged attack row that reads it.
+                assert_eq!(source.u32(s - 4)?, 0x8080321D);
+                assert_eq!(action.u32(n - 4)?, 0x80803E39);
+                assert_eq!(action.u8(n)?, 41);
+                assert_eq!(source.bytes::<7>(s + 1)?, action.bytes::<7>(n + 1)?);
+            }
             26 => {
                 assert_eq!(action.u8(n)?, 30);
                 // Only the retained and operation bytes belong to this node.
@@ -761,7 +922,12 @@ fn check_action(
                 assert_eq!(source.bytes::<2>(s + 1)?, action.bytes::<2>(n + 1)?);
             }
             _ => {
-                return Err("An unsupported source effect was presented as translated".into());
+                return Err(format!(
+                    "Source effect {} ({:08X}) needs independent readback",
+                    source.u8(s)?,
+                    source.u32(s - 4)?
+                )
+                .into());
             }
         }
     }
@@ -795,10 +961,15 @@ fn check_action(
                 action.u8(n + 5)?,
                 match kind {
                     14..=18 | 30..=36 => kind - 1,
+                    // A kill incident with no Shadowkeep event is a kill condition, which
+                    // `event::check` holds to the incident's own definition.
+                    12 if action.u32(n - 4)? == 0x80803DE7 => 2,
                     _ => kind,
                 }
             );
-            assert_eq!(source.u8(s + 6)?, action.u8(n + 6)?);
+            if !matches!(kind, 20 | 36) {
+                assert_eq!(source.u8(s + 6)?, action.u8(n + 6)?);
+            }
             if source.u8(s + 5)? == 1 {
                 assert_eq!(source.u32(s + 8)?, action.u32(n + 8)?);
             }

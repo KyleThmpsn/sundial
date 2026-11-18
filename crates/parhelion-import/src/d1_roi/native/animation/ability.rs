@@ -31,7 +31,7 @@ pub struct Plan {
 }
 
 /// One converted clip as a shared-table merge adds it: the native descriptor whose row it copies,
-/// its duration and the source descriptor's eight policy bytes at row `+10`.
+/// its duration, the source descriptor's eight policy bytes at row `+10` and its pose dispatch.
 #[derive(Debug, Serialize)]
 pub struct MergeClip {
     pub symbol: String,
@@ -39,6 +39,80 @@ pub struct MergeClip {
     pub descriptor: usize,
     pub duration: f32,
     pub policy: [u8; 8],
+    pub dispatch: bank::Dispatch,
+}
+
+/// A descriptor's pose dispatch by content: its supplemental route's edges in each layer
+/// family, as each edge's option and layer name, then its aim and look aliases. Route rows are
+/// one per descriptor in both games, so two descriptors pose alike when their edges agree.
+type Pose = (Option<[Vec<(u16, u32)>; 2]>, u16, u16);
+
+/// The layer family, route and edge classes of the Rise of Iron and native layer tables, which
+/// hold their arrays at the same offsets.
+const SOURCE_LAYERS: [u32; 3] = [0x808022CE, 0x8080254E, 0x808028E6];
+const NATIVE_LAYERS: [u32; 3] = [0x80803724, 0x808034EF, 0x808034F1];
+
+/// The route index and pose of `descriptor` in a pose owner's layer and direction tables.
+fn pose_dispatch(
+    layers: &Payload,
+    directions: &Payload,
+    [family, route, edge]: [u32; 3],
+    descriptor: usize,
+) -> Result<(Option<u16>, Pose)> {
+    let alias = |payload: &Payload, field: usize| -> Result<u16> {
+        payload.u16(
+            *payload
+                .array(field, 2, Some(0x80800006))?
+                .get(descriptor)
+                .context("Pose dispatch descriptor")?,
+        )
+    };
+    let index = alias(layers, 40)?;
+    let edges = if index == u16::MAX {
+        None
+    } else {
+        let row = *layers
+            .array(56, 32, Some(route))?
+            .get(usize::from(index))
+            .context("Pose route")?;
+        let mut families = [Vec::new(), Vec::new()];
+        for (which, list) in families.iter_mut().enumerate() {
+            // Only the first family's rows have a class this converter has qualified.
+            let names = layers.array(8 + which * 16, 24, (which == 0).then_some(family))?;
+            for at in layers.array(row + which * 16, 4, Some(edge))? {
+                let layer = *names
+                    .get(usize::from(layers.u16(at + 2)?))
+                    .context("Pose route layer")?;
+                list.push((layers.u16(at)?, layers.u32(layer + 16)?));
+            }
+        }
+        Some(families)
+    };
+    Ok((
+        (index != u16::MAX).then_some(index),
+        (edges, alias(directions, 8)?, alias(directions, 0x38)?),
+    ))
+}
+
+/// The native dispatch of a lent action's descriptor: the one that every action both games
+/// hold gives a descriptor with the same source pose.
+fn lent_dispatch(wanted: &Pose, witnesses: &[Witness]) -> Result<(bank::Dispatch, usize)> {
+    if *wanted == (None, u16::MAX, u16::MAX) {
+        return Ok((bank::Dispatch::NONE, 0));
+    }
+    let agreeing = witnesses
+        .iter()
+        .filter(|(source, _)| source == wanted)
+        .map(|(_, native)| native)
+        .collect::<Vec<_>>();
+    let &(route, (_, aim, look)) = *agreeing
+        .first()
+        .context("No action both games hold has this action's supplemental pose and aliases")?;
+    ensure!(
+        agreeing.iter().all(|native| native.1 == agreeing[0].1),
+        "Actions both games hold give this supplemental pose different native dispatches"
+    );
+    Ok((bank::Dispatch { route, aim, look }, agreeing.len()))
 }
 
 /// What a build needs to add the prepared actions to the shared native tables on top of earlier
@@ -139,6 +213,32 @@ impl Human {
         })
     }
 
+    /// Adds `other`'s clips and actions, prepared against the same stock records. Two private
+    /// actions cannot copy one native action.
+    pub fn absorb(&mut self, other: Self) -> Result<()> {
+        ensure!(
+            self.stock == other.stock,
+            "Human actions were prepared against different stock records"
+        );
+        let first = self.merge.clips.len();
+        for (name, (private, choices)) in other.merge.actions {
+            let choices = choices
+                .into_iter()
+                .map(|(clip, weight)| (clip + first, weight))
+                .collect();
+            ensure!(
+                self.merge
+                    .actions
+                    .insert(name, (private, choices))
+                    .is_none(),
+                "Two private actions copy native action {name:08X}"
+            );
+        }
+        self.merge.clips.extend(other.merge.clips);
+        self.clips.extend(other.clips);
+        Ok(())
+    }
+
     /// Write the clips under `directory/human` and the graph's `human_actions` section, which
     /// the build's human action emitter reads.
     pub fn write(&self, directory: &Path, graph: &mut Value) -> Result<()> {
@@ -147,9 +247,14 @@ impl Human {
         for (clip, payload) in self.merge.clips.iter().zip(&self.clips) {
             let file = format!("human/{}.bin", clip.symbol);
             fs::write(directory.join(&file), &payload.0)?;
-            clips.push(json!({"file":file,"template":clip.template,
+            let mut entry = json!({"file":file,"template":clip.template,
                 "descriptor":clip.descriptor,"duration":clip.duration,
-                "policy":hex::encode(clip.policy)}));
+                "policy":hex::encode(clip.policy)});
+            // A clip without a supplemental pose or alias keeps the entry it always had.
+            if clip.dispatch != bank::Dispatch::NONE {
+                entry["dispatch"] = serde_json::to_value(clip.dispatch)?;
+            }
+            clips.push(entry);
         }
         let stock = self
             .stock
@@ -366,6 +471,232 @@ pub fn prepare(
     resources: &BTreeMap<u32, String>,
     dependencies: &[Asset],
 ) -> Result<Prepared> {
+    prepare_lent(
+        source,
+        native,
+        plan,
+        target,
+        prefix,
+        resources,
+        dependencies,
+        (&BTreeMap::new(), &BTreeSet::new()),
+    )
+}
+
+/// A source pose paired with the native route and pose of the same action's descriptor.
+type Witness = (Pose, (Option<u16>, Pose));
+
+/// Both games' action table, bank, layers and directions, with each action table's names.
+struct Tables<'a> {
+    source: [&'a Payload; 4],
+    native: [&'a Payload; 4],
+    names: [BTreeMap<u32, usize>; 2],
+}
+
+impl Tables<'_> {
+    /// The choices of an action both games hold unconditionally with equal choice counts,
+    /// source then native.
+    fn shared(&self, name: u32) -> Result<Option<(conditional::Action, conditional::Action)>> {
+        let (Some(&from), Some(&to)) = (self.names[0].get(&name), self.names[1].get(&name)) else {
+            return Ok(None);
+        };
+        if self.source[0].u64(from)? != 1 || self.native[0].u64(to)? != 1 {
+            return Ok(None);
+        }
+        let (Ok(taught), Ok(witness)) = (
+            conditional::action(self.source[0], self.source[1], from, true, &BTreeMap::new()),
+            conditional::action(self.native[0], self.native[1], to, false, &BTreeMap::new()),
+        ) else {
+            crate::cancellation::check()?;
+            return Ok(None);
+        };
+        Ok((taught.choices.len() == witness.choices.len()).then_some((taught, witness)))
+    }
+}
+
+/// An action with a native action of its own name is a complete authored pose, so its source
+/// descriptors hold no supplemental route and no direction alias. A lent action takes its pose
+/// dispatch from the actions both games hold.
+fn absolute_poses(
+    dispatches: &[(&Payload, Vec<usize>)],
+    plan: &Plan,
+    lenders: &BTreeMap<u32, u32>,
+    descriptors: usize,
+) -> Result<()> {
+    for (payload, rows) in dispatches {
+        ensure!(
+            rows.len() == descriptors,
+            "Source pose dispatch does not cover its bank"
+        );
+        for choice in plan
+            .actions
+            .iter()
+            .filter(|action| !lenders.contains_key(&action.name))
+            .flat_map(|action| &action.choices)
+        {
+            ensure!(
+                payload.u16(
+                    *rows
+                        .get(choice.descriptor)
+                        .context("Source pose descriptor")?
+                )? == u16::MAX,
+                "Ability action has source supplemental pose or direction dependencies"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Every action both games hold unconditionally witnesses how a source pose dispatch reads in
+/// the native tables.
+fn pose_witnesses(tables: &Tables<'_>) -> Result<Vec<Witness>> {
+    let mut poses = Vec::new();
+    for &name in tables.names[0].keys() {
+        let Some((taught, witness)) = tables.shared(name)? else {
+            continue;
+        };
+        for (a, b) in taught.choices.iter().zip(&witness.choices) {
+            poses.push((
+                pose_dispatch(
+                    tables.source[2],
+                    tables.source[3],
+                    SOURCE_LAYERS,
+                    a.descriptor,
+                )?
+                .1,
+                pose_dispatch(
+                    tables.native[2],
+                    tables.native[3],
+                    NATIVE_LAYERS,
+                    b.descriptor,
+                )?,
+            ));
+        }
+    }
+    Ok(poses)
+}
+
+/// The marker selector translation the `teachers` establish: source actions with a native
+/// action of the same name whose clips share their marker frames.
+fn selector_witnesses(
+    source: &Source,
+    native: &mut Reader,
+    tables: &Tables<'_>,
+    teachers: &BTreeSet<u32>,
+) -> Result<BTreeMap<u8, u8>> {
+    let mut mapping = BTreeMap::new();
+    for &teacher in teachers {
+        let Some((taught, witness)) = tables.shared(teacher)? else {
+            continue;
+        };
+        for (a, b) in taught.choices.iter().zip(&witness.choices) {
+            let (Some(a), Some(b)) = (a.tag, b.tag) else {
+                continue;
+            };
+            let original = source.read(a)?;
+            let counterpart = native.tag(b, Some(0x80808F49))?;
+            // A pair whose markers differ in number or frame teaches nothing.
+            let mut learned = mapping.clone();
+            if markers(&original, &counterpart, &mut learned).is_ok() {
+                mapping = learned;
+            } else {
+                crate::cancellation::check()?;
+            }
+        }
+    }
+    Ok(mapping)
+}
+
+/// Binds each timed resource the caller translated to its private symbol and returns the
+/// clip's patches. A lent action keeps the native resource its dispatch witness names for any
+/// other resource.
+fn bind_resources(
+    source: &Source,
+    report: &mut Value,
+    converted: &mut Payload,
+    resources: &BTreeMap<u32, String>,
+    lent: bool,
+    used: &mut BTreeSet<u32>,
+) -> Result<Vec<Patch>> {
+    let mut patches = Vec::new();
+    for event in report["audio"]["events"]
+        .as_array_mut()
+        .context("Ability clip events")?
+    {
+        let Some(tag) = event["source_resource"].as_u64() else {
+            continue;
+        };
+        let tag = u32::try_from(tag)?;
+        let Some(symbol) = resources.get(&tag) else {
+            ensure!(
+                lent,
+                "Ability clip has an untranslated effect or sound dependency"
+            );
+            continue;
+        };
+        let class = match source.reference(tag)? {
+            0x8080080A => 0x80809802,
+            0x80800734 => 0x80809C0F,
+            _ => anyhow::bail!("Ability clip dependency class is unsupported"),
+        };
+        let at = usize::try_from(
+            event["native_offset"]
+                .as_u64()
+                .context("Ability event offset")?,
+        )? + 24;
+        put(&mut converted.0, at, &u32::MAX.to_le_bytes());
+        patches.push(Patch {
+            offset: at,
+            symbol: symbol.clone(),
+            class,
+        });
+        event["native_witness_resource"] = event["native_resource"].take();
+        event["private_resource"] = json!(symbol);
+        used.insert(tag);
+    }
+    Ok(patches)
+}
+
+/// The selector translation of a source clip that has no native clip of its own name: each
+/// marker takes the native selector the shared actions' own clip pairs established.
+fn lent_markers(source: &Payload, mapping: &BTreeMap<u8, u8>) -> Result<(Payload, Value)> {
+    let mut output = source.clone();
+    let mut evidence = Vec::new();
+    for row in source.array(0x140, 8, Some(0x808004E1))? {
+        let at = source.pointer(row)?;
+        if source.u32(at - 4)? != 0x80800436 {
+            continue;
+        }
+        ensure!(
+            source.u16(at + 2)? == 2 && source.u8(at + 5)? == 0,
+            "Action marker flags differ"
+        );
+        let before = source.u8(at + 4)?;
+        let after = *mapping.get(&before).with_context(|| {
+            format!("Marker selector {before} has no native counterpart among the shared actions")
+        })?;
+        output.0[at + 4] = after;
+        evidence.push(json!({"frame":source.i16(at)?,"source":before,"native":after}));
+    }
+    Ok((output, json!(evidence)))
+}
+
+/// [`prepare`] for a plan with source actions Shadowkeep has no action for. `lenders` names, for
+/// each such action, the native action whose node, descriptor row and control layout its private
+/// action copies. Its markers take the selector translation that the `teachers` establish: source
+/// actions with a native action of the same name whose clips share their marker frames. Its
+/// timed resources keep the native resources that some native clip dispatches the same way.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_lent(
+    source: &Source,
+    native: &mut Reader,
+    plan: &Plan,
+    target: &Target,
+    prefix: &str,
+    resources: &BTreeMap<u32, String>,
+    dependencies: &[Asset],
+    (lenders, teachers): (&BTreeMap<u32, u32>, &BTreeSet<u32>),
+) -> Result<Prepared> {
     dependency::symbol(prefix)?;
     ensure!(
         native.is_native(),
@@ -432,22 +763,7 @@ pub fn prepare(
             source_directions.array(0x38, 2, Some(0x80800006))?,
         ),
     ];
-    for (payload, rows) in &dispatches {
-        ensure!(
-            rows.len() == source_descriptors.len(),
-            "Source pose dispatch does not cover its bank"
-        );
-        for choice in plan.actions.iter().flat_map(|action| &action.choices) {
-            ensure!(
-                payload.u16(
-                    *rows
-                        .get(choice.descriptor)
-                        .context("Source pose descriptor")?
-                )? == u16::MAX,
-                "Ability action has source supplemental pose or direction dependencies"
-            );
-        }
-    }
+    absolute_poses(&dispatches, plan, lenders, source_descriptors.len())?;
     let native_descriptors = bank.array(0x68, 32, Some(0x80809002))?;
     for &row in &native_descriptors {
         ensure!(
@@ -469,7 +785,25 @@ pub fn prepare(
     let mut additions = Vec::new();
     let mut routes = state::ChoiceRoutes::new();
     let mut descriptors = Vec::new();
-    let mut selector_mapping = BTreeMap::new();
+    let (mut selector_mapping, poses) = if lenders.is_empty() {
+        (BTreeMap::new(), Vec::new())
+    } else {
+        let source_states = source.read(plan.states)?;
+        let tables = Tables {
+            source: [
+                &source_states,
+                &source_bank,
+                &source_layers,
+                &source_directions,
+            ],
+            native: [&states, &bank, &layers, &directions],
+            names: [conditional::names(&source_states, true)?, nodes.clone()],
+        };
+        (
+            selector_witnesses(source, native, &tables, teachers)?,
+            pose_witnesses(&tables)?,
+        )
+    };
     let mut evidence = Vec::new();
     let mut used_resources = BTreeSet::new();
     let mut merge = Merge {
@@ -477,8 +811,10 @@ pub fn prepare(
         actions: BTreeMap::new(),
     };
     for action in &plan.actions {
+        let lender = lenders.get(&action.name).copied();
+        let native_name = lender.unwrap_or(action.name);
         let node = *nodes
-            .get(&action.name)
+            .get(&native_name)
             .context("Native action witness is absent")?;
         ensure!(
             states.u64(node)? == 1,
@@ -494,14 +830,20 @@ pub fn prepare(
                     .all(|(a, b)| a.weight == b.weight),
             "Named action weighted variants differ"
         );
-        let library = event::Library::selected(
-            native,
-            &witness
-                .choices
-                .iter()
-                .map(|c| c.clip())
-                .collect::<Result<_>>()?,
-        )?;
+        // A lent action's timed resources have no witness in the lender's clips, so any native
+        // clip of the bank or the shared corpus that dispatches the same resource serves.
+        let library = if lender.is_some() {
+            event::Library::read(native, &bank)?
+        } else {
+            event::Library::selected(
+                native,
+                &witness
+                    .choices
+                    .iter()
+                    .map(|c| c.clip())
+                    .collect::<Result<_>>()?,
+            )?
+        };
         let mut weights = Vec::new();
         for (choice, template) in action.choices.iter().zip(witness.choices) {
             let original = source.read(choice.clip)?;
@@ -523,8 +865,11 @@ pub fn prepare(
                         .all(|(&a, b)| original.0[a..a + 8] == counterpart.0[b..b + 8]),
                 "Ability clip control groups differ"
             );
-            let (qualified, marker_evidence) =
-                markers(&original, &counterpart, &mut selector_mapping)?;
+            let (qualified, marker_evidence) = if lender.is_some() {
+                lent_markers(&original, &selector_mapping)?
+            } else {
+                markers(&original, &counterpart, &mut selector_mapping)?
+            };
             library.validate_source(source, &qualified)?;
             let bones = (0..u16::try_from(rig.bind.len())?).collect::<Vec<_>>();
             let (mut converted, mut report) =
@@ -535,38 +880,14 @@ pub fn prepare(
             for frame in [0, usize::from(converted.u16(0x13C)?) - 1] {
                 crate::tiger::animation::clip::sample(&converted, &rig.defaults, frame)?;
             }
-            let mut patches = Vec::new();
-            for event in report["audio"]["events"]
-                .as_array_mut()
-                .context("Ability clip events")?
-            {
-                let Some(tag) = event["source_resource"].as_u64() else {
-                    continue;
-                };
-                let tag = u32::try_from(tag)?;
-                let symbol = resources
-                    .get(&tag)
-                    .context("Ability clip has an untranslated effect or sound dependency")?;
-                let class = match source.reference(tag)? {
-                    0x8080080A => 0x80809802,
-                    0x80800734 => 0x80809C0F,
-                    _ => anyhow::bail!("Ability clip dependency class is unsupported"),
-                };
-                let at = usize::try_from(
-                    event["native_offset"]
-                        .as_u64()
-                        .context("Ability event offset")?,
-                )? + 24;
-                put(&mut converted.0, at, &u32::MAX.to_le_bytes());
-                patches.push(Patch {
-                    offset: at,
-                    symbol: symbol.clone(),
-                    class,
-                });
-                event["native_witness_resource"] = event["native_resource"].take();
-                event["private_resource"] = json!(symbol);
-                used_resources.insert(tag);
-            }
+            let patches = bind_resources(
+                source,
+                &mut report,
+                &mut converted,
+                resources,
+                lender.is_some(),
+                &mut used_resources,
+            )?;
             report["audio"]["binding"] = json!("native_dispatch_witness_with_private_resources");
             let sr = *source_descriptors
                 .get(choice.descriptor)
@@ -578,6 +899,18 @@ pub fn prepare(
                 source_bank.bytes::<6>(sr + 26)? == bank.bytes::<6>(nr + 26)?,
                 "Action descriptor playback policies differ"
             );
+            let (dispatch, pose_witnesses) = if lender.is_some() {
+                let wanted = pose_dispatch(
+                    &source_layers,
+                    &source_directions,
+                    SOURCE_LAYERS,
+                    choice.descriptor,
+                )?
+                .1;
+                lent_dispatch(&wanted, &poses)?
+            } else {
+                (bank::Dispatch::NONE, 0)
+            };
             let index = assets.len();
             let symbol = format!("{prefix}-clip-{index}");
             additions.push(bank::Addition {
@@ -587,6 +920,7 @@ pub fn prepare(
                     .checked_add(u32::try_from(index)?)
                     .context("Ability clip identity overflow")?,
                 duration: source_bank.f32(sr + 20)?,
+                dispatch,
             });
             weights.push((native_descriptors.len() + index, choice.weight));
             descriptors.push(source_bank.bytes::<8>(sr + 16)?);
@@ -596,17 +930,19 @@ pub fn prepare(
                 descriptor: template.descriptor,
                 duration: source_bank.f32(sr + 20)?,
                 policy: source_bank.bytes::<8>(sr + 16)?,
+                dispatch,
             });
             merge
                 .actions
-                .entry(action.name)
+                .entry(native_name)
                 .or_insert_with(|| (private_actions[&action.name], Vec::new()))
                 .1
                 .push((index, choice.weight));
             evidence.push(
                 json!({"action":action.name,"source_clip":choice.clip,"native_witness":witness_clip,
                 "source_sha256":digest(&original),"native_witness_sha256":digest(&counterpart),
-                "marker_translation":marker_evidence,"conversion":report}),
+                "marker_translation":marker_evidence,"pose_dispatch":dispatch,
+                "pose_witnesses":pose_witnesses,"conversion":report}),
             );
             assets.push(Asset {
                 symbol,
@@ -615,7 +951,12 @@ pub fn prepare(
                 patches,
             });
         }
-        routes.insert(action.name, BTreeMap::from([(0, weights)]));
+        ensure!(
+            routes
+                .insert(native_name, BTreeMap::from([(0, weights)]))
+                .is_none(),
+            "Two private actions copy native action {native_name:08X}"
+        );
     }
     ensure!(
         !additions.is_empty(),
@@ -638,7 +979,18 @@ pub fn prepare(
     for (descriptor, data) in extension.descriptors.iter().zip(descriptors) {
         put(&mut extension.bank.0, rows[*descriptor] + 16, &data);
     }
-    let states = state::extend_actions(&states, &routes, &private_actions)?;
+    // Each private action copies a native node: its own name's, or its lender's.
+    let copied = plan
+        .actions
+        .iter()
+        .map(|action| {
+            (
+                lenders.get(&action.name).copied().unwrap_or(action.name),
+                private_actions[&action.name],
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let states = state::extend_actions(&states, &routes, &copied)?;
     let clips = extension.bank.array(8, 4, Some(0x80808F48))?;
     let first = clips.len() - assets.len();
     let mut patches = Vec::new();

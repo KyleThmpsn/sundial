@@ -1,7 +1,7 @@
 //! A constant status host, its HUD packet and its separately timed Duration component.
 use super::*;
 mod conditional;
-mod display;
+pub(super) mod display;
 pub(super) mod host;
 mod lifecycle;
 
@@ -481,10 +481,12 @@ pub(super) fn icon(p: &Payload, owner: u32) -> Result<Connected> {
     Ok(Connected {
         competition,
         hud: p.bytes(hud + 0x88)?,
+        display: display::read(p, hud)?,
         duration: p.bytes(duration + 0xA0)?,
         timer: p.bytes(controller + 0x78)?,
         count: constant(p, hud + 0xA0, false)?,
         lifetime,
+        count_input: None,
         lifetime_input: None,
         provider_input: usize::MAX,
         receiver_policy: 2,
@@ -515,13 +517,44 @@ pub(super) fn timer(
     ))
 }
 
+/// A count expression that stores its one named input: program `3C 01 3E 00` with no constants,
+/// stack counts two and one and a single `80800927` input row. Skorri's Harmony's status counts
+/// the value its channel bank carries from the volume's getter `B05189A2` this way, and stock
+/// status `81A6998B` holds the same program on an input of the same name.
+fn count_input(p: &Payload, at: usize) -> Result<Option<(u32, usize)>> {
+    let code = p
+        .array(at + 24, 1, Some(0x80800009))?
+        .into_iter()
+        .map(|a| p.u8(a))
+        .collect::<Result<Vec<_>>>()?;
+    if code != [0x3C, 1, 0x3E, 0] {
+        return Ok(None);
+    }
+    let rows = p.array(at + 72, 48, Some(0x80800927))?;
+    ensure!(
+        p.u32(at + 16)? == 0x8080084D
+            && p.array(at + 40, 16, Some(0x80800090))?.is_empty()
+            && p.u64(at + 56)? == 2
+            && p.u64(at + 64)? == 1
+            && rows.len() == 1
+            && p.u32(rows[0] + 0x28)? != 0x811C9DC5,
+        "Source status count reads its input through another program"
+    );
+    Ok(Some((p.u32(rows[0] + 0x28)?, rows[0])))
+}
+
 /// The source fields of a status host whose lifetime sequence is another graph owner.
 pub(crate) struct Connected {
     pub competition: [u8; 8],
     pub hud: [u8; 12],
+    /// Whether the qualified identity expression transforms the reported remaining seconds.
+    pub display: bool,
     pub duration: [u8; 20],
     pub timer: [u8; 8],
     pub count: [u8; 16],
+    /// The name and source input row of a count that is its one input passed through, in
+    /// place of a constant count.
+    pub count_input: Option<(u32, usize)>,
     pub lifetime: Lifetime,
     /// Offsets in the source owner of the lifetime input definition and the lifetime-sequence
     /// receiver, which graph connection rows name.
@@ -779,7 +812,10 @@ pub(super) fn connected(
     // the priority rule, and bit 4 refreshes the lifetime, checked below. Native connected status
     // 80FEF720 stores 07 in the same graph form. The match count at `+A8` carries as stored, zero
     // included, as stock Duration host 8157808D stores it, since both builds decrement and test it
-    // on the same matching paths.
+    // on the same matching paths. Bit 5 is read outside the Duration methods: source `5D5690`,
+    // through flags getter `D137E0` at `5D57F0`, and native `ECA7F0`, through adapter `186AF60` at
+    // `ECA92A`, walk statuses and collect up to ten distinct handles, each skipping a status
+    // whose bit 5 is set. The two loops match step for step, so the bit carries as stored.
     let flags = p.u32(duration + 0xA0)?;
     ensure!(
         p.u32(hud + 0x30)? == 0x80800955
@@ -787,7 +823,7 @@ pub(super) fn connected(
             && p.u64(hud + 0x98)? == 0
             && p.u64(duration + 0x30)? == 0x8080299F
             && p.u64(duration + 0x50)? == 0x80802B20
-            && flags & !0x1F == 0
+            && flags & !0x3F == 0
             && i32::from_le_bytes(p.bytes(duration + 0xA8)?) >= 0
             && p.u64(duration + 0xB0)? <= 1
             && p.u64(controller + 0x78)? <= 1,
@@ -832,12 +868,18 @@ pub(super) fn connected(
             "Source refreshing status needs a positive or indefinite constant lifetime"
         );
     }
+    let count_input = count_input(p, hud + 0xA0)?;
     Ok(Connected {
         competition,
         hud: p.bytes(hud + 0x88)?,
+        display: display::read(p, hud)?,
         duration: p.bytes(duration + 0xA0)?,
         timer: p.bytes(controller + 0x78)?,
-        count: constant(p, hud + 0xA0, false)?,
+        count: match count_input {
+            Some(_) => [0; 16],
+            None => constant(p, hud + 0xA0, false)?,
+        },
+        count_input,
         lifetime,
         lifetime_input: input.map(|(_, row)| row),
         provider_input: settings + 0xB8,

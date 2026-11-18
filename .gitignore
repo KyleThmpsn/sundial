@@ -33,3 +33,6 @@ Desktop.ini
 examples/
 /crates/parhelion/import/
 /.playwright-mcp
+
+# Dawn bundle tooling, kept local for now.
+/crates/parhelion-dawn/

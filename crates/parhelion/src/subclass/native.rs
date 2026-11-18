@@ -58,6 +58,26 @@ pub(crate) fn allow_every_class(definition: &mut [u8]) -> AuthoringResult<()> {
     crate::tag_payload::set_array_count(definition, equipment, header, 0)
 }
 
+/// Where a subclass definition lists its tree objectives, as two-byte objective indices.
+const TREE_OBJECTIVES_OFFSET: usize = 0x208;
+const TREE_OBJECTIVE_CLASS: u32 = 0x8080_87B1;
+
+/// Leaves out the base's tree objectives. They track the unlocks of the base's own attunements,
+/// which an authored subclass's trees do not have, and an unfinished one shows on the item's
+/// tooltip under the base tree's name. The empty array keeps its native header.
+pub(crate) fn remove_tree_objectives(definition: &mut [u8]) -> AuthoringResult<()> {
+    if read_u64(definition, TREE_OBJECTIVES_OFFSET)? == 0 {
+        return Ok(());
+    }
+    let (_, header, _, class) = array_at(definition, TREE_OBJECTIVES_OFFSET)?;
+    if class != TREE_OBJECTIVE_CLASS {
+        return Err(invalid(format!(
+            "Subclass tree objectives have class 0x{class:08X}"
+        )));
+    }
+    crate::tag_payload::set_array_count(definition, TREE_OBJECTIVES_OFFSET, header, 0)
+}
+
 /// Points only the supported donor-class equip condition at `class`: 0 Titan, 1 Hunter,
 /// 2 Warlock. The ability grid still keeps its class-base pool.
 pub(crate) fn set_class(definition: &mut [u8], class: u8) -> AuthoringResult<()> {
@@ -66,8 +86,9 @@ pub(crate) fn set_class(definition: &mut [u8], class: u8) -> AuthoringResult<()>
 }
 
 /// Gives a subclass's item strings `damage`, in the resource their stat group pointer names, as
-/// the native damage enum. Stock subclasses hold their element there too. Written alone, it left
-/// the icon beside the name unchanged in game, so [`set_element`] writes the definition's.
+/// the native damage enum. Stock subclasses hold their damage type there too. Written alone, it
+/// left the icon beside the name unchanged in game, so [`set_damage_unlock`] writes the
+/// definition's.
 pub(crate) fn set_damage_type(
     strings: &mut [u8],
     damage: crate::recipe::RecipeDamageType,
@@ -104,30 +125,30 @@ const UNLOCK_BLOCK_CLASS: u32 = 0x8080_77AB;
 const UNLOCK_FLAG_ROW_CLASS: u32 = 0x8080_7D4B;
 const UNLOCK_VALUE_ROW_CLASS: u32 = 0x8080_77AE;
 const UNLOCK_VALUE_ROW_SIZE: usize = 8;
-/// The value every stock subclass sets to its element.
-const ELEMENT_VALUE: u32 = 0x1E9;
-/// Each element's flag and value, as the three stock subclasses of that element carry them.
-const ELEMENTS: [(crate::recipe::RecipeDamageType, u16, u32); 3] = [
+/// The value every stock subclass sets to its damage type.
+const DAMAGE_UNLOCK_VALUE: u32 = 0x1E9;
+/// Each damage type's flag and value, as the three stock subclasses of that damage type carry them.
+const DAMAGE_UNLOCKS: [(crate::recipe::RecipeDamageType, u16, u32); 3] = [
     (crate::recipe::RecipeDamageType::Arc, 0x7B3, 1),
     (crate::recipe::RecipeDamageType::Solar, 0x7B4, 3),
     (crate::recipe::RecipeDamageType::Void, 0x7B5, 2),
 ];
 
-/// Gives a subclass definition `damage` where the game reads its element: its element unlock
-/// flag and the value every stock subclass sets to its element, as a stock subclass of that
-/// element carries them. No stock subclass is Kinetic, so Kinetic lists no element flag and sets
-/// the value to 0, which stock subclasses write for the values they clear.
-pub(crate) fn set_element(
+/// Gives a subclass definition `damage` where the game reads its damage type: its damage type
+/// unlock flag and the value every stock subclass sets to its damage type, as a stock subclass of
+/// that damage type carries them. No stock subclass is Kinetic, so Kinetic lists no damage type
+/// flag and sets the value to 0, which stock subclasses write for the values they clear.
+pub(crate) fn set_damage_unlock(
     definition: &mut [u8],
     damage: crate::recipe::RecipeDamageType,
 ) -> AuthoringResult<()> {
     if read_i64(definition, UNLOCK_BLOCK_POINTER_OFFSET)? == 0 {
-        return Err(invalid("The base subclass has no element unlocks"));
+        return Err(invalid("The base subclass has no damage type unlocks"));
     }
     let block = relative_target(definition, UNLOCK_BLOCK_POINTER_OFFSET)?;
     if block < 4 || read_u32(definition, block - 4)? != UNLOCK_BLOCK_CLASS {
         return Err(invalid(
-            "The base subclass's element unlocks are not the native block",
+            "The base subclass's damage type unlocks are not the native block",
         ));
     }
     let (count, header, rows, class) = array_at(definition, block)?;
@@ -137,13 +158,13 @@ pub(crate) fn set_element(
     let flags = (0..count)
         .map(|index| read_u16(definition, rows + 2 * index))
         .collect::<AuthoringResult<Vec<_>>>()?;
-    let mut elements = flags
+    let mut carried = flags
         .iter()
         .enumerate()
-        .filter(|(_, flag)| ELEMENTS.iter().any(|(_, element, _)| element == *flag));
-    let (Some((position, _)), None) = (elements.next(), elements.next()) else {
+        .filter(|(_, flag)| DAMAGE_UNLOCKS.iter().any(|(_, unlock, _)| unlock == *flag));
+    let (Some((position, _)), None) = (carried.next(), carried.next()) else {
         return Err(invalid(
-            "The base subclass does not carry exactly one element flag",
+            "The base subclass does not carry exactly one damage type flag",
         ));
     };
     let mut values = Vec::new();
@@ -157,17 +178,17 @@ pub(crate) fn set_element(
         }
         for index in 0..count {
             let row = rows + UNLOCK_VALUE_ROW_SIZE * index;
-            if read_u32(definition, row)? == ELEMENT_VALUE {
+            if read_u32(definition, row)? == DAMAGE_UNLOCK_VALUE {
                 values.push(row + 4);
             }
         }
     }
     let [value] = values[..] else {
         return Err(invalid(
-            "The base subclass does not set its element value exactly once",
+            "The base subclass does not set its damage type value exactly once",
         ));
     };
-    match ELEMENTS.iter().find(|(element, _, _)| *element == damage) {
+    match DAMAGE_UNLOCKS.iter().find(|(kind, _, _)| *kind == damage) {
         Some((_, flag, code)) => {
             write_u16(definition, rows + 2 * position, *flag)?;
             write_u32(definition, value, *code)
@@ -255,10 +276,9 @@ pub(crate) struct Companion {
 impl Companion {
     pub(super) fn read(manager: &PackageManager, owner: TagHash) -> AuthoringResult<Self> {
         let tag = adjacent_companion_tag(owner)?;
-        if manager
-            .get_entry(tag)
-            .is_none_or(|entry| entry.reference != crate::format::SHARED_TAG_COMPANION_CLASS)
-        {
+        if manager.get_entry(tag).is_none_or(|entry| {
+            entry.reference != crate::package::format::SHARED_TAG_COMPANION_CLASS
+        }) {
             return Err(invalid(format!(
                 "Subclass record {owner} has no shared-tag companion"
             )));
@@ -860,7 +880,7 @@ pub(super) fn set_node_text(
                 write_localized_reference(
                     &mut payload,
                     display + field,
-                    crate::package_profile::localization_table() as u32,
+                    crate::package::profile::localization_table() as u32,
                     hash,
                 )?;
             }

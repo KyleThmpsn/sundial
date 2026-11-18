@@ -202,6 +202,7 @@ pub mod investment_schema {
         emblem_metric_categories,
     };
     pub use crate::investment::schema::{armor_equipment_class, set_armor_equipment_class};
+    pub use crate::investment::schema::{artifact_equipment_class, set_artifact_equipment_class};
 }
 
 /// Ability definition rows, which a Subclass pool record names its ability by.
@@ -296,8 +297,8 @@ pub mod ability_bank {
         PARAMETER_NAMES, PARAMETER_ROW_CLASS, Parameter, ParameterKind, ParameterName, PropertyRow,
         SCRIPT_DEFINITION_CLASS, SCRIPT_INSTANCE_CLASS, SLOT_BANKS, SLOT_PARAMETERS, SUPER_SLOT,
         StockParameter, UNPLACED_BANKS, bank_name, bank_names, bank_owner, block_count,
-        constant_protection_definition, handler_slot, instance_shift, membership_keys,
-        ordered_rows_match, parameter_abilities, parameter_kind, parameter_label,
+        constant_protection_definition, handler_slot, instance_offset, instance_shift,
+        membership_keys, ordered_rows_match, parameter_abilities, parameter_kind, parameter_label,
         parameter_meaning, parameter_name, parameters, property_rows, register_bank_names,
         retarget_references, row_modifiers, slot_banks, slot_name, slot_parameters, tuning_key,
         validate, validate_native_owner, widened, with_charge_row, with_ordered_rows,
@@ -347,17 +348,17 @@ pub mod entity {
         WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_CLASS, WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_SIZE,
         WEAPON_ENTITY_RESOURCE_MAP_ROW_CLASS, WEAPON_ENTITY_RESOURCE_MAP_ROW_SIZE,
         WEAPON_INPUT_COMPONENT_KEY, WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
-        WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
-        WEAPON_TRIGGER_COMPONENT_KEY, WeaponComponentBinding, append_weapon_entity_assignment,
-        barrel, barrel_pellets, coupled_weapon_component_bindings, extend_weapon_components,
-        extend_weapon_components_detaching, graft_weapon_component_binding,
-        graft_weapon_component_bindings, graft_weapon_component_bindings_or_rewire,
-        graft_weapon_component_bindings_with, grow_projectile_trajectories, owner,
-        plan_component_splice, projectile_trajectory_capacity, remove_weapon_components,
-        retarget_weapon_component_owner, retarget_weapon_component_owner_payload,
-        sandbox_pattern_identity, sandbox_pattern_identity_at, spread, validate_weapon_entity,
-        weapon_component_binding, weapon_component_binding_hashes, weapon_component_bindings,
-        weapon_entity_assignment,
+        WEAPON_STAT_INPUT_DEFINITIONS, WEAPON_STAT_TRANSLATOR_COMPONENT_KEY,
+        WEAPON_TRIGGER_CHARGE_COMPONENT_KEY, WEAPON_TRIGGER_COMPONENT_KEY, WeaponComponentBinding,
+        append_weapon_entity_assignment, barrel, barrel_pellets, coupled_weapon_component_bindings,
+        extend_weapon_components, extend_weapon_components_detaching,
+        graft_weapon_component_binding, graft_weapon_component_bindings,
+        graft_weapon_component_bindings_or_rewire, graft_weapon_component_bindings_with,
+        grow_projectile_trajectories, owner, plan_component_splice, projectile_trajectory_capacity,
+        reload, remove_weapon_components, retarget_weapon_component_owner,
+        retarget_weapon_component_owner_payload, sandbox_pattern_identity,
+        sandbox_pattern_identity_at, spread, validate_weapon_entity, weapon_component_binding,
+        weapon_component_binding_hashes, weapon_component_bindings, weapon_entity_assignment,
     };
 }
 
@@ -365,20 +366,18 @@ pub mod entity {
 pub mod runtime {
     pub use crate::runtime::{
         BindingHash, GraphTag, NativeMember, NativeStructure, NativeStructureField,
-        ResolvedWeaponRuntimeField, SchemaHandle, WeaponRuntimeBinding, WeaponRuntimeEntitySource,
-        WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource,
-        WeaponRuntimeGraph, WeaponRuntimeOwner, WeaponRuntimePathElement, WeaponRuntimeResource,
-        WeaponRuntimeResourceShape, WeaponRuntimeRoot, WeaponRuntimeRootKind, WeaponRuntimeValue,
-        WeaponRuntimeValueKind, WeaponRuntimeValueOverride, component_binding_label,
-        decode_weapon_runtime_field_value, encode_weapon_runtime_field_value,
-        encode_weapon_runtime_value, load_weapon_runtime_entities_at_pattern_indices_with_manager,
-        load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_entity_for_item_with_manager, load_weapon_runtime_entity_with_manager,
-        load_weapon_runtime_graph, load_weapon_runtime_graph_for_entity,
-        load_weapon_runtime_graph_with_manager, load_weapon_runtime_resource_shape, native_holders,
-        native_member_names, native_members, native_pointer_layout, native_relocation_layout,
-        native_type_inherits, native_type_name, native_type_parent, resolve_weapon_runtime_field,
-        runtime_fields_share_semantics,
+        ResolvedRuntimeField, RuntimeBinding, RuntimeEntitySource, RuntimeField,
+        RuntimeFieldLocator, RuntimeFieldSource, RuntimeGraph, RuntimeOwner, RuntimePathElement,
+        RuntimeResource, RuntimeResourceShape, RuntimeRoot, RuntimeRootKind, RuntimeValue,
+        RuntimeValueKind, RuntimeValueOverride, SchemaHandle, component_binding_label,
+        decode_runtime_field_value, encode_runtime_field_value, encode_runtime_value,
+        load_runtime_entities_at_pattern_indices_with_manager,
+        load_runtime_entity_at_pattern_index_with_manager,
+        load_runtime_entity_for_item_with_manager, load_runtime_entity_with_manager,
+        load_runtime_graph, load_runtime_graph_for_entity, load_runtime_graph_with_manager,
+        load_runtime_resource_shape, native_holders, native_member_names, native_members,
+        native_pointer_layout, native_relocation_layout, native_type_inherits, native_type_name,
+        native_type_parent, resolve_runtime_field, runtime_fields_share_semantics,
     };
     pub use crate::runtime::{modifiers, presentation};
 }
@@ -401,6 +400,12 @@ pub mod gear_markers {
 #[must_use]
 pub fn fnv1_name_hash(name: &str) -> u32 {
     crate::hash::fnv1_name_hash(name)
+}
+
+/// Computes the 32-bit FNV-1 hash of `text` as written, the client's hash for names and keys.
+#[must_use]
+pub const fn fnv1(text: &str) -> u32 {
+    crate::hash::fnv1(text)
 }
 
 /// FNV-1's empty-string basis, reserved as the package-backed no-name sentinel.

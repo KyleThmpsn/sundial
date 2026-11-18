@@ -1,4 +1,5 @@
 //! Timed attachments retain native lifecycle dispatch and translated source tuning.
+use super::component::{envelope, object};
 use super::*;
 use crate::d2_mot::entity::links::Interface;
 use std::collections::BTreeMap;
@@ -29,6 +30,41 @@ pub struct Timed {
     pub unbound: Vec<Object>,
     pub stable_inputs: Vec<Object>,
     pub named_conditions: Vec<u32>,
+}
+
+/// The shipped status owner, and the graph that holds it, whose timed property inputs hold
+/// modifier banks of as many rows as the modern status `source` keeps on its own. Modifiers that
+/// drive a status give each of its four inputs a bank of one row for each modifier.
+pub fn template(source: &Payload) -> Result<(u32, u32)> {
+    let settings = source.pointer(24)?;
+    let mut rows = None;
+    for index in 0..4 {
+        let input = settings + 0x640 + index * 24;
+        let count = if source.u64(input + 16)? == 0 {
+            None
+        } else {
+            Some(super::stat::bank_rows(source, source.pointer(input + 16)?)?.len())
+        };
+        ensure!(
+            *rows.get_or_insert(count) == count,
+            "timed property inputs hold modifier banks of different sizes"
+        );
+    }
+    Ok(match rows.flatten() {
+        None => (0x80FE_F700, 0x80BB_74DC),
+        Some(1) => (0x80FE_F69C, 0x80BB_743A),
+        // Among the shipped two-row statuses, one whose property state is not initialized.
+        Some(2) => (0x80FE_F5D7, 0x80FE_F5DC),
+        Some(3) => (0x80BC_3810, 0x80BC_2C52),
+        Some(4) => (0x8153_2CAC, 0x80BC_57D3),
+        Some(5) => (0x80FE_EB62, 0x80BB_7358),
+        Some(6) => (0x80BC_3932, 0x80B8_1AF7),
+        Some(7) => (0x815B_3EDC, 0x815B_3EDD),
+        Some(8) => (0x80FE_EB75, 0x80BB_7398),
+        Some(rows) => {
+            anyhow::bail!("no Shadowkeep status template holds modifier banks of {rows} rows")
+        }
+    })
 }
 
 pub fn emit(
@@ -111,6 +147,55 @@ pub fn emit(
     })
 }
 
+/// A Duration that is a component of its own. A status embeds the same record beneath its
+/// reporting layer, so the nested conversion applies unchanged below this root.
+pub fn standalone(
+    source: &Payload,
+    templates: Templates<'_>,
+    owner_tag: u32,
+    allocation_tag: u32,
+) -> Result<Timed> {
+    let mut owner = envelope(
+        source,
+        templates.owner,
+        [0x80802DB8, 0x80802DB9, 0x80803B2F, 0x80803B30],
+        owner_tag,
+        allocation_tag,
+    )?;
+    let si = source.pointer(16)?;
+    let sd = source.pointer(24)?;
+    let ni = owner.pointer(16)?;
+    let nd = owner.pointer(24)?;
+    let nested = duration::emit(
+        source,
+        &mut owner,
+        templates.scalar_input,
+        templates.metadata,
+        (si + 0x30, sd + 0x48),
+        (ni + 0x30, nd + 0x48),
+    )?;
+    // The shipped roots hold literal timers. The allocation name a root gives a timer that
+    // reads inputs has no shipped example to take it from.
+    ensure!(
+        nested.allocation.is_empty(),
+        "standalone Duration timer reads graph inputs"
+    );
+    let mut objects = nested.objects;
+    objects.push(object(source, &owner, si, 0x80802DB8, ni, 0x80803B2F)?);
+    objects.push(object(source, &owner, sd, 0x80802DB9, nd, 0x80803B30)?);
+    let mut allocation = templates.allocation.clone();
+    allocation::Row::write(&[], &mut allocation, 0x20)?;
+    super::seal(&mut owner)?;
+    Ok(Timed {
+        owner,
+        allocation,
+        objects,
+        unbound: nested.unbound,
+        stable_inputs: nested.stable_inputs,
+        named_conditions: Vec::new(),
+    })
+}
+
 fn pair(p: &Payload, i: usize, d: usize, ic: u32, dc: u32) -> Result<()> {
     let owner = p.u32(p.pointer(16)?)?;
     ensure!(
@@ -123,28 +208,6 @@ fn pair(p: &Payload, i: usize, d: usize, ic: u32, dc: u32) -> Result<()> {
         "timed component reciprocal records differ"
     );
     Ok(())
-}
-
-fn object(
-    source: &Payload,
-    output: &Payload,
-    from: usize,
-    sc: u32,
-    to: usize,
-    nc: u32,
-) -> Result<Relocation> {
-    Ok(Relocation {
-        source: Object {
-            owner: source.u32(source.pointer(16)?)?,
-            class: sc,
-            offset: from as u64,
-        },
-        target: Object {
-            owner: output.u32(output.pointer(16)?)?,
-            class: nc,
-            offset: to as u64,
-        },
-    })
 }
 
 /// Provider metadata is checked on each side. A class correspondence never

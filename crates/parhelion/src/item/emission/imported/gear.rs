@@ -118,10 +118,10 @@ pub(super) fn collections(
         spec.ok_or_else(|| invalid("Unconditional Collections policy has no item recipe"))?;
     if !matches!(
         spec.kind,
-        ItemKind::Weapon | ItemKind::Armor | ItemKind::Sparrow
+        ItemKind::Weapon | ItemKind::Armor | ItemKind::Sparrow | ItemKind::Artifact
     ) {
         return Err(invalid(
-            "Unconditional imported Collections policy requires a weapon, armor or Sparrow",
+            "Unconditional imported Collections policy requires equipped imported gear",
         ));
     }
     use crate::progression::*;

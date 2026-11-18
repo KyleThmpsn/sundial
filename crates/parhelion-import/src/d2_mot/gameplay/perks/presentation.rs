@@ -53,6 +53,80 @@ fn artwork(reader: &mut Reader, index: usize) -> Result<(Option<Vec<u8>>, Value)
     Ok((primary, json!({"index":index,"layers":layers})))
 }
 
+/// The modern HUD status index, one tag whose rows are sorted by status name.
+const STATUS_INDEX: u32 = 0x8080_3C07;
+const STATUS_INDEX_ROW: u32 = 0x8080_B85C;
+/// A table of HUD statuses the index names, with rows in Shadowkeep's layout.
+const STATUS_TABLE: u32 = 0x8080_3EBA;
+const STATUS_ROW: u32 = 0x8080_3EBE;
+
+/// The icon the source HUD shows beside the status named `name`, as a PNG at its own size.
+/// The index row of a status names the table that holds it and, at `+8`, the key of its row
+/// there, which is the name itself where that word finds no row. The table row names the
+/// icon layer at `+4`, in the layer format of item icons. `None` when the index has no row
+/// for the name or the row has no icon.
+pub fn status_icon(reader: &mut Reader, name: u32) -> Result<Option<Vec<u8>>> {
+    let indexes = reader.classes(STATUS_INDEX);
+    anyhow::ensure!(
+        indexes.len() == 1,
+        "expected one HUD status index, got {}",
+        indexes.len()
+    );
+    let index = reader.tag(indexes[0], Some(STATUS_INDEX))?;
+    let Some(row) = index
+        .array(0x7C8, 48, Some(STATUS_INDEX_ROW))?
+        .into_iter()
+        .find(|row| index.u32(*row).is_ok_and(|key| key == name))
+    else {
+        return Ok(None);
+    };
+    let table = reader.ref64(&index, row + 16)?;
+    let table = reader.tag(table, Some(STATUS_TABLE))?;
+    let rows = table.array(8, 112, Some(STATUS_ROW))?;
+    let keyed = |key: u32| {
+        rows.iter()
+            .copied()
+            .find(|row| table.u32(*row).is_ok_and(|found| found == key))
+    };
+    let Some(status) = keyed(index.u32(row + 8)?).or_else(|| keyed(name)) else {
+        return Ok(None);
+    };
+    let Some(texture) = icon::layer_texture(reader, table.u32(status + 4)?)? else {
+        return Ok(None);
+    };
+    let layer = icon::read_texture(reader, texture)?;
+    let rgba = icon::decode(&layer)?;
+    let mut bytes = Vec::new();
+    let mut encoder =
+        png::Encoder::new(&mut bytes, u32::from(layer.width), u32::from(layer.height));
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header()?.write_image_data(&rgba)?;
+    Ok(Some(bytes))
+}
+
+/// The English name the source HUD shows for the status named `name`. The index row holds
+/// the key of the name's string at `+8` and names no bank. `None` when the index has no row
+/// for the name or no bank holds the string.
+pub fn status_text(reader: &mut Reader, name: u32) -> Result<Option<String>> {
+    let indexes = reader.classes(STATUS_INDEX);
+    anyhow::ensure!(
+        indexes.len() == 1,
+        "expected one HUD status index, got {}",
+        indexes.len()
+    );
+    let index = reader.tag(indexes[0], Some(STATUS_INDEX))?;
+    let Some(row) = index
+        .array(0x7C8, 48, Some(STATUS_INDEX_ROW))?
+        .into_iter()
+        .find(|row| index.u32(*row).is_ok_and(|key| key == name))
+    else {
+        return Ok(None);
+    };
+    let text = localization::unbanked_text(reader, index.u32(row + 8)?)?;
+    Ok(text.filter(|text| !text.trim().is_empty()))
+}
+
 /// Preserve source presentation even when a controller needs further translation.
 /// Missing optional artwork or lore remains an explicit report entry.
 pub fn read(reader: &mut Reader, hash: u32) -> Result<Presentation> {

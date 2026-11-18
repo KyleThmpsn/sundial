@@ -364,7 +364,7 @@ pub const PARAMETER_NAMES: [ParameterName; 86] = [
     ParameterName {
         hash: 0xA957_F024,
         name: "enable_lingering_fire_apply_buff",
-        label: "Sunspot Buff",
+        label: "Sun Warrior from Sunspots",
         meaning: "Sunspots grant Sun Warrior. Sun Warrior writes 1.",
     },
     ParameterName {

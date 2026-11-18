@@ -629,7 +629,11 @@ pub(super) fn mounted_weapon(behavior: &Value, owner: u64) -> Result<Option<&Val
 /// in its own barrel section. Reach fires it either from another trigger of the driver weapon on
 /// the secondary input (2), such as the Banshee cannon's bomb and the Sabre's missiles, or from
 /// the vehicle's next weapon, such as the Seraph's bomb launcher. The section records the weapon,
-/// barrel and trigger input it comes from.
+/// barrel, barrel marker, fire recovery and trigger input it comes from.
+///
+/// `created` is a projectile an effect flow creates at its source launch speed rather than a
+/// Barrel firing it. No Barrel prepares its launch, so the source speed curve does not set it, as
+/// for an airstrike's bomb.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn vehicle_secondary(
     cache: &cache::Cache,
@@ -639,6 +643,7 @@ pub(super) fn vehicle_secondary(
     projectiles: &Value,
     entry: &ImportRequest,
     root: &Path,
+    created: bool,
 ) -> Result<Option<Value>> {
     let Some(primary) = driver_weapon(behavior)? else {
         return Ok(None);
@@ -716,13 +721,16 @@ pub(super) fn vehicle_secondary(
             folder: &folder,
             prefix: Some(&prefix),
             unguided: true,
-            curve: true,
+            curve: !created,
             launch: None,
             trajectories: 1,
         },
     )?;
+    let source_barrel = &gameplay(&rooted)["barrels"][usize::try_from(barrel)?];
     section["vehicle_weapon"] = weapon["tag"].clone();
     section["barrel"] = json!(barrel);
+    section["barrel_marker"] = source_barrel["marker"].clone();
+    section["fire_recovery_seconds"] = source_barrel["fire_recovery_seconds"].clone();
     section["trigger_input"] = json!(input);
     Ok(Some(section))
 }

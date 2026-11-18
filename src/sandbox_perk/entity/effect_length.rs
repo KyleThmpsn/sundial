@@ -26,8 +26,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::{
-    WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimePathElement,
-    WeaponRuntimeRoot, WeaponRuntimeValue, WeaponRuntimeValueKind,
+    RuntimeField, RuntimeFieldSource, RuntimeGraph, RuntimePathElement, RuntimeRoot, RuntimeValue,
+    RuntimeValueKind,
 };
 
 const ROOT: u32 = 0x504E_5200;
@@ -54,7 +54,7 @@ pub const UNLIMITED: f32 = -1.0;
 #[derive(Default)]
 struct Rows<'a> {
     bytecode: Vec<(u32, u8)>,
-    constants: Vec<(u32, &'a WeaponRuntimeField)>,
+    constants: Vec<(u32, &'a RuntimeField)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -62,12 +62,12 @@ pub struct EffectLength {
     pub owner_tag: u32,
     /// The constant row, a vec4 whose four lanes hold the seconds. For a timer that scales an
     /// input, the seconds it adds to the scaled input.
-    pub field: WeaponRuntimeField,
+    pub field: RuntimeField,
     /// The seconds an input adds per unit, for a timer that scales an input before adding
     /// the length. What feeds the input is not established.
     pub per_input: Option<f32>,
     /// The constant row that scales the input, for a timer that scales one.
-    pub input_scale: Option<WeaponRuntimeField>,
+    pub input_scale: Option<RuntimeField>,
     /// The definition's Unlimited flag, when editable bytes of the graph hold it.
     pub unlimited: Option<UnlimitedFlag>,
 }
@@ -91,8 +91,8 @@ impl EffectLength {
 
     /// A constant row holding `seconds` in every lane, as the stock rows do.
     #[must_use]
-    pub fn encode(seconds: f32) -> WeaponRuntimeValue {
-        WeaponRuntimeValue::Vector4Float32Bits([seconds.to_bits(); 4])
+    pub fn encode(seconds: f32) -> RuntimeValue {
+        RuntimeValue::Vector4Float32Bits([seconds.to_bits(); 4])
     }
 }
 
@@ -100,15 +100,15 @@ impl EffectLength {
 /// in them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnlimitedFlag {
-    pub field: WeaponRuntimeField,
+    pub field: RuntimeField,
     pub at: usize,
 }
 
 impl UnlimitedFlag {
     /// Whether the flag is set in `value`, a value of its field.
     #[must_use]
-    pub fn is_set(&self, value: &WeaponRuntimeValue) -> bool {
-        matches!(value, WeaponRuntimeValue::Bytes(bytes)
+    pub fn is_set(&self, value: &RuntimeValue) -> bool {
+        matches!(value, RuntimeValue::Bytes(bytes)
             if bytes.get(self.at).is_some_and(|byte| *byte != 0))
     }
 
@@ -120,13 +120,13 @@ impl UnlimitedFlag {
 
     /// `value`, a value of its field, with the flag set or clear and its other bytes kept.
     #[must_use]
-    pub fn with(&self, value: &WeaponRuntimeValue, set: bool) -> Option<WeaponRuntimeValue> {
-        let WeaponRuntimeValue::Bytes(bytes) = value else {
+    pub fn with(&self, value: &RuntimeValue, set: bool) -> Option<RuntimeValue> {
+        let RuntimeValue::Bytes(bytes) = value else {
             return None;
         };
         let mut bytes = bytes.clone();
         *bytes.get_mut(self.at)? = u8::from(set);
-        Some(WeaponRuntimeValue::Bytes(bytes))
+        Some(RuntimeValue::Bytes(bytes))
     }
 }
 
@@ -139,8 +139,8 @@ pub fn is_unlimited(seconds: f32, scale: Option<f32>, flag: bool) -> bool {
 
 /// The seconds a constant row holds, when its lanes agree as the stock rows do.
 #[must_use]
-pub fn seconds(value: &WeaponRuntimeValue) -> Option<f32> {
-    let WeaponRuntimeValue::Vector4Float32Bits(lanes) = value else {
+pub fn seconds(value: &RuntimeValue) -> Option<f32> {
+    let RuntimeValue::Vector4Float32Bits(lanes) = value else {
         return None;
     };
     lanes[1..]
@@ -151,7 +151,7 @@ pub fn seconds(value: &WeaponRuntimeValue) -> Option<f32> {
 
 /// Every timer in the graph whose program has one of the known shapes.
 #[must_use]
-pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<EffectLength> {
+pub fn discover(graph: &RuntimeGraph) -> Vec<EffectLength> {
     let roots = graph
         .resources
         .iter()
@@ -173,9 +173,9 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<EffectLength> {
     for (owner, root) in roots {
         // The rows of each program, by the path to it. An array sits in a holder one step
         // under the program, so the program is two steps above the array pointer.
-        let mut programs: BTreeMap<Vec<WeaponRuntimePathElement>, Rows<'_>> = BTreeMap::new();
+        let mut programs: BTreeMap<Vec<RuntimePathElement>, Rows<'_>> = BTreeMap::new();
         for field in &root.fields {
-            if field.source != WeaponRuntimeFieldSource::NativeDeclaration
+            if field.source != RuntimeFieldSource::NativeDeclaration
                 || field.locator.value_offset != 0
             {
                 continue;
@@ -214,10 +214,10 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<EffectLength> {
             }
             let program = programs.entry(program_path.to_vec()).or_default();
             match (element.type_handle.get(), &field.value) {
-                (BYTECODE_ROW, WeaponRuntimeValue::Unsigned(byte)) => program
+                (BYTECODE_ROW, RuntimeValue::Unsigned(byte)) => program
                     .bytecode
                     .push((element.byte_offset, u8::try_from(*byte).unwrap_or(u8::MAX))),
-                (CONSTANT_ROW, WeaponRuntimeValue::Vector4Float32Bits(_)) => {
+                (CONSTANT_ROW, RuntimeValue::Vector4Float32Bits(_)) => {
                     program.constants.push((element.byte_offset, field));
                 }
                 _ => {}
@@ -257,7 +257,7 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<EffectLength> {
         }
     }
     // A constant another program also reads would change that program too.
-    let unshared = |field: &WeaponRuntimeField, owner: u32| {
+    let unshared = |field: &RuntimeField, owner: u32| {
         readers
             .get(&(owner, field.owner_offset))
             .is_none_or(|programs| programs.len() == 1)
@@ -274,7 +274,7 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<EffectLength> {
 
 /// The owner offset of the Unlimited flag of the timer definition on `path`, when the
 /// definition lies in `root` itself rather than behind a pointer.
-fn flag_offset(root: &WeaponRuntimeRoot, path: &[WeaponRuntimePathElement]) -> Option<u32> {
+fn flag_offset(root: &RuntimeRoot, path: &[RuntimePathElement]) -> Option<u32> {
     let mut offset = root.owner_offset;
     for (index, step) in path.iter().enumerate() {
         match step.name_hash {
@@ -290,7 +290,7 @@ fn flag_offset(root: &WeaponRuntimeRoot, path: &[WeaponRuntimePathElement]) -> O
 }
 
 /// The narrowest editable bytes of `owner` in `graph` that hold the byte at `offset`.
-fn flag(graph: &WeaponRuntimeGraph, owner: u32, offset: u32) -> Option<UnlimitedFlag> {
+fn flag(graph: &RuntimeGraph, owner: u32, offset: u32) -> Option<UnlimitedFlag> {
     graph
         .resources
         .iter()
@@ -305,8 +305,8 @@ fn flag(graph: &WeaponRuntimeGraph, owner: u32, offset: u32) -> Option<Unlimited
         )
         .flat_map(|root| &root.fields)
         .filter(|field| {
-            matches!(field.kind, WeaponRuntimeValueKind::FixedBytes { .. })
-                && matches!(field.value, WeaponRuntimeValue::Bytes(_))
+            matches!(field.kind, RuntimeValueKind::FixedBytes { .. })
+                && matches!(field.value, RuntimeValue::Bytes(_))
                 && offset
                     .checked_sub(field.owner_offset)
                     .is_some_and(|at| at < field.locator.byte_size)

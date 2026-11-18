@@ -249,6 +249,6 @@ pub(super) fn check_armor(
         "Required armor count grant was not reachable from its item"
     );
     Ok(json!({"item":recipe.identity.item_hash,"groups":found,
-        "movement_key":movement_key,"source_bank_sha256":sha(&original.0),
-        "emitted_bank_sha256":sha(&bank.0),"gameplay_verified":false}))
+        "movement_key":movement_key,"source_bank_sha256":sha256_hex(&original.0),
+        "emitted_bank_sha256":sha256_hex(&bank.0),"gameplay_verified":false}))
 }

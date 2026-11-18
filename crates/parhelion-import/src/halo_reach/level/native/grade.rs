@@ -1,7 +1,17 @@
 //! Scenario display colour through Shadowkeep's native screen-effect volume and lookup table.
 //! Reach's global `sefc` rows accumulate at full weight before its final gamma and colour matrix.
-//! Shadowkeep applies its film curve before a 32-cube grade, so the table maps that film output
-//! back through the source display response. Its finite grid limits dark-end accuracy.
+//! Shadowkeep applies its film curve before a 32-cube grade. The table keeps that film response
+//! and applies only what the scenario changes: it takes the scene value a film output stands
+//! for, finds the scene value that Reach's neutral display would draw the same as Reach's graded
+//! display draws this one, and stores the film's output for that. A scenario with neutral
+//! controls stores the film output unchanged.
+//!
+//! Reach's neutral display is the square root of the exposed scene, which has no toe. A table
+//! that stored Reach's display itself drew a scene value of 0.01 at 0.10 where the native film
+//! draws 0.03, and clipped at a scene value of one. A converted mission then drew its shade
+//! about three times brighter than a stock map's and read as flat, the reported scenario. The
+//! converted scene is also exposed by Shadowkeep's meter, not Reach's, so the curve alone never
+//! reproduced Reach's whole response.
 use crate::{
     halo_reach::cache::Cache,
     presentation::{Graph, append, put},
@@ -17,6 +27,9 @@ const PARAMETERS_CLASS: u32 = 0x8080_71DC;
 const TEXTURE: u32 = 0x80C7_0C73;
 const SIZE: usize = 32;
 const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
+
+/// Reach's display exponent with neutral gamma controls, the square root of the exposed scene.
+const NEUTRAL_GAMMA: f64 = 0.5;
 
 /// Shadowkeep's ordinary final film response, before the native colour lookup.
 fn film(x: f64) -> f64 {
@@ -113,20 +126,27 @@ impl Source {
                 "source": tag.map(|tag| tag.path), "render_rows": rows,
                 "gamma": gamma, "saturation": saturation, "contrast": contrast,
                 "filter": filter, "floor": floor,
+                "response": "Native film response of the scene value that Reach's neutral display draws at the graded level",
                 "exposure_boost": effects[0], "exposure_deboost": effects[1],
-                "limits": "Static scenario gamma and colour matrix only. Source exposure boost, local and scripted effects, noise and screen shaders retain native behavior. The native 32-cube interpolates dark values and source highlights clip.",
+                "limits": "Static scenario gamma and colour matrix only, as a departure from Reach's neutral display. The native film response, source exposure boost, local and scripted effects, noise and screen shaders retain native behavior.",
             }),
         }))
     }
 
-    fn color(&self, scene: [f64; 3]) -> [f64; 3] {
-        let gamma = scene.map(|v| v.powf(self.gamma));
+    /// The graded colour at `display`, a native film output. Reach's display of the scene behind
+    /// it is graded as Reach grades it, without the final clamp to one so that highlights keep
+    /// their order. Each graded channel is then read back as the scene value Reach's neutral
+    /// display draws at that level, and the film's output for that scene value is the result.
+    fn color(&self, display: [f64; 3]) -> [f64; 3] {
+        let gamma = display.map(|v| inverse(v).powf(self.gamma));
         let grey = gamma.iter().zip(LUMA).map(|(v, w)| v * w).sum::<f64>();
         let contrast = self.contrast * self.contrast;
         std::array::from_fn(|k| {
             let saturated = grey + self.saturation * (gamma[k] - grey);
-            (saturated * self.filter[k] * (1. + 4. * contrast) - self.floor[k] - contrast)
-                .clamp(0., 1.)
+            let graded =
+                (saturated * self.filter[k] * (1. + 4. * contrast) - self.floor[k] - contrast)
+                    .max(0.);
+            film(graded.powf(1. / NEUTRAL_GAMMA))
         })
     }
 }
@@ -196,12 +216,13 @@ pub(super) fn add(
         "Native colour lookup is not a single-mip 1024 by 32 linear RGBA table"
     );
     let data_template = native.reference(TEXTURE)?;
-    let linear: [f64; SIZE] = std::array::from_fn(|i| inverse(i as f64 / (SIZE - 1) as f64));
+    // The table's knots are film output values.
+    let knots: [f64; SIZE] = std::array::from_fn(|i| i as f64 / (SIZE - 1) as f64);
     let mut data = Vec::with_capacity(SIZE * SIZE * SIZE * 4);
     // Stock 2D colour lookups store red along each tile, blue across tiles and green by row.
-    for green in linear {
-        for blue in linear {
-            for red in linear {
+    for green in knots {
+        for blue in knots {
+            for red in knots {
                 data.extend(
                     source
                         .color([red, green, blue])

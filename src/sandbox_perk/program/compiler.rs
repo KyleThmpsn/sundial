@@ -107,6 +107,7 @@ fn compile_using_labels(
     labels: Option<&[u8]>,
 ) -> Result<Compiled, String> {
     program.validate()?;
+    program.validate_condition_states()?;
     if program.subclass_damage_type.is_some() {
         return Err(
             "This program's subclass gate needs the installed subclasses before it compiles."

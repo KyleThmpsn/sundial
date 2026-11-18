@@ -13,7 +13,8 @@ pub(super) enum Act {
         parameter: usize,
     },
     /// A parameter body, arrays it owns as (field, class, data, stride), and fields that name a
-    /// translated spawned graph, by the source graph it translates.
+    /// translated spawned graph, by the source graph it translates. A profile response, selector
+    /// 9, lists its profile field there by its source profile.
     New {
         selector: u8,
         class: u32,
@@ -87,9 +88,12 @@ impl Plan {
                     .flat_map(|(_, nodes)| nodes)
                     .flat_map(|(_, node)| &node.actions),
             );
+        // A created profile response reports its profile field the same way, by source profile.
         acts.flat_map(|act| match act {
-            Act::New { spawns, .. } => spawns.iter().map(|&(_, tag)| tag).collect(),
-            Act::Keep { .. } => Vec::new(),
+            Act::New {
+                selector, spawns, ..
+            } if *selector != 9 => spawns.iter().map(|&(_, tag)| tag).collect(),
+            _ => Vec::new(),
         })
         .collect()
     }

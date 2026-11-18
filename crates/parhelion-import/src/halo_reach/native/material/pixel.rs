@@ -122,7 +122,9 @@ impl Main {
             Some(weights) => terrain_normal(&resources.samples, weights),
             None => normal::expression(surface, &resources.samples),
         };
-        let rough = roughness(material, surface, &resources.samples)?;
+        // The surfaces whose finish writes a specular color of their own ([`finish_statement`]).
+        let level = binding.lightmap.is_some() && !surface.transparent();
+        let rough = roughness(material, surface, &resources.samples, level)?;
         let diffuse = diffuse_statement(binding, material, surface);
         let clip = clip_statement(material, &resources.samples);
         let (finish, frame) = finish_statement(binding, setup);
@@ -158,7 +160,7 @@ impl Main {
             ""
         };
         let statements = format!(
-            "{aim_clip}{time}{parameter_source}{decal_coordinates}{parallax_coordinates}{warp_coordinates}{terrain_parameters}{mux_parameters}float3 n={normal};n=normalize(n.x*v1.xyz+n.y*v2.xyz+n.z*v0.xyz);float4 albedo={color};{decal_tint}{tinting}{clip}float4 unlit=albedo;float3 emission={emission};{extinguish}{opacity_parameters}{diffuse}{probe}{shading}\nfloat roughness={rough};{overlay_parameters}{finish}"
+            "{aim_clip}{time}{parameter_source}{decal_coordinates}{parallax_coordinates}{warp_coordinates}{terrain_parameters}{mux_parameters}float3 n={normal};n=normalize(n.x*v1.xyz+n.y*v2.xyz+n.z*v0.xyz);float4 albedo={color};{decal_tint}{tinting}{clip}float4 unlit=albedo;float3 emission={emission};{extinguish}{opacity_parameters}{diffuse}{probe}{shading}\n{rough}{overlay_parameters}{finish}"
         );
         Ok(Self {
             statements,
@@ -312,34 +314,69 @@ fn color(
     Ok((color, lighting.to_owned()))
 }
 
-/// The native roughness. The native highlight follows Reach's analytical one
-/// ([`native_roughness`]). Cook-Torrance and organism surfaces take their Beckmann slope
-/// ([`beckmann_roughness`]). Two-lobe Phong surfaces take `analytical_power`, the Phong exponent
-/// of their analytical highlight. Their `roughness` only selects the slice of the VMF specular
-/// table. Diffuse-only surfaces, decorators, foliage, decals, holograms and every other surface
-/// without a specular model stay fully rough instead of gaining a reflected highlight.
+/// The statements that declare the native `roughness`. The native highlight follows Reach's
+/// analytical one ([`highlight`]). An opaque `level` surface also declares the reflectance its
+/// finish turns into a specular color, and scales its smoothness by that reflectance
+/// ([`level_roughness`]). Every other surface keeps the dielectric's specular color and compares
+/// the highlight's own strength with it ([`native_roughness`]).
 fn roughness(
     material: &Material,
     surface: &surface::Surface<'_>,
     samples: &BTreeMap<usize, String>,
+    level: bool,
 ) -> Result<String> {
+    let highlight = highlight(material, surface, samples)?;
+    Ok(if level {
+        level_roughness(
+            highlight
+                .as_ref()
+                .map(|(slope, strength, lobe)| (slope.as_str(), strength.as_str(), *lobe)),
+        )
+    } else {
+        format!(
+            "float roughness={};",
+            highlight.map_or_else(
+                || "1".into(),
+                |(slope, strength, _)| native_roughness(&slope, &strength)
+            )
+        )
+    })
+}
+
+/// The Beckmann slope, strength and lobe scale of a surface's analytical highlight. Cook-Torrance
+/// and organism surfaces take their Beckmann slope ([`beckmann_slope`]). Two-lobe Phong surfaces
+/// take `analytical_power`, the Phong exponent of their analytical highlight. Their `roughness`
+/// only selects the slice of the VMF specular table. Diffuse-only surfaces, decorators, foliage,
+/// decals, holograms and every other surface without a specular model have none, and stay fully
+/// rough instead of gaining a reflected highlight.
+fn highlight(
+    material: &Material,
+    surface: &surface::Surface<'_>,
+    samples: &BTreeMap<usize, String>,
+) -> Result<Option<(String, String, &'static str)>> {
     if terrain(material) {
-        return Ok(terrain::roughness(material));
+        return Ok(terrain::highlight(material)
+            .map(|(slope, strength)| (slope.to_owned(), strength.to_owned(), TERRAIN_LOBE)));
     }
     if mux::is(material) {
-        return Ok("1".into());
+        return Ok(None);
     }
     Ok(
         match material.options.get("material_model").map(String::as_str) {
-            Some("cook_torrance" | "organism") => beckmann_roughness(material, surface, samples)?,
-            Some("two_lobe_phong") => native_roughness(
-                &format!(
+            Some("cook_torrance" | "organism") => Some((
+                beckmann_slope(surface, samples)?,
+                specular_strength(material, surface, samples),
+                BECKMANN_LOBE,
+            )),
+            Some("two_lobe_phong") => Some((
+                format!(
                     "sqrt(2/(max({},0)+2))",
                     surface.scalar("analytical_power", 16.)
                 ),
-                &specular_strength(material, surface, samples),
-            ),
-            _ => "1".into(),
+                specular_strength(material, surface, samples),
+                PHONG_LOBE,
+            )),
+            _ => None,
         },
     )
 }
@@ -347,8 +384,7 @@ fn roughness(
 /// The `analytical_roughness` slope of a Cook-Torrance or organism surface, which only an enabled
 /// material texture blends through alpha. A texture bound by another model does not define a
 /// gloss channel.
-fn beckmann_roughness(
-    material: &Material,
+fn beckmann_slope(
     surface: &surface::Surface<'_>,
     samples: &BTreeMap<usize, String>,
 ) -> Result<String> {
@@ -358,7 +394,7 @@ fn beckmann_roughness(
         "roughness"
     };
     let rough = surface.scalar(name, 0.48);
-    let rough = if surface.boolean("use_material_texture") == Some(true) {
+    Ok(if surface.boolean("use_material_texture") == Some(true) {
         let sample = samples
             .get(&2)
             .context("Material texture enabled without a bound texture")?;
@@ -366,11 +402,7 @@ fn beckmann_roughness(
         format!("lerp({black},{rough},({sample}).a)")
     } else {
         rough
-    };
-    Ok(native_roughness(
-        &rough,
-        &specular_strength(material, surface, samples),
-    ))
+    })
 }
 
 /// The diffuse coefficient a lightmapped surface's albedo takes, or a terrain's blended one.

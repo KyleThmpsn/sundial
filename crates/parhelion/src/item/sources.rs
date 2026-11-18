@@ -38,11 +38,18 @@ pub(super) struct ProjectSources {
     pub(super) stock_item_count: usize,
     pub(super) item_rows: usize,
     pub(super) stock_item_rows_by_hash: BTreeMap<u32, Vec<usize>>,
+    /// The plug categories that the sockets of the perk categories admit: armor perks, weapon
+    /// perks and intrinsic traits.
+    pub(super) perk_plug_categories: BTreeSet<u32>,
     pub(super) string_rows: usize,
     pub(super) stock_collectible_count: usize,
     pub(super) collectible_rows: usize,
     pub(super) stock_unlock_count: usize,
     pub(super) unlock_rows: usize,
+    /// The stock helmet blocks imported artifacts take, by class key, found once a build.
+    pub(super) artifact_lenders: std::sync::Mutex<BTreeMap<u32, super::gear::artifact::Lender>>,
+    /// The stock icon row and container with a large picture lane, by base icon container.
+    pub(super) backdrop_icons: std::sync::Mutex<BTreeMap<u32, (u16, TagHash)>>,
 }
 
 /// The investment tables a build reads and replaces, by tag. They are fixed once the source
@@ -261,6 +268,8 @@ pub(super) fn load_project_sources(package_directory: &Path) -> AuthoringResult<
         presentation_node_table_tag,
         "presentation-node table",
     )?;
+    // Automatic Collections placement follows which of these lists another mod leads.
+    crate::package::profile::compare_presentation_nodes(&stock_nodes);
     let stock_node_strings = read_tag(
         &manager,
         presentation_node_string_table_tag,
@@ -311,6 +320,18 @@ pub(super) fn load_project_sources(package_directory: &Path) -> AuthoringResult<
     validate_damage_plug_item_rows(&stock_item_table, item_rows, stock_item_count)?;
     let stock_item_rows_by_hash =
         index_item_rows_by_hash(&stock_item_table, item_rows, stock_item_count)?;
+    let socket_type_table_tag = TagHash(SOCKET_TYPE_TABLE_TAG);
+    validate_source_tag(
+        &manager,
+        socket_type_table_tag,
+        SOCKET_TYPE_TABLE_CLASS,
+        "Socket-type table",
+    )?;
+    let perk_plug_categories = perk_plug_categories(&read_tag(
+        &manager,
+        socket_type_table_tag,
+        "socket-type table",
+    )?)?;
     let (string_count, _, string_rows) = terminal_index_table_layout(
         &stock_item_strings,
         ITEM_STRING_INDEX_ROW_CLASS,
@@ -412,11 +433,14 @@ pub(super) fn load_project_sources(package_directory: &Path) -> AuthoringResult<
         stock_item_count,
         item_rows,
         stock_item_rows_by_hash,
+        perk_plug_categories,
         string_rows,
         stock_collectible_count,
         collectible_rows,
         stock_unlock_count,
         unlock_rows,
+        artifact_lenders: std::sync::Mutex::default(),
+        backdrop_icons: std::sync::Mutex::default(),
     })
 }
 
@@ -520,6 +544,46 @@ impl ProjectSources {
             ability_bank: &ability_bank,
         })
     }
+}
+
+/// The stock socket type table. Each 96-byte row names its socket category row at `+6` and its
+/// plug whitelist at `+40`, eight-byte rows led by a plug category.
+const SOCKET_TYPE_TABLE_TAG: u32 = 0x8131_932F;
+const SOCKET_TYPE_TABLE_CLASS: u32 = 0x8080_7AB5;
+const SOCKET_TYPE_ROW_CLASS: u32 = 0x8080_7ABB;
+const SOCKET_TYPE_ROW_SIZE: usize = 96;
+const SOCKET_TYPE_WHITELIST_CLASS: u32 = 0x8080_7AC0;
+/// The socket category rows whose plugs are perks: armor perks, weapon perks and intrinsic
+/// traits. Mods, masterworks, catalysts and cosmetics sit in the others.
+const PERK_SOCKET_CATEGORIES: [u16; 3] = [1, 8, 10];
+
+/// Every plug category that a socket type of a perk category whitelists.
+fn perk_plug_categories(table: &[u8]) -> AuthoringResult<BTreeSet<u32>> {
+    let (count, _, rows, class) = array_at(table, 8)?;
+    if class != SOCKET_TYPE_ROW_CLASS {
+        return Err(invalid(
+            "Installed socket types have an unexpected native row class",
+        ));
+    }
+    let mut categories = BTreeSet::new();
+    for index in 0..count {
+        let row = rows + index * SOCKET_TYPE_ROW_SIZE;
+        if !PERK_SOCKET_CATEGORIES.contains(&read_u16(table, row + 6)?)
+            || read_u64(table, row + 40)? == 0
+        {
+            continue;
+        }
+        let (plugs, _, first, class) = array_at(table, row + 40)?;
+        if class != SOCKET_TYPE_WHITELIST_CLASS {
+            return Err(invalid(
+                "Installed socket type whitelists have an unexpected native row class",
+            ));
+        }
+        for plug in 0..plugs {
+            categories.insert(read_u32(table, first + plug * 8)?);
+        }
+    }
+    Ok(categories)
 }
 
 pub(super) fn validate_source_tag(

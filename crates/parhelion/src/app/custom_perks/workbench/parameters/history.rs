@@ -3,7 +3,7 @@ use super::*;
 
 #[derive(Clone, PartialEq)]
 pub(in crate::app::custom_perks) struct Snapshot {
-    values: Vec<WeaponRuntimeValueOverride>,
+    values: Vec<RuntimeValueOverride>,
     actions: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
     projectiles: Vec<ProjectileSelection>,
     movement: Option<(u32, Vec<(entity::projectile::parameters::Kind, u32)>)>,

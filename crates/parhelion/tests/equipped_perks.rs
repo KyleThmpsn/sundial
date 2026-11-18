@@ -8,11 +8,11 @@ use parhelion_import::{
     tiger::{payload::Payload, reader::Reader},
 };
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::{
     env, fs,
     path::{Path, PathBuf},
 };
+use sundial::storage::sha256_hex;
 use sundial::{
     investment::InvestmentCatalog,
     package_authoring::{
@@ -27,10 +27,6 @@ fn configured(name: &str) -> Result<PathBuf> {
     env::var_os(name)
         .map(PathBuf::from)
         .with_context(|| format!("Set {name}"))
-}
-
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 fn manager(reader: &Reader) -> Result<PackageManager> {
@@ -335,7 +331,7 @@ fn equipped_modifiers_survive_private_staging_and_preserve_stock() -> Result<()>
             &runtime.action_payload,
         )?;
         fs::write(output.join(format!("private-owner-{i}.bin")), &owner.0)?;
-        evidence.push(json!({"item":recipe.identity.item_hash,"plug":private_plug,"perk":indices[0],"action":runtime.action_tag.0,"graph":graph_tag,"owner":binding.owner_tag,"row":at,"amount":amounts[i],"action_sha256":digest(&runtime.action_payload),"owner_sha256":digest(&owner.0)}));
+        evidence.push(json!({"item":recipe.identity.item_hash,"plug":private_plug,"perk":indices[0],"action":runtime.action_tag.0,"graph":graph_tag,"owner":binding.owner_tag,"row":at,"amount":amounts[i],"action_sha256":sha256_hex(&runtime.action_payload),"owner_sha256":sha256_hex(&owner.0)}));
     }
     ensure!(
         staged.tag(stock_action.action_tag.0, None)?.0 == stock_action.action_payload,

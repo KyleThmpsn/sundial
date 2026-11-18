@@ -152,21 +152,31 @@ impl Source {
             let bytes = hex::decode(grant.as_str().context("Source grant bytes")?)?;
             ensure!(bytes.len() == 16, "Source grant record size differs");
             let key = u32::from_le_bytes(bytes[..4].try_into()?);
+            let mut property = grant.clone();
             if bytes[11] != u8::MAX {
-                ensure!(
-                    key == 0x811C9DC5 && bytes[4] == u8::MAX,
-                    "Source equip grant also names a property"
-                );
                 equips.push(Equip {
                     row: bytes[11],
                     slot: bytes[12],
                     native_graph: lowering.native_graph(bytes[11]),
                 });
-            } else if bytes[4] == subclass.ability_row {
+                if key == 0x811C9DC5 && bytes[4] == u8::MAX {
+                    continue;
+                }
+                // The record's property fields are set beside its equip fields. The property
+                // lowers as a grant of its own, on the reading that both parts apply.
+                ensure!(
+                    bytes[4] == bytes[11] && bytes[5..11] == [0, 0, 0, 255, 255, 255],
+                    "Source equip grant names a property of another ability"
+                );
+                let mut record = bytes[..8].to_vec();
+                record.extend([255, 255, 255, 255, 0, 0, 0, 0]);
+                property = Value::String(hex::encode(record));
+            }
+            if bytes[4] == subclass.ability_row {
                 super_keys.push(key);
             } else {
                 properties.push((key, bytes[4]));
-                grants.push(grant.clone());
+                grants.push(property);
             }
         }
         let perks = variant["perks"]

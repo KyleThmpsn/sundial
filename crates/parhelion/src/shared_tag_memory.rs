@@ -17,7 +17,7 @@ use tiger_pkg::TagHash;
 use crate::{
     AuthoringResult,
     error::{invalid, validation},
-    format::SHARED_TAG_COMPANION_CLASS,
+    package::format::SHARED_TAG_COMPANION_CLASS,
     shared_tag_dependency_index::dependency_entries,
     tag_payload::{read_u64, write_u32, write_u64},
 };

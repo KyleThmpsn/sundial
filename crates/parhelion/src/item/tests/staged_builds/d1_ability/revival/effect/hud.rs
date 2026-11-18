@@ -47,7 +47,7 @@ pub(super) fn readback(
     let textures = check_textures(&layer, (staged, stock), size, &source_pixels);
     let texts = read_texts(staged, name);
     json!({"name":name,"layer":layer_tag.0,"textures":textures,"text":texts,
-        "source_glyph_sha256":sha(&source_pixels),"gameplay_verified":false})
+        "source_glyph_sha256":sha256_hex(&source_pixels),"gameplay_verified":false})
 }
 
 fn source_glyph(source: &Source, source_name: u32) -> ((u32, u32), Vec<u8>) {
@@ -123,7 +123,8 @@ fn check_textures(
                 );
                 matching += 1;
             }
-            textures.push(json!({"tag":tag.0,"data":data.0,"size":size,"sha256":sha(&pixels)}));
+            textures
+                .push(json!({"tag":tag.0,"data":data.0,"size":size,"sha256":sha256_hex(&pixels)}));
         }
     }
     assert_eq!(matching, 1, "original-size source glyph");
@@ -143,7 +144,7 @@ fn read_texts(staged: &PackageManager, name: u32) -> Vec<serde_json::Value> {
         let data = staged.read_tag(tag).unwrap();
         let text = decode_localized_value_at(&data, index).unwrap();
         assert_eq!(text, "Song of Flame");
-        texts.push(json!({"tag":tag.0,"text":text,"sha256":sha(&data)}));
+        texts.push(json!({"tag":tag.0,"text":text,"sha256":sha256_hex(&data)}));
     }
     texts
 }

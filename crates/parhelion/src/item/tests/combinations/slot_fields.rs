@@ -1,7 +1,7 @@
 //! Stock Trust and Polaris Lance keep an Energy bucket with a Kinetic equipment slot and item
 //! string. Slot, ammo and damage type must still author independently, and every output must
 //! name one slot in all three fields. Cerberus+1 has no elemental carrier and no stock elemental
-//! peer on its runtime entity, so its element can only come from the presentation donor.
+//! peer on its runtime entity, so its damage type can only come from the presentation donor.
 use super::*;
 
 const TRUST_BLANK_AMMO: u32 = 0x9E02_3464;
@@ -10,7 +10,7 @@ const POLARIS_LANCE: u32 = 0x3735_6D87;
 const WINTER_WOLF: u32 = 0x6876_536E;
 const CERBERUS_PLUS_ONE: u32 = 0x5BDB_CC56;
 
-/// A stock Energy weapon of Cerberus+1's type whose element is a type-68 socket plug.
+/// A stock Energy weapon of Cerberus+1's type whose damage type is a type-68 socket plug.
 fn socket_driven_peer(stock: &sundial::package_authoring::PackageManager, source: &Tables) -> u32 {
     let (_, cerberus) = source.load(stock, CERBERUS_PLUS_ONE);
     let kind = &cerberus[ITEM_TYPE_REFERENCE_OFFSET..ITEM_TYPE_REFERENCE_OFFSET + 8];
@@ -146,7 +146,7 @@ fn native_split_slot_donors_author_slot_ammo_and_damage_independently() {
     let untouched = recipe("Split Slot Native", TRUST, None);
     let untouched_hash = untouched.to_spec().unwrap().identity.item_hash;
     recipes.push(untouched);
-    // A socket-driven presentation donor proves the element for a Kinetic exotic behavior
+    // A socket-driven presentation donor proves the damage type for a Kinetic exotic behavior
     // donor; the built definition takes the modern fixed marker, since no type-68 lane can be
     // added to a definition without one.
     let socket_driven = socket_driven_peer(&stock, &source);

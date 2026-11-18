@@ -107,6 +107,7 @@ fn save_candidate(
     document
         .validate_item_state()
         .map_err(DawnAccountError::Unwritable)?;
+    document.settle_item_abilities()?;
     if super::carried::read(&transaction, &document.loaded.profile)? != document.loaded.carried {
         return Err(DawnAccountError::Unwritable(
             "Dawn's inventory bookkeeping changed. Reload before saving".into(),
@@ -191,13 +192,15 @@ fn save_candidate(
 }
 
 /// The tables a save rewrites whole. Settings are updated key by key and checked that way.
-const GUARDED: [&str; 6] = [
+/// `item_values` exists from schema 7 and contributes only its name on schema 5.
+const GUARDED: [&str; 7] = [
     "account",
     "characters",
     "character_items",
     "profile_items",
     "item_sockets",
     "item_rolls",
+    "item_values",
 ];
 
 /// A digest of the rows a save rewrites whole, so a save can tell that they still hold what the
@@ -219,16 +222,20 @@ pub(super) fn guarded_digest(state: &snapshot::Snapshot) -> Vec<u8> {
 
 /// Takes a verified copy into Sundial's backup folder, the way the investment account does.
 ///
-/// It used to drop a single `player-state.db.sundial-backup` beside the database, overwritten on
-/// every save, so the previous account was gone the moment a second save ran and none of it was
-/// reachable from Browse Backups. These are indexed and retained with the rest.
+/// Each save keeps its own copy there, indexed and retained with the rest, so earlier accounts
+/// survive later saves and are reachable from Browse Backups. A single file beside the
+/// database, overwritten on every save, would keep only the latest.
 pub(super) fn create_backup(path: &Path) -> Result<PathBuf, DawnAccountError> {
     let root = crate::backups::root().ok_or_else(|| {
         DawnAccountError::Backup(
             "could not locate Sundial's local backup folder for player-state.db".to_owned(),
         )
     })?;
-    let prefix = format!("player-state-v{}", contract::SCHEMA_VERSION);
+    // Name the copy after the schema it holds, so a backup is restored to a matching runtime.
+    let version: i64 = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .and_then(|source| source.query_row("PRAGMA user_version", [], |row| row.get(0)))
+        .map_err(|error| DawnAccountError::Backup(error.to_string()))?;
+    let prefix = format!("player-state-v{version}");
     crate::backups::create(&root, path, &prefix, "db", true, |backup, _| {
         write_verified_copy(path, backup).map_err(|error| error.to_string())
     })

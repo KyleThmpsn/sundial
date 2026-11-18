@@ -91,18 +91,18 @@ fn hold_to_charge() -> Option<Recipe> {
     })
 }
 
-/// Stock perks whose one attached buff is the behavior, adopted by the perk's name from the
+/// Stock perks whose one attached effect is the behavior, adopted by the perk's name from the
 /// installed catalog: the perk, the recipe's title and its detail.
 const ADOPTED: [(&str, &str, &str); 2] = [
     (
         "Rampage",
         "Rampage's Stacking Damage",
-        "The buff Rampage attaches on a kill: more damage, stacking three times.",
+        "The effect Rampage attaches on a kill: more damage, stacking three times.",
     ),
     (
         "Outlaw",
         "Outlaw's Faster Reload",
-        "The buff Outlaw attaches on a precision kill: a much faster reload.",
+        "The effect Outlaw attaches on a precision kill: a much faster reload.",
     ),
 ];
 

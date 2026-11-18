@@ -6,7 +6,7 @@ struct Artwork {
     target: u32,
     ordinal: usize,
     donor_index: u16,
-    request: crate::watermark::WeaponIconRequest,
+    request: crate::icon::watermark::WeaponIconRequest,
 }
 
 fn artwork(
@@ -40,14 +40,14 @@ fn artwork(
     )?);
     let png = fs::read(folder.join(path)).map_err(|e| invalid(e.to_string()))?;
     let edit = crate::WeaponIconEdit {
-        imported_image: Some(crate::icon_edit::ImportedIcon::from_bytes(&png).map_err(invalid)?),
+        imported_image: Some(crate::icon::edit::ImportedIcon::from_bytes(&png).map_err(invalid)?),
         ..Default::default()
     };
     Ok(Some(Artwork {
         target,
         ordinal,
         donor_index,
-        request: crate::watermark::WeaponIconRequest {
+        request: crate::icon::watermark::WeaponIconRequest {
             donor_container_tag: donor,
             icon_edit: edit,
             rarity: super::ornaments::rarity(graph)?.unwrap_or(crate::AuthoredWeaponRarity::Exotic),
@@ -74,13 +74,13 @@ pub(super) fn apply(
     };
     let donor = request.donor_container_tag;
     let (container, added) = emission.asset_packages.author(|package, first| {
-        let plan = crate::watermark::build_presented_watermark_plan(
+        let plan = crate::icon::watermark::build_presented_watermark_plan(
             manager,
             package,
             first,
             0,
             std::slice::from_ref(&request),
-            crate::watermark::Presentation {
+            crate::icon::watermark::Presentation {
                 branding,
                 artwork: &[None],
             },

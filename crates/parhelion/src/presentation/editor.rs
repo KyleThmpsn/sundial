@@ -103,7 +103,7 @@ enum Tab {
 }
 enum ContextPreview {
     Badge(Vec<u8>),
-    Watermark(Box<crate::icon_edit::WatermarkPreview>),
+    Watermark(Box<crate::icon::edit::WatermarkPreview>),
 }
 
 pub(crate) struct Editor {
@@ -224,14 +224,15 @@ impl Editor {
                     Kind::Badge => {
                         sundial::package_authoring::open_shadowkeep_package_manager(&packages)
                             .and_then(|manager| {
-                                crate::badge_icon::preview_mask(&manager).map_err(|e| e.to_string())
+                                crate::icon::badge::preview_mask(&manager)
+                                    .map_err(|e| e.to_string())
                             })
                             .map(ContextPreview::Badge)
                     }
                     Kind::Watermark => icon
                         .ok_or_else(|| "Select a weapon to preview its icon.".to_owned())
                         .and_then(|(container, rarity, edit)| {
-                            crate::icon_edit::WatermarkPreview::load(
+                            crate::icon::edit::WatermarkPreview::load(
                                 &packages, container, rarity, edit,
                             )
                         })

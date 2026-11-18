@@ -2,7 +2,7 @@ use super::*;
 
 pub use crate::tiger::reader::package_stamp;
 
-const SCHEMA: u32 = 9;
+const SCHEMA: u32 = 11;
 
 #[derive(Deserialize, Serialize)]
 struct Cached {

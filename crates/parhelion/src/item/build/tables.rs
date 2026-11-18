@@ -75,7 +75,7 @@ impl WeaponTables {
             .authored_weapon_icon_containers
             .get(ordinal)
             .ok_or_else(|| validation("Authored weapon icon container is missing"))?;
-        let host = crate::package_profile::host();
+        let host = crate::package::profile::host();
         let allocator = AppendedTagAllocator::records(host.first);
         let definition_tag =
             allocator.assigned_tag(ordinal * 2, "Item definition", "definition")?;
@@ -329,7 +329,7 @@ impl WeaponTables {
             // Each pair of host tags holds a record and the one after it: the list and its
             // companion, the display record and its companion, then each authored entry's pool
             // and node record.
-            let host = crate::package_profile::host();
+            let host = crate::package::profile::host();
             let first = 2
                 * (context.weapon_count + context.custom_plugs.len() + self.subclass_records.len());
             let tag = |offset: usize| -> AuthoringResult<TagHash> {
@@ -395,6 +395,7 @@ impl WeaponTables {
                 .map(|(index, _)| index),
             0,
         )?;
+        crate::subclass::native::remove_tree_objectives(&mut definition)?;
         if donor.weapon.overrides.subclass_every_class {
             crate::subclass::native::allow_every_class(&mut definition)?;
         } else if let Some(class) = donor
@@ -407,7 +408,7 @@ impl WeaponTables {
         }
         if let Some(damage) = donor.weapon.overrides.subclass_damage_type {
             crate::subclass::native::set_damage_type(&mut strings, damage)?;
-            crate::subclass::native::set_element(&mut definition, damage)?;
+            crate::subclass::native::set_damage_unlock(&mut definition, damage)?;
         }
         let class_of = |definition: &[u8]| {
             sundial::package_authoring::investment_schema::subclass_equipment_class(definition)
@@ -551,6 +552,9 @@ impl WeaponTables {
             None
         };
         let identity = row.identity;
+        // The authored definition carries the item's final rarity, the recipe's or its base's.
+        let badge_rank =
+            crate::badge::Rank::of(donor.weapon.kind, read_u8(&definition, ITEM_RARITY_OFFSET)?);
         self.definitions.push(NewTagSpec {
             template_tag: donor.definition_tag,
             payload: definition,
@@ -590,6 +594,7 @@ impl WeaponTables {
                 source_acquired_flag: collection.source_acquired_flag,
                 acquisition: Acquisition::Always,
                 count_selection: collection.count_selection.clone(),
+                badge_rank,
             });
         }
         Ok(())
@@ -918,7 +923,7 @@ impl WeaponTables {
             collection.collectible_display_template_index,
             collectible_identity,
             authored_icon_index,
-            crate::package_profile::localization_table() as u32,
+            crate::package::profile::localization_table() as u32,
         )?;
         if donor.weapon.text.collection_requirement.is_some() {
             let (_, _, display_rows, display_class) = array_at(&self.collectible_displays, 8)?;
@@ -932,7 +937,7 @@ impl WeaponTables {
                 display_rows
                     + usize::from(collectible_index) * COLLECTIBLE_DISPLAY_ROW_SIZE
                     + COLLECTIBLE_DISPLAY_REQUIREMENT_REFERENCE_OFFSET,
-                crate::package_profile::localization_table() as u32,
+                crate::package::profile::localization_table() as u32,
                 identity.collection_requirement_hash,
             )?;
         }
@@ -984,7 +989,7 @@ impl WeaponTables {
                 acquisition,
                 unlock: None,
                 collectible_icon_index: authored_icon_index,
-                localization_table_index: crate::package_profile::localization_table() as u32,
+                localization_table_index: crate::package::profile::localization_table() as u32,
                 expected_material_set: collection_material_set,
                 expected_presentation_parents: &parents,
                 collection_requirement_hash: donor

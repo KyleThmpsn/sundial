@@ -13,6 +13,7 @@
 //! from its resting place in the weapon root frame and back, the frames where it leaves and
 //! returns anchor a piecewise linear time map, so the magazine cues land where the source magazine
 //! moves. Otherwise the map scales the clip length.
+use super::compile::RELOADS;
 use super::native::Carrier;
 use super::*;
 
@@ -97,6 +98,44 @@ pub(super) fn retime(from: Timing, to: Timing) -> impl Fn(u32) -> u32 {
             });
         mapped.round().clamp(0., to.last) as u32
     }
+}
+
+/// Carrier reload foley on a reload with no carrier clip to borrow from, as (frame, name).
+///
+/// A magazine reload added to a shell carrier has no carrier clip of its name, so it was
+/// silent. The source clip still says when its foley sounds: its omitted value-2 named events.
+/// The carrier's weapon table names its reload foley `reload_1`, `reload_2` and onward, in the
+/// order a reload plays them, and the carrier's own clips cue those names. Each source cue
+/// frame takes the carrier name of its position, and frames past the carrier's last name
+/// repeat it. Which sound each name plays stays the carrier's choice.
+pub(super) fn source_timed(
+    lowering: &Value,
+    vocabulary: &clip::Vocabulary,
+    action: u32,
+) -> Vec<(u32, u32)> {
+    if !RELOADS.iter().any(|(name, _)| source::fnv(name) == action) {
+        return Vec::new();
+    }
+    let names = (1..)
+        .map(|step| source::fnv(&format!("reload_{step}")))
+        .take_while(|name| vocabulary.contains(&(2, *name)))
+        .collect::<Vec<_>>();
+    let Some(&last) = names.last() else {
+        return Vec::new();
+    };
+    let frames = lowering["omitted_events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|event| event["type"] == 5 && event["value"] == 2)
+        .filter_map(|event| event["frame"].as_u64())
+        .filter_map(|frame| u32::try_from(frame).ok())
+        .collect::<BTreeSet<_>>();
+    frames
+        .into_iter()
+        .enumerate()
+        .map(|(step, frame)| (frame, names.get(step).copied().unwrap_or(last)))
+        .collect()
 }
 
 /// A carrier clip whose cues a translated clip takes.
@@ -201,18 +240,9 @@ impl<'a> Donors<'a> {
         }))
     }
 
-    /// The grip relative to the utility on the first frame of the carrier's `idle`, from its
-    /// lowest absolute descriptor, or `None` when the carrier rig or idle lacks them.
-    pub fn idle_grip(
-        &self,
-        native: &mut Reader,
-        utility: u32,
-        grip: u32,
-    ) -> Result<Option<[f32; 3]>> {
-        let index = |name| self.rig.names.iter().position(|n| *n == name);
-        let (Some(utility), Some(grip)) = (index(utility), index(grip)) else {
-            return Ok(None);
-        };
+    /// Object poses on the first frame of the carrier's lowest absolute `idle` descriptor.
+    /// These place the weapon and shoulders in the native view before source motion is added.
+    pub fn idle(&self, native: &mut Reader) -> Result<Option<BTreeMap<u32, Pose>>> {
         let idle = 0x6FB7_60FF;
         if !self.carrier.actions()?.contains(&idle) {
             return Ok(None);
@@ -243,8 +273,7 @@ impl<'a> Donors<'a> {
             let values =
                 native_clip::sample_common(&clip, &self.rig.defaults, &self.carrier.controls.1, 0)?;
             let objects = self.rig.objects(&values)?;
-            let held = objects[utility].inverse().then(objects[grip]);
-            return Ok(Some([held.0[4], held.0[5], held.0[6]]));
+            return Ok(Some(self.rig.names.iter().copied().zip(objects).collect()));
         }
         Ok(None)
     }

@@ -11,7 +11,7 @@ fn real_hud_recipe_stages_with_private_texture_and_runtime() {
         .unwrap();
     let mut recipe = crate::WeaponRecipe::every_end();
     recipe.overrides.hud_icon =
-        Some(crate::hud_icon::HudImage::from_png(&png.into_inner()).unwrap());
+        Some(crate::icon::hud::HudImage::from_png(&png.into_inner()).unwrap());
     let snapshot = crate::BatchBuildSnapshot::new(crate::BatchBuildRequest {
         package_directory: packages.clone(),
         staging_root: out,
@@ -37,7 +37,7 @@ fn real_hud_recipe_stages_with_private_texture_and_runtime() {
     for entry in fs::read_dir(&packages).unwrap() {
         let entry = entry.unwrap();
         if entry.path().extension().is_some_and(|ext| ext == "pkg")
-            && !crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+            && !crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
                 .iter()
                 .any(|name| entry.file_name() == *name)
         {
@@ -62,9 +62,9 @@ fn real_hud_recipe_stages_with_private_texture_and_runtime() {
     )
     .unwrap();
     let staged = open_manager(&view_packages).unwrap();
-    let table = staged.read_tag(crate::hud_icon::assets::TABLE).unwrap();
+    let table = staged.read_tag(crate::icon::hud::assets::TABLE).unwrap();
     let stock = open_manager(&packages).unwrap();
-    let stock_table = stock.read_tag(crate::hud_icon::assets::TABLE).unwrap();
+    let stock_table = stock.read_tag(crate::icon::hud::assets::TABLE).unwrap();
     assert_eq!(
         read_u64(&table, 8).unwrap(),
         read_u64(&stock_table, 8).unwrap() + 1
@@ -123,14 +123,14 @@ fn real_hud_recipe_stages_with_private_texture_and_runtime() {
     reason = "Independent byte-level audit checks all content variants and preserves each stock HUD row"
 )]
 fn hud_icon_private_graph_preserves_source_and_every_content_variant() {
-    use sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager;
+    use sundial::package_authoring::runtime::load_runtime_entity_with_manager;
     let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
-    let source = load_weapon_runtime_entity_with_manager(&manager, 0x02222CBF).unwrap();
+    let source = load_runtime_entity_with_manager(&manager, 0x02222CBF).unwrap();
     let binding = weapon_component_bindings(&source.payload, 0x5F0DD954).unwrap()[0];
     let stock = read_tag(&manager, TagHash(binding.owner_tag), "content").unwrap();
     let key = 0xEF123456;
-    let patches = crate::hud_icon::runtime::patches(&manager, &source.payload, key).unwrap();
+    let patches = crate::icon::hud::runtime::patches(&manager, &source.payload, key).unwrap();
     assert_eq!(patches.len(), 7);
     let expected = std::iter::once(0x368)
         .chain((0..6).map(|i| 0x4e0 + i * 0x1c0 + 0xe0))
@@ -172,10 +172,10 @@ fn hud_icon_private_graph_preserves_source_and_every_content_variant() {
     image::RgbaImage::from_pixel(137, 76, image::Rgba([10, 20, 30, 140]))
         .write_to(&mut png, image::ImageFormat::Png)
         .unwrap();
-    let image = crate::hud_icon::HudImage::from_png(&png.into_inner()).unwrap();
+    let image = crate::icon::hud::HudImage::from_png(&png.into_inner()).unwrap();
     let mut packages = crate::asset_packages::AssetPackages::default();
     let replacement =
-        crate::hud_icon::assets::build(&manager, std::iter::once((key, &image)), &mut packages)
+        crate::icon::hud::assets::build(&manager, std::iter::once((key, &image)), &mut packages)
             .unwrap()
             .unwrap();
     let assets = &packages.packages[0].tags;
@@ -209,7 +209,7 @@ fn hud_icon_private_graph_preserves_source_and_every_content_variant() {
     assert_eq!(assets[buffer].payload, image.rgba());
     assert_eq!(manager.read_tag(replacement.tag).unwrap(), before);
     assert!(
-        crate::hud_icon::assets::build(
+        crate::icon::hud::assets::build(
             &manager,
             std::iter::once((0x08491234, &image)),
             &mut crate::asset_packages::AssetPackages::default()

@@ -5,7 +5,9 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 pub(crate) mod animation;
+mod artifact;
 mod component;
+pub(crate) use component::query::write as write_query;
 pub(crate) mod damage_profile;
 mod dye;
 mod geometry;
@@ -58,6 +60,10 @@ struct Assembly<'a> {
     /// Channels the private bank of a retained projectile declares, empty while the donor's
     /// projectile stays.
     projectile_names: BTreeSet<u32>,
+    /// Weapon key names the translated sword attacks read, empty for any other weapon.
+    sword_keys: BTreeSet<u32>,
+    /// How many names the base's sword key set holds at once.
+    sword_key_slots: usize,
     templates: BTreeMap<(u8, u8), u32>,
     globals: super::expression::Globals,
     layouts: super::layout::Layouts,
@@ -108,6 +114,8 @@ impl<'a> Assembly<'a> {
             human: None,
             projectile_cues: BTreeSet::new(),
             projectile_names: BTreeSet::new(),
+            sword_keys: BTreeSet::new(),
+            sword_key_slots: 0,
             templates: BTreeMap::new(),
             globals,
             layouts,

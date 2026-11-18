@@ -1,5 +1,5 @@
-//! Probe-driven lighting regions within the native spatial query budget. Squared sky visibility
-//! is proportional to the ambient light the deferred consumer applies to a dynamic object.
+//! Probe-driven lighting regions within the native spatial query budget. Regions are divided and
+//! judged by sky visibility itself ([`lightness`]).
 //!
 //! Reach's structure clusters bound its rooms and open spaces, so their box faces are candidate
 //! split planes beside the planes between probes. A face is taken over a better split between
@@ -9,14 +9,15 @@
 use super::{Bounds, tome};
 use crate::{AuthoringResult, error::invalid};
 use parhelion_import::halo_reach::level::native::cluster_at;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 mod gradient;
 
 const MARGIN: f32 = 16.;
 const MIN_WIDTH: f32 = 4.;
-const MAX_CELLS: usize = 512;
 const NODE_BUDGET: usize = tome::MAX_TREE_NODES * 3 / 4;
+/// The most leaves a tree within [`NODE_BUDGET`] holds, so the budget alone ends subdivision.
+const MAX_CELLS: usize = NODE_BUDGET / 2;
 const EPSILON: f64 = 1e-12;
 /// The share of the best split's gain that a split on a structure cluster's face must reach to be
 /// taken in its place.
@@ -37,8 +38,13 @@ struct Moments {
     squares: f64,
 }
 
-fn light(probe: [f32; 4]) -> f64 {
-    f64::from(probe[3]).powi(2)
+/// A probe's value for dividing regions: its visibility. The ambient light the deferred consumer
+/// applies to a dynamic object is the square of it, so equal steps of visibility are nearer to
+/// equal steps of perceived lightness than equal steps of that light are. Judged by the light, a
+/// tunnel at 0.06 beside ground at 0.2 differs by 0.04, less than open ground between 0.3 and 0.4,
+/// and it kept the ground's probe: a player there drew about ten times brighter than its walls.
+fn lightness(probe: [f32; 4]) -> f64 {
+    f64::from(probe[3])
 }
 
 impl Moments {
@@ -63,7 +69,7 @@ impl Moments {
         let mean = self.sum / self.count as f64;
         let value = samples
             .iter()
-            .map(|&index| light(probes[index]))
+            .map(|&index| lightness(probes[index]))
             .min_by(|a, b| (a - mean).abs().total_cmp(&(b - mean).abs()))
             .expect("A lighting region has at least one probe");
         let error = self.squares - 2. * value * self.sum + self.count as f64 * value * value;
@@ -118,9 +124,9 @@ impl<'a> Source<'a> {
     }
 
     /// The probe a region of `samples` takes: among the samples in its majority structure
-    /// cluster, the one nearest their mean squared visibility. Squared visibility is diffuse
-    /// energy, so this minimizes the group's total squared lighting error. Restricting the
-    /// candidates to one structure cluster keeps a doorway's other room out of that average.
+    /// cluster, the one nearest their mean visibility, which minimizes the group's total squared
+    /// error in [`lightness`]. Restricting the candidates to one structure cluster keeps a
+    /// doorway's other room out of that average.
     fn pick(&self, samples: &[usize]) -> usize {
         let mut counts = BTreeMap::<Option<usize>, usize>::new();
         for &index in samples {
@@ -143,15 +149,15 @@ impl<'a> Source<'a> {
             .collect::<Vec<_>>();
         let mean = members
             .iter()
-            .map(|&index| light(self.probes[index]))
+            .map(|&index| lightness(self.probes[index]))
             .sum::<f64>()
             / members.len() as f64;
         members
             .into_iter()
             .min_by(|&a, &b| {
-                (light(self.probes[a]) - mean)
+                (lightness(self.probes[a]) - mean)
                     .abs()
-                    .total_cmp(&(light(self.probes[b]) - mean).abs())
+                    .total_cmp(&(lightness(self.probes[b]) - mean).abs())
                     .then(a.cmp(&b))
             })
             .expect("A lighting region has a majority structure cluster")
@@ -177,7 +183,7 @@ impl Leaf {
     fn new(bounds: Bounds, samples: Vec<usize>, source: &Source) -> Self {
         let mut moments = Moments::default();
         for &index in &samples {
-            moments.add(light(source.probes[index]));
+            moments.add(lightness(source.probes[index]));
         }
         let error = moments.error(&samples, source.probes);
         let mut leaf = Self {
@@ -213,7 +219,7 @@ impl Leaf {
             let mut prefix = vec![Moments::default(); sorted.len() + 1];
             for (n, &index) in sorted.iter().enumerate() {
                 prefix[n + 1] = prefix[n];
-                prefix[n + 1].add(light(probes[index]));
+                prefix[n + 1].add(lightness(probes[index]));
             }
             let wide = |position: f32| {
                 position - bounds.minimum[axis] >= MIN_WIDTH
@@ -309,66 +315,68 @@ pub(super) fn region_probe(
     (!samples.is_empty()).then(|| Source::new(probes, &samples, clusters, bounds).pick(&samples))
 }
 
-/// Choose central regions first. The tome cuts at the first intersecting region's faces, so
-/// spatially sorted leaves would peel thin slices from one edge and exhaust its depth limit.
-fn order(cells: &[Cell]) -> Vec<usize> {
-    let mut pending = VecDeque::from([(0..cells.len()).collect::<Vec<_>>()]);
-    let mut result = Vec::with_capacity(cells.len());
-    while let Some(mut group) = pending.pop_front() {
-        if group.is_empty() {
-            continue;
-        }
-        let axis = (0..3)
-            .max_by(|&a, &b| {
-                let span = |axis: usize| {
-                    let values = group.iter().map(|&i| cells[i].bounds.center()[axis]);
-                    values.clone().fold(f32::NEG_INFINITY, f32::max)
-                        - values.fold(f32::INFINITY, f32::min)
-                };
-                span(a).total_cmp(&span(b))
-            })
-            .unwrap_or(0);
-        group.sort_by(|&a, &b| {
-            cells[a].bounds.center()[axis]
-                .total_cmp(&cells[b].bounds.center()[axis])
-                .then(a.cmp(&b))
-        });
-        let right = group.split_off(group.len() / 2 + 1);
-        result.push(group.pop().unwrap());
-        pending.extend([group, right]);
-    }
-    result
+/// A part of the plan's division while it grows: a leaf by its index, or a plane on an axis with
+/// the parts below and above it.
+#[derive(Clone, Copy)]
+enum Part {
+    Leaf(usize),
+    Split(usize, f32, usize, usize),
 }
 
-fn fits(area: Bounds, crossings: &[tome::Region], cells: &[Cell]) -> bool {
-    let regions = crossings
-        .iter()
-        .copied()
-        .chain(order(cells).into_iter().map(|index| tome::Region {
-            bounds: cells[index].bounds,
-            cluster: 1,
-        }))
-        .collect::<Vec<_>>();
+/// The division below part `at` of `parts`, as the tome reads it.
+fn division(parts: &[Part], at: usize) -> tome::Division {
+    match parts[at] {
+        Part::Leaf(leaf) => tome::Division::Cell(leaf as u32),
+        Part::Split(axis, position, low, high) => tome::Division::Split(
+            axis,
+            position,
+            Box::new(division(parts, low)),
+            Box::new(division(parts, high)),
+        ),
+    }
+}
+
+/// An area's lighting cells, which tile `bounds` by `division`. A cell's index in `cells` is the
+/// index the division names it by.
+pub(super) struct Plan {
+    pub cells: Vec<Cell>,
+    pub division: tome::Division,
+    pub bounds: Bounds,
+}
+
+/// Whether the tome of `crossings` and the cells that `parts` divide `cells` into keeps to the
+/// node budget, over the root the tome will take: `area` grown around each crossing and the cells.
+fn fits(area: Bounds, crossings: &[tome::Region], cells: Bounds, parts: &[Part]) -> bool {
     let mut bounds = area;
-    for region in &regions {
+    for extent in crossings.iter().map(|region| region.bounds).chain([cells]) {
         for k in 0..3 {
-            bounds.minimum[k] = bounds.minimum[k].min(region.bounds.minimum[k] - MARGIN);
-            bounds.maximum[k] = bounds.maximum[k].max(region.bounds.maximum[k] + MARGIN);
+            bounds.minimum[k] = bounds.minimum[k].min(extent.minimum[k] - MARGIN);
+            bounds.maximum[k] = bounds.maximum[k].max(extent.maximum[k] + MARGIN);
         }
     }
-    tome::fits(bounds, &regions, NODE_BUDGET)
+    let division = division(parts, 0);
+    tome::fits(
+        bounds,
+        crossings,
+        Some(tome::Lighting {
+            division: &division,
+            bounds: cells,
+            base: 1,
+        }),
+        NODE_BUDGET,
+    )
 }
 
 /// Lighting cells over the probes inside `area`, outside every crossing, split on their own
 /// positions and on the faces of the structure `clusters`, within the node budget of a tome whose
-/// partition starts from `root` before the regions grow it.
+/// partition starts from `root` before the regions grow it. `None` when no probe qualifies.
 pub(super) fn cells(
     area: Bounds,
     root: Bounds,
     probes: &[[f32; 4]],
     clusters: &[Bounds],
     crossings: &[tome::Region],
-) -> AuthoringResult<Vec<Cell>> {
+) -> AuthoringResult<Option<Plan>> {
     if probes.len() > u16::MAX as usize || probes.iter().flatten().any(|value| !value.is_finite()) {
         return Err(invalid("Invalid map lighting probes"));
     }
@@ -377,7 +385,7 @@ pub(super) fn cells(
             && !crossings.iter().any(|r| contains(r.bounds, probe))
     });
     if samples.is_empty() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let bounds = Bounds {
         minimum: std::array::from_fn(|k| {
@@ -404,8 +412,10 @@ pub(super) fn cells(
     }
     let source = Source::new(probes, &samples, clusters, bounds);
     let mut leaves = vec![Leaf::new(bounds, samples, &source)];
-    let mut cells = vec![leaves[0].cell];
-    if !fits(root, crossings, &cells) {
+    // The division so far, from part 0, and each leaf's part in it.
+    let mut parts = vec![Part::Leaf(0)];
+    let mut places = vec![0];
+    if !fits(root, crossings, bounds, &parts) {
         return Err(invalid(
             "Map crossings leave no spatial budget for lighting",
         ));
@@ -427,30 +437,35 @@ pub(super) fn cells(
         };
         // A refused split is not retried, keeping work bounded even when the tree is full.
         let split = leaves[index].split.take().unwrap();
-        let mut low = leaves[index].cell;
-        let mut high = low;
-        low.bounds.maximum[split.axis] = split.position;
-        high.bounds.minimum[split.axis] = split.position;
-        let previous = std::mem::replace(&mut cells[index], low);
-        cells.push(high);
-        if !fits(root, crossings, &cells) {
-            cells[index] = previous;
-            cells.pop();
+        // The leaf keeps the low side and a new leaf takes the high side.
+        let place = places[index];
+        let (low_part, high_part) = (parts.len(), parts.len() + 1);
+        parts.extend([Part::Leaf(index), Part::Leaf(leaves.len())]);
+        parts[place] = Part::Split(split.axis, split.position, low_part, high_part);
+        if !fits(root, crossings, bounds, &parts) {
+            parts.truncate(low_part);
+            parts[place] = Part::Leaf(index);
             continue;
         }
+        places[index] = low_part;
+        places.push(high_part);
+        let mut low = leaves[index].cell.bounds;
+        let mut high = low;
+        low.maximum[split.axis] = split.position;
+        high.minimum[split.axis] = split.position;
         let (low_samples, high_samples) = leaves[index]
             .samples
             .iter()
             .copied()
             .partition(|&i| probes[i][split.axis] < split.position);
-        leaves[index] = Leaf::new(low.bounds, low_samples, &source);
-        leaves.push(Leaf::new(high.bounds, high_samples, &source));
-        cells[index] = leaves[index].cell;
-        *cells.last_mut().unwrap() = leaves.last().unwrap().cell;
+        leaves[index] = Leaf::new(low, low_samples, &source);
+        leaves.push(Leaf::new(high, high_samples, &source));
     }
+    let mut cells = leaves.iter().map(|leaf| leaf.cell).collect::<Vec<_>>();
     gradient::fit(&mut cells, &source);
-    Ok(order(&cells)
-        .into_iter()
-        .map(|index| cells[index])
-        .collect())
+    Ok(Some(Plan {
+        cells,
+        division: division(&parts, 0),
+        bounds,
+    }))
 }

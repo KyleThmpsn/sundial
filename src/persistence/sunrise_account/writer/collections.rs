@@ -1,0 +1,254 @@
+//! Project validated account collections into native rows, preserving opaque columns.
+use rusqlite::{Transaction, params};
+use sundial_account::{CharacterAbilities, DismantleGearClass, ItemInstance, ItemPlugs};
+
+use super::{Preserved, insert, put};
+use crate::persistence::sunrise_account::{
+    SunriseAccountDocument, SunriseAccountError,
+    contract::{EQUIPMENT_LOCATION, EQUIPMENT_SLOTS, INVENTORY_LOCATION},
+    settings, snapshot,
+};
+
+pub(super) fn write_document(
+    transaction: &Transaction<'_>,
+    document: &SunriseAccountDocument,
+) -> Result<(), SunriseAccountError> {
+    let old_rewards = Preserved::new(document.preserved_rows("dismantle_rewards"), &["position"]);
+    let old_profile = Preserved::new(document.preserved_rows("profile_items"), &["position"]);
+    let old_items = Preserved::new(document.preserved_rows("items"), &["instance_soid"]);
+    let old_sockets = Preserved::new(
+        document.preserved_rows("sockets"),
+        &["instance_soid", "lane"],
+    );
+    // Empty before schema 7. From it on, deleting the items below also deletes these rows, and
+    // each item written back takes its own again.
+    let old_objectives = Preserved::new(
+        document.preserved_rows("item_objectives"),
+        &["instance_soid"],
+    );
+    transaction.execute_batch("DELETE FROM sockets; DELETE FROM items; DELETE FROM profile_items; DELETE FROM dismantle_rewards;")
+        .map_err(|error| SunriseAccountError::sqlite("replace account collections in", error))?;
+    for (position, reward) in document.profile().dismantle_rewards().iter().enumerate() {
+        let mut row = document
+            .original_reward_position(reward.id)
+            .map(|p| old_rewards.get(&[p as i64]))
+            .unwrap_or_default();
+        put(&mut row, "position", sql_count(position)?);
+        put(
+            &mut row,
+            "definition_hash",
+            i64::from(reward.definition_hash.get()),
+        );
+        put(&mut row, "quantity", reward.quantity);
+        put(
+            &mut row,
+            "tier_mask",
+            i64::from(
+                reward
+                    .rarities
+                    .iter()
+                    .fold(0_u8, |mask, rarity| mask | rarity.bit()),
+            ),
+        );
+        put(
+            &mut row,
+            "class_mask",
+            match reward.gear_class {
+                None => 0,
+                Some(DismantleGearClass::Weapon) => 1,
+                Some(DismantleGearClass::Armor) => 2,
+                Some(DismantleGearClass::Both) => 3,
+            },
+        );
+        put(
+            &mut row,
+            "masterwork",
+            match reward.masterworked {
+                None => 0,
+                Some(true) => 1,
+                Some(false) => 2,
+            },
+        );
+        insert(transaction, "dismantle_rewards", row)?;
+    }
+    for (position, item) in document.profile().profile_items().iter().enumerate() {
+        let (soid, serial) = document.profile_persistence(item.id)?;
+        let mut row = document
+            .original_profile_position(item.id)
+            .map(|p| old_profile.get(&[p as i64]))
+            .unwrap_or_default();
+        row.entry("seen".into())
+            .or_insert(snapshot::Cell::Integer(1));
+        if let Some(seen) = document.profile_seen_override(item.id) {
+            put(&mut row, "seen", i64::from(seen));
+        }
+        put(&mut row, "position", sql_count(position)?);
+        put(&mut row, "instance_soid", sql_u64(soid));
+        put(
+            &mut row,
+            "definition_hash",
+            i64::from(item.definition_hash.get()),
+        );
+        put(&mut row, "quantity", item.quantity);
+        put(&mut row, "mutation_serial", serial);
+        insert(transaction, "profile_items", row)?;
+    }
+    for character in document.characters().characters() {
+        let metadata = character
+            .metadata
+            .ok_or_else(|| SunriseAccountError::invalid_data("characters", "missing metadata"))?;
+        let soid = character
+            .soid
+            .ok_or_else(|| SunriseAccountError::invalid_data("characters", "missing SOID"))?;
+        let slot: usize = transaction
+            .query_row(
+                "SELECT slot FROM characters WHERE soid=?",
+                [sql_u64(soid.get())],
+                |row| row.get(0),
+            )
+            .map_err(|error| SunriseAccountError::sqlite("identify character in", error))?;
+        let serial = document.next_inventory_serial(character.id)?;
+        if let Some((header, valid)) = document.appearance_for_write(character.id) {
+            let written = if document.schema().has_appearance_validity() {
+                transaction.execute("UPDATE characters SET appearance_header=?, appearance_header_valid=? WHERE slot=?",
+                    params![header,valid,slot])
+            } else {
+                transaction.execute(
+                    "UPDATE characters SET appearance_header=? WHERE slot=?",
+                    params![header, slot],
+                )
+            };
+            written.map_err(|error| {
+                SunriseAccountError::sqlite("write character appearance to", error)
+            })?;
+        }
+        transaction.execute("UPDATE characters SET race=?, gender=?, class=?, next_inventory_serial=? WHERE slot=?", params![metadata.race, metadata.gender, metadata.class_type, serial, slot])
+            .map_err(|error| SunriseAccountError::sqlite("write characters to", error))?;
+        let context = ItemWriter {
+            transaction,
+            document,
+            old_items: &old_items,
+            old_sockets: &old_sockets,
+            old_objectives: &old_objectives,
+            character_slot: slot,
+        };
+        for (position, name) in EQUIPMENT_SLOTS.into_iter().enumerate() {
+            if let Some(item) = character
+                .equipment
+                .get(&sundial_account::EquipmentSlot::new(name))
+                .and_then(Option::as_ref)
+            {
+                let abilities = if name == "subclass" {
+                    metadata.abilities
+                } else {
+                    document.item_persistence(item.id)?.1
+                };
+                context.write(EQUIPMENT_LOCATION, position, item, abilities)?;
+            }
+        }
+        for (position, item) in character.inventory.iter().enumerate() {
+            context.write(
+                INVENTORY_LOCATION,
+                position,
+                item,
+                document.item_persistence(item.id)?.1,
+            )?;
+        }
+    }
+    document.save_inventory_state(transaction)?;
+    document.save_progression(transaction)?;
+    document.save_entitlements(transaction)?;
+    document.save_runtime(transaction)?;
+    settings::save(transaction, document.settings())
+}
+
+struct ItemWriter<'a, 'connection> {
+    transaction: &'a Transaction<'connection>,
+    document: &'a SunriseAccountDocument,
+    old_items: &'a Preserved<'a>,
+    old_sockets: &'a Preserved<'a>,
+    old_objectives: &'a Preserved<'a>,
+    character_slot: usize,
+}
+impl ItemWriter<'_, '_> {
+    fn write(
+        &self,
+        location: i64,
+        position: usize,
+        item: &ItemInstance,
+        abilities: CharacterAbilities,
+    ) -> Result<(), SunriseAccountError> {
+        let soid = sql_u64(item.instance_soid.get());
+        let mut row = self.old_items.get(&[soid]);
+        row.entry("seen".into())
+            .or_insert(snapshot::Cell::Integer(0));
+        let (policy, plugs): (i64, &[Option<sundial_account::DefinitionHash>]) = match &item.plugs {
+            ItemPlugs::NativeDefaults => (0, &[]),
+            ItemPlugs::Authored(plugs) => (1, plugs),
+        };
+        for (name, value) in [
+            ("character_slot", sql_count(self.character_slot)?),
+            ("location", location),
+            ("position", sql_count(position)?),
+            ("instance_soid", soid),
+            ("definition_hash", i64::from(item.definition_hash.get())),
+            ("level", i64::from(item.level)),
+            ("quantity", i64::from(item.quantity)),
+            (
+                "mutation_serial",
+                i64::from(self.document.item_persistence(item.id)?.0),
+            ),
+            ("flags", i64::from(item.flags.unwrap_or(0))),
+            ("socket_policy", policy),
+            ("plug_count", sql_count(plugs.len())?),
+            ("movement_ability", i64::from(abilities.movement)),
+            ("grenade_ability", i64::from(abilities.grenade)),
+            ("super_ability", i64::from(abilities.super_ability)),
+            ("melee_ability", i64::from(abilities.melee)),
+            ("class_ability", i64::from(abilities.class_ability)),
+        ] {
+            put(&mut row, name, value);
+        }
+        if self.document.schema().has_placement() {
+            // A new item starts in the bucket its definition authors, and an equipped item is
+            // never in a recovery bucket.
+            if location == EQUIPMENT_LOCATION {
+                put(&mut row, "placement", 0_i64);
+            }
+            let placement = row
+                .entry("placement".into())
+                .or_insert(snapshot::Cell::Integer(0));
+            if *placement != snapshot::Cell::Integer(0) && item.quantity != 1 {
+                return Err(SunriseAccountError::invalid_data(
+                    "items.placement",
+                    "An item held in a recovery bucket must keep a quantity of 1",
+                ));
+            }
+        }
+        insert(self.transaction, "items", row)?;
+        let objectives = self.old_objectives.get(&[soid]);
+        if !objectives.is_empty() {
+            insert(self.transaction, "item_objectives", objectives)?;
+        }
+        for (lane, plug) in plugs.iter().enumerate() {
+            if let Some(hash) = plug {
+                let mut row = self.old_sockets.get(&[soid, sql_count(lane)?]);
+                put(&mut row, "instance_soid", soid);
+                put(&mut row, "lane", sql_count(lane)?);
+                put(&mut row, "plug_hash", i64::from(hash.get()));
+                insert(self.transaction, "sockets", row)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn sql_count(value: usize) -> Result<i64, SunriseAccountError> {
+    i64::try_from(value).map_err(|_| {
+        SunriseAccountError::invalid_data("SQLite position", "value does not fit in signed 64 bits")
+    })
+}
+
+const fn sql_u64(value: u64) -> i64 {
+    value as i64
+}

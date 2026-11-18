@@ -16,6 +16,7 @@ use super::{
     spawn::{self, Spawn},
     variant,
 };
+use crate::math::{cross, sub};
 use crate::{
     halo_reach::{
         cache::{Cache, Tag},
@@ -445,20 +446,8 @@ pub struct Converted {
     pub report: Value,
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    std::array::from_fn(|k| a[k] - b[k])
-}
-
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 fn length(a: [f32; 3]) -> f32 {

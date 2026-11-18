@@ -23,9 +23,10 @@ pub(super) fn fields(
     native: &Payload,
     n: usize,
 ) -> CheckResult<()> {
-    // The action compiler assigns condition ordinals independently of the source.
+    // The native gate caches a named bank binding in linked state. Its state flag and
+    // condition ordinal are compiled metadata, independent of the source header.
     assert_eq!(source.bytes::<5>(s)?, native.bytes::<5>(n)?);
-    assert_eq!(source.u8(s + 6)?, native.u8(n + 6)?);
+    assert_eq!(source.u8(s + 6)?, 0);
     for at in (8..0x38).step_by(8) {
         assert_eq!(source.bytes::<8>(s + at)?, native.bytes::<8>(n + at)?);
     }
@@ -41,8 +42,17 @@ pub(super) fn fields(
             native.bytes::<8>(n + 0x84 + index * 8)?
         );
     }
-    assert_eq!(source.u32(s + 0x9C)?, 0x811C9DC5);
-    assert_eq!(native.u32(n + 0xD4)?, 0x811C9DC5);
+    let key = source.u32(s + 0x9C)?;
+    assert_eq!(native.u32(n + 0xD4)?, key);
+    assert_eq!(native.u8(n + 6)?, u8::from(key != 0x811C9DC5));
+    if key != 0x811C9DC5 {
+        let source_bank = reader.read(0x80A746E2)?;
+        let property = named_property(&source_bank, key, 0x808008F6)?;
+        for tag in [0x80EF1439, 0x80EF62F7, 0x80C0C498] {
+            let bank = stock.tag(tag, Some(0x80809C36))?;
+            assert_eq!(named_property(&bank, key, 0x80809790)?, property);
+        }
+    }
     assert_eq!(source.bytes::<8>(s + 0xA0)?, native.bytes::<8>(n + 0xD8)?);
     assert_eq!(source.bytes::<8>(s + 0xA8)?, [0; 8]);
     assert_eq!(source.u32(s + 0xBC)?, 0);
@@ -106,6 +116,47 @@ fn named_ranges(source: &Payload, s: usize, native: &Payload, n: usize) -> Check
         assert_eq!(source.bytes::<12>(original)?, native.bytes::<12>(emitted)?);
     }
     Ok(())
+}
+
+fn named_property(bank: &Payload, name: u32, class: u32) -> CheckResult<u32> {
+    let definition = bank.pointer(24)?;
+    assert_eq!(bank.u32(definition - 4)?, class);
+    let declarations = bank.array(definition + 0xD8, 112, None)?;
+    let names = bank.array(definition + 0xF8, 12, None)?;
+    let found = names
+        .into_iter()
+        .filter(|&row| {
+            bank.u32(row).ok() == Some(0x811C9DC5) && bank.u32(row + 4).ok() == Some(name)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(found.len(), 1, "Public player value binding");
+    let output = declarations[bank.u32(found[0] + 8)? as usize];
+    assert_eq!(bank.u32(output)?, name);
+    let instructions = bank
+        .array(output + 8, 1, None)?
+        .into_iter()
+        .map(|at| bank.u8(at))
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(instructions, [0x3C, 0, 0x3E, 0]);
+    let inputs = bank.array(output + 56, 4, None)?;
+    assert_eq!(inputs.len(), 1);
+    let input_index = bank.u32(inputs[0])?;
+    let input = declarations[input_index as usize];
+    let property = bank.u32(input)?;
+    let inherited = bank
+        .array(definition + 0x108, 12, None)?
+        .into_iter()
+        .filter(|&row| {
+            bank.u32(row).ok() == Some(0x811C9DC5)
+                && bank.u32(row + 4).ok() == Some(property)
+                && bank.u32(row + 8).ok() == Some(input_index)
+        })
+        .count();
+    assert_eq!(inherited, 1, "Inherited player property binding");
+    for offset in [8, 24, 56] {
+        assert_eq!(bank.u64(input + offset)?, 0);
+    }
+    Ok(property)
 }
 
 pub(super) fn ability_ranges(

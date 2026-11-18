@@ -20,7 +20,7 @@ fn saving_updates_the_edit_baseline_without_adding_history_for_either_source() {
         let original_level = level(&app);
         app.select_equipment_level(0, "kinetic", original_level + 1);
         if let Some(document) = app.document.native_account_mut() {
-            crate::persistence::sqlite_account::tests::save_fixture_document(
+            crate::persistence::sunrise_account::tests::save_fixture_document(
                 document,
                 &directory.0.join("backup.sqlite3"),
             );

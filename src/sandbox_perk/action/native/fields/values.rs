@@ -132,7 +132,7 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         // Judgment on the enemy, Vengeance ("those that harm you") on the attacker, and Blessing
         // of the Sky on the ally a Noble Round reaches.
         (0x80803E44..=0x80803E46, 2) => {
-            result.description = "Who receives the attachment. This Item is the weapon or armor carrying the perk. Triggering Weapon is the weapon a draw, reload or aiming event comes from, such as the Sidearm an armor perk buffs when you draw it. Other Combatant is the enemy you hit or killed, or the one who hit you.";
+            result.description = "Who receives the attachment. This Item is the weapon or armor carrying the perk. Triggering Weapon is the weapon a draw, reload or aiming event comes from, such as the Sidearm an armor perk improves when you draw it. Other Combatant is the enemy you hit or killed, or the one who hit you.";
             result.choices = TARGETS;
         }
         // Kind 48's activation, 108CB70, resolves +2, +3 and +4 through the same EC0AA0. It
@@ -246,12 +246,12 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
             ];
         }
         // Kind 6's mode is the weapon's damage type. Three stock plugs that set it are
-        // named after the element they apply (Solar, Arc and Void Damage Mod), The
+        // named after the damage type they apply (Solar, Arc and Void Damage Mod), The
         // Fundamentals sets all three and its own description reads "Change this weapon's
         // damage type", and Play with Your Prey sets 1 and 3 while describing a Solar and a
         // Void rocket. Mode 0 is set only by Bad Juju, a kinetic weapon.
         (0x80803E41, 2) => {
-            result.description = "The weapon's damage type. Established by the stock plugs that set each value: Solar, Arc and Void Damage Mod name their element, and The Fundamentals, which sets all three, is described in game as changing the weapon's damage type.";
+            result.description = "The weapon's damage type. Established by the stock plugs that set each value: Solar, Arc and Void Damage Mod name their damage type, and The Fundamentals, which sets all three, is described in game as changing the weapon's damage type.";
             result.choices = &[(0, "Kinetic"), (1, "Solar"), (2, "Arc"), (3, "Void")];
         }
         // EC4F7F..EC4FAE: 0 bypasses the check, 1 requires it, 2 inverts it.
@@ -377,7 +377,7 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         // Shot Package, Tracking Module and more) start on 1 and end on 0. Hip-Fire Grip
         // and Freehand Grip, which apply while not aiming, start on 0 and end on 1.
         (0x80803DDA, 8) => {
-            result.description = "Whether aiming down sights has started or stopped. Every stock aiming perk starts on 1 and ends on 0, and the hip fire perks do the reverse.";
+            result.description = "Whether aiming down sights has started or stopped. Every stock aiming perk starts on 1 and ends on 0, and the hip-fire perks do the reverse.";
             result.choices = &[(1, "Aiming Started"), (0, "Aiming Stopped")];
         }
         // Kind 22's event byte: Field Prep, Firmly Planted and Sneak Bow, the crouching
@@ -539,6 +539,22 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         (0x80803DEB, 8) => {
             result.description = "The signal that ends the effect. The compiler writes an always-active effect's own end key here, and the named values are the signals stock perks end on.";
         }
+        // Activation 108B3F0 and writer 1088D30. The seven stock nodes: 80BBC7EE, 8162C86B,
+        // 80BC2B4D and 80BC2B99 store 1 at +2 and no slot, 80BBC9C4 and 80BBCA8F (Tesseract's
+        // name) store 1 and slot 4, and 80BC29D6 stores 0 and slot 4. The slot loop runs over
+        // slots 0 to 2 and skips the slot of the weapon in hand.
+        (0x80803E39, 2) => {
+            result.description = "Gives the key to the weapon the owner is holding. Six of the seven stock uses set it.";
+        }
+        (0x80803E39, 3) => {
+            result.description = "Weapon slots whose weapons also take the key, whether or not they are held. The Sword Guard perks choose none, Tesseract chooses Power, and one stock action chooses Power alone.";
+            result.choices = &[(1, "Kinetic"), (2, "Energy"), (4, "Power")];
+            result.bitmask = true;
+            result.empty = "No Slot";
+        }
+        (0x80803E39, 4) => {
+            result.description = "The name added to the sword's key set. A sword's guards and attacks are chosen by the names it holds, so a name does nothing on a weapon that is not a sword or whose sword owners do not read it. Readers see only that the name is held, never how many effects hold it.";
+        }
         (0x80803E1C, 4) => {
             result.description = "The name written to an animation input while the effect is active. Full Auto Trigger System and Close the Gap use different names. Fan Fire selects the default profile.";
         }
@@ -645,7 +661,7 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
             };
         }
         _ if field.label == "Probability" => {
-            result.description = "Literal probability when Probability Source is 255. 1 always passes, nonpositive values fail, and 0.25 means a 25% chance. Other sources ignore this literal."
+            result.description = "The chance used when Chance Source is 255. 1 always passes, nonpositive values fail, and 0.25 means a 25% chance. Other sources ignore it."
         }
         _ if field.label == "Probability Source" => {
             result.description = "255 uses the Chance as set. Other values take the chance from a native stat whose identity remains unresolved.";

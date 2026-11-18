@@ -271,7 +271,7 @@ fn real_donor_roles_use_first_indexed_rows_and_reject_invalid_inputs() {
     .expect("the render-gear donor should resolve");
     resolve_runtime_component_donor(
         &sources,
-        &WeaponRuntimeComponentDonorReference {
+        &RuntimeComponentDonorReference {
             binding_hash: 0x1234_5678,
             item_hash: gameplay_hash,
             expected_name: Some("The Mountaintop".to_owned()),
@@ -454,7 +454,7 @@ fn real_cross_family_appearance_moves_the_rig_when_the_families_interchange() {
     );
     // The moved attachment row holds the weapon as a pistol, and the content block, which stays
     // in the auto rifle's owner, names the same hold class rather than the base's rifle.
-    let authored = sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager(
+    let authored = sundial::package_authoring::runtime::load_runtime_entity_with_manager(
         &manager,
         plan.item_hash,
     )
@@ -563,13 +563,13 @@ fn assert_keeps_own_behavior(
     records: bool,
 ) {
     use crate::weapon::behavior::{block_for_group, content, first_triple};
-    use sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager;
+    use sundial::package_authoring::runtime::load_runtime_entity_with_manager;
     let plan = &bundle.plan.weapons[0];
     let manager = open_manager(&view.path().join("packages")).unwrap();
     let stock = open_manager(packages).unwrap();
-    let authored = load_weapon_runtime_entity_with_manager(&manager, plan.item_hash).unwrap();
-    let base = load_weapon_runtime_entity_with_manager(&stock, base).unwrap();
-    let appearance = load_weapon_runtime_entity_with_manager(&stock, appearance).unwrap();
+    let authored = load_runtime_entity_with_manager(&manager, plan.item_hash).unwrap();
+    let base = load_runtime_entity_with_manager(&stock, base).unwrap();
+    let appearance = load_runtime_entity_with_manager(&stock, appearance).unwrap();
     assert_eq!(
         authored.weapon_content_group_hash, appearance.weapon_content_group_hash,
         "the authored row should select the appearance's content block"

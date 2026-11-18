@@ -185,9 +185,20 @@ impl Settings {
         if groups.is_empty() && switches.is_empty() && params.is_empty() {
             return Ok(None);
         }
+        // The supplement carries the native limits, since a private bank must not change the
+        // game's mixer. They may differ from the source's while they cull nothing the source
+        // plays: a volume threshold no higher and a voice limit no lower.
+        let limits = |prefix: &[u8; 6]| -> Result<(f32, u16)> {
+            Ok((
+                f32::from_le_bytes(prefix[..4].try_into()?),
+                u16::from_le_bytes(prefix[4..].try_into()?),
+            ))
+        };
+        let (source_threshold, source_voices) = limits(&self.prefix)?;
+        let (native_threshold, native_voices) = limits(&native.prefix)?;
         ensure!(
-            self.prefix == native.prefix,
-            "source and native mixer limits differ"
+            native_threshold <= source_threshold && native_voices >= source_voices,
+            "native mixer limits cull sounds the source plays"
         );
         for id in &params {
             ensure!(

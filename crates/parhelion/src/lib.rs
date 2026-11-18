@@ -9,36 +9,35 @@
 //! - `app` owns drafts, selection and background-job lifetimes, not package layout knowledge.
 //! - `item` is the build every item kind goes through: it resolves donors and builds native
 //!   definition and runtime plans. `weapon` and `subclass` hold their kinds' own rules, which it
-//!   applies. `icon_edit` separates image transforms, previews and controls from private
+//!   applies. `icon::edit` separates image transforms, previews and controls from private
 //!   icon-graph emission.
 //! - `workflow` coordinates compilation and staging; `install` owns commit and recovery.
 //! - Sundial's `investment` and `package_authoring` APIs provide shared catalog/account services.
 
+/// Dawn bundle tooling, kept in a folder outside the repository and compiled in by the `dawn`
+/// feature. Its command line tool builds from the same sources, so some of it is unused here.
+#[cfg(feature = "dawn")]
+#[rustfmt::skip]
+#[path = "../../parhelion-dawn/src/lib.rs"]
+#[allow(dead_code, unreachable_pub)]
+mod parhelion_dawn;
+
 mod ability;
 mod app;
-mod appended_tags;
 mod armor;
 mod artifact;
 pub(crate) mod artwork_browser;
 mod asset_packages;
 mod badge;
-mod badge_icon;
-mod block_codec;
 mod branding;
 mod bundled_defaults;
 mod capabilities;
-mod chain;
 pub mod collection;
 mod dxbc;
 pub mod dye;
 pub mod emblem;
 mod error;
-mod extend;
-mod format;
-pub mod hud_icon;
-mod icon_art;
-mod icon_chain;
-mod icon_edit;
+pub mod icon;
 mod image_import;
 #[cfg(feature = "d2-model-importer")]
 mod imported;
@@ -49,9 +48,7 @@ mod manifest;
 mod mod_family;
 pub use mod_family::{ModReport, ModStatus};
 pub mod map;
-mod merge_data;
-mod package_profile;
-mod payload_guards;
+mod package;
 pub mod perk;
 mod plug_classification;
 mod preferences;
@@ -62,7 +59,6 @@ mod recipe_library;
 mod runtime;
 #[cfg(feature = "d2-model-importer")]
 pub mod shader;
-mod shader_icon;
 mod shared_tag_dependency_index;
 pub use shared_tag_dependency_index::partition::{LoadingResource, partition_loading_resources};
 pub use shared_tag_dependency_index::scoped::{LoadingOwner, clone_scoped_dependencies};
@@ -74,11 +70,12 @@ mod tag_payload;
 mod test_support;
 mod turn_cache;
 pub mod vehicle;
-mod watermark;
 pub mod weapon;
 mod workflow;
 
 pub use app::Parhelion;
+#[cfg(feature = "d2-model-importer")]
+pub use app::save_reimported;
 pub use armor::Class as ArmorClass;
 pub use artifact::ArtifactMetadata;
 pub(crate) use badge::SunriseProjectMetadata;
@@ -86,8 +83,6 @@ pub(crate) use badge::{
     SunriseBadgePlacement, append_badge_icon_row, author_sunrise_badge_graph,
     sunrise_badge_collectible_parents,
 };
-#[cfg(test)]
-pub(crate) use badge_icon::build_badge_icon_plan;
 pub(crate) use capabilities::{
     CombatProfileAction, SupportedPlugSet, apply_combat_profile_action, authored_inventory_slot,
     presentation_donor_candidate_is_compatible, recipe_combat_profile_action,
@@ -95,14 +90,11 @@ pub(crate) use capabilities::{
     validate_socket_column_overrides_with_variants, validate_stat_overrides,
     weapon_authoring_capabilities,
 };
-pub(crate) use chain::{PackageIdentity, PatchChain, PatchFile};
 pub(crate) use error::{AuthoringError, AuthoringResult};
 #[cfg(test)]
-pub(crate) use extend::build_standalone_package_with_references;
-pub(crate) use extend::{ExtendedOverlayArtifact, ReplacementSpec};
-pub(crate) use extend::{NewTagReference, NewTagReferenceOverride, NewTagSpec, NewTagStorageMode};
-pub(crate) use format::SUNDIAL_BUILD_SIGNATURE;
-pub(crate) use icon_edit::WeaponIconEdit;
+pub(crate) use icon::badge::build_badge_icon_plan;
+pub(crate) use icon::edit::WeaponIconEdit;
+pub(crate) use icon::watermark::{WeaponIconRequest, item_icon_row_with_container};
 pub use install::{
     AccountResyncReport, BackupPruneReport, DEFAULT_PACKAGE_BACKUP_RETENTION, InstallError,
     InstallPhase, InstallProgress, InstallReport, InstallRequest, MAX_PACKAGE_BACKUP_RETENTION,
@@ -113,28 +105,35 @@ pub use install::{
 };
 pub(crate) use item::{
     AuthoredWeaponRarity, ModernDamageType, NewCollectionPlan, NewWeaponPlan,
-    NewWeaponProjectBundle, SwordProfileOverride, WeaponAmmoType, WeaponArtArrangementOverride,
-    WeaponCloneIdentity, WeaponCloneOverrides, WeaponCloneSpec, WeaponCloneText,
-    WeaponDyeReferenceOverride, WeaponIconDonorReference, WeaponInventorySlot,
-    WeaponLocaleTextOverride, WeaponNumericInstruction, WeaponPresentationDonorReference,
-    WeaponProjectSpec, WeaponRawPayloadPatch, WeaponRenderGearDonorReference,
-    WeaponRuntimeComponentDonorReference, WeaponRuntimeResourcePatch,
-    WeaponSandboxPerkActionFloatOverride, WeaponSandboxPerkRuntimeOverride,
-    WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride, WeaponVariableDamage,
+    NewWeaponProjectBundle, RuntimeComponentDonorReference, RuntimeResourcePatch,
+    SwordProfileOverride, WeaponAmmoType, WeaponArtArrangementOverride, WeaponCloneIdentity,
+    WeaponCloneOverrides, WeaponCloneSpec, WeaponCloneText, WeaponDyeReferenceOverride,
+    WeaponIconDonorReference, WeaponInventorySlot, WeaponLocaleTextOverride,
+    WeaponNumericInstruction, WeaponPresentationDonorReference, WeaponProjectSpec,
+    WeaponRawPayloadPatch, WeaponRenderGearDonorReference, WeaponSandboxPerkActionFloatOverride,
+    WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
+    WeaponVariableDamage,
 };
 pub use item_kind::ItemKind;
+pub(crate) use package::chain::{PackageIdentity, PatchChain, PatchFile};
+#[cfg(test)]
+pub(crate) use package::extend::build_standalone_package_with_references;
+pub(crate) use package::extend::{ExtendedOverlayArtifact, ReplacementSpec};
+pub(crate) use package::extend::{
+    NewTagReference, NewTagReferenceOverride, NewTagSpec, NewTagStorageMode,
+};
+pub(crate) use package::format::SUNDIAL_BUILD_SIGNATURE;
 pub(crate) use recipe::{
-    HexHash, RecipeAmmoType, RecipeRarity, RecipeRawPayloadTarget, WeaponArtArrangementRecipe,
-    WeaponDonorReference, WeaponDyeReferenceRecipe, WeaponLocaleTextRecipe,
-    WeaponNumericInstructionRecipe, WeaponRawPayloadPatchRecipe, WeaponRecipeOverrides,
-    WeaponRuntimeResourcePatchRecipe, WeaponSocketColumnRecipe, WeaponStatOverride,
+    HexHash, RecipeAmmoType, RecipeRarity, RecipeRawPayloadTarget, RuntimeResourcePatchRecipe,
+    WeaponArtArrangementRecipe, WeaponDonorReference, WeaponDyeReferenceRecipe,
+    WeaponLocaleTextRecipe, WeaponNumericInstructionRecipe, WeaponRawPayloadPatchRecipe,
+    WeaponRecipeOverrides, WeaponSocketColumnRecipe, WeaponStatOverride,
 };
 pub use recipe::{
     SwordProfileRecipe, WeaponRecipe, WeaponSandboxPerkActionFloatRecipe,
     WeaponSandboxPerkRuntimeRecipe, WeaponSocketPlugVariantRecipe,
 };
 pub(crate) use recipe_library::{RecipeLibrary, RecipeLibraryEntry};
-pub(crate) use watermark::{WeaponIconRequest, item_icon_row_with_container};
 pub use workflow::{
     BatchBuildRequest, BatchBuildSnapshot, BuildActivity, BuildFailure, BuildProgress, BuildReport,
     MemberProgress, OperationStatus, SkippedRecipe, build_and_stage_snapshot_reporting,

@@ -569,7 +569,7 @@ impl WeaponRecipeOverrides {
                 .iter()
                 .enumerate()
                 .map(|(index, patch)| {
-                    Ok(crate::WeaponRuntimeResourcePatch {
+                    Ok(crate::RuntimeResourcePatch {
                         binding_hash: parse_recipe_hash(
                             &format!("runtime resource patch {index} binding"),
                             &patch.binding_hash,
@@ -640,8 +640,8 @@ pub(super) fn parse_recipe_hash(description: &str, hash: &HexHash) -> Result<u32
 impl VariableDamageRecipe {
     pub(super) fn to_compiler(&self) -> WeaponVariableDamage {
         WeaponVariableDamage {
-            elements: self
-                .elements
+            damage_types: self
+                .damage_types
                 .iter()
                 .copied()
                 .map(ModernDamageType::from)
@@ -707,9 +707,11 @@ impl WeaponRecipe {
                 "Only a subclass can show another damage type".to_owned(),
             ));
         }
-        if self.overrides.armor_class.is_some() && self.kind != ItemKind::Armor {
+        if self.overrides.armor_class.is_some()
+            && !matches!(self.kind, ItemKind::Armor | ItemKind::Artifact)
+        {
             return Err(RecipeError::Validation(
-                "Only armor can select an armor class".into(),
+                "Only armor and artifacts can select a class".into(),
             ));
         }
         if self.overrides.nameplate.is_some() && self.kind != ItemKind::Emblem {
@@ -778,7 +780,7 @@ impl WeaponRecipe {
                 .runtime_component_donors
                 .iter()
                 .map(|component| {
-                    Ok::<_, RecipeError>(crate::WeaponRuntimeComponentDonorReference {
+                    Ok::<_, RecipeError>(crate::RuntimeComponentDonorReference {
                         binding_hash: parse_recipe_hash(
                             "runtime_component_donors.binding_hash",
                             &component.binding_hash,

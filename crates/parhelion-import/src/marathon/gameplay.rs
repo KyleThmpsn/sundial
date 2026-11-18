@@ -1,6 +1,7 @@
 //! Base investment inputs and bounded numeric outputs from the source weapon's own tables.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+mod magazine;
 mod perk;
 mod translator;
 pub(crate) use perk::inventory_icon;
@@ -132,8 +133,8 @@ fn sample(p: &Payload, row: usize, value: i32) -> Result<Vec<f32>> {
 ///
 /// Source scores are not on the native scale. Nearly every source weapon scores 10 in its
 /// handling stats, and each weapon's own curves give that score its effect. A stat is carried
-/// only where the donor value with the same effect can be found. Every other score keeps the
-/// donor's value.
+/// through a matched donor value, or through private source curves for qualified timing scopes.
+/// Every other score keeps the donor's value.
 pub fn author_gameplay(
     source: &mut Reader,
     native: &mut Reader,
@@ -169,19 +170,110 @@ pub fn author_gameplay(
         matched = evidence;
         omitted = skipped;
     }
+    // One donor score cannot reproduce all source durations and penalties. A qualified scope
+    // carries every consumer of its stat together, so its curves can sample the source score.
+    let timing_stats = values
+        .iter()
+        .filter(|row| row["literal"] == true)
+        .filter_map(|row| {
+            Some((
+                u32::try_from(row["hash"].as_u64()?).ok()?,
+                i32::try_from(row["value"].as_i64()?).ok()?,
+            ))
+        })
+        .filter(|(stat, _)| matches!(stat, 0xF9A04987 | 0x383D6DBC))
+        .collect::<BTreeMap<_, _>>();
+    if let Some((p, group)) = &curves {
+        let timing = match crate::tiger::weapon::timing::marathon_timing(
+            p,
+            *group,
+            native,
+            donor,
+            &timing_stats.keys().copied().collect(),
+        ) {
+            Ok(timing) => timing,
+            Err(error) => {
+                crate::cancellation::check()?;
+                json!({"status":"native","reason":format!("{error:#}")})
+            }
+        };
+        for (name, stat) in [("reload", 0xF9A04987), ("handling", 0x383D6DBC)] {
+            if timing[name]["status"] != "translated" {
+                continue;
+            }
+            let value = timing_stats[&stat];
+            let index = *definitions
+                .get(&stat)
+                .context("Native timing stat definition")?;
+            mapped.retain(|row| row["definition_index"] != index);
+            mapped.push(json!({"definition_index":index,"value":value}));
+            matched.retain(|row| row["stat"] != stat);
+            omitted.retain(|row| row["stat"] != stat);
+            matched.push(json!({"stat":stat,"native":stat,"source":value,
+                "matched":value,"method":"private_source_curves"}));
+        }
+        graph["firing_translation"] = json!({"timing":timing});
+    }
     for stat in &values {
         let name = hash(stat, "hash")?;
         if curves.is_none() || !translator::translates(name) {
             omitted.push(json!({"stat":name,"reason":"The source score follows the source weapon's own curves, so the donor keeps its native value"}));
         }
     }
+    let Outputs {
+        inputs,
+        sampled,
+        aim,
+        display,
+    } = outputs(
+        native,
+        donor,
+        &definitions,
+        curves.as_ref(),
+        &values,
+        &mut omitted,
+    )?;
+    graph["source_item_identity"] = json!(identity);
+    graph["source_gameplay"] = json!({"source":"marathon","revision":3,"stats":values,
+        "investment_stats":mapped,"matched":matched,"display_group":display,"inputs":inputs,"sampled":sampled,"omitted":omitted,
+        "limits":"Base source curves only. Qualified reload and handling curves remain dynamic on private native columns. Other matched stats compare directly copied outputs at whole donor values. Donor firing mode, damage, perks, charge and energy consumption are retained. Source sampling between exact tiers is a format inference. Gameplay is unverified."});
+    if !aim.is_null() {
+        graph["source_gameplay"]["aim"] = aim;
+    }
+    if let Some(tier) = tier {
+        graph["source_gameplay"]["tier"] = json!(tier);
+    }
+    graph["source_gameplay"]["rarity"] = json!(rarity);
+    Ok(())
+}
+
+struct Outputs {
+    inputs: Vec<Value>,
+    sampled: Vec<Value>,
+    aim: Value,
+    display: Value,
+}
+
+/// Sample conventional runtime outputs while retaining the donor's other display curves.
+fn outputs(
+    native: &mut Reader,
+    donor: u32,
+    definitions: &BTreeMap<u32, u16>,
+    curves: Option<&(Payload, usize)>,
+    values: &[Value],
+    omitted: &mut Vec<Value>,
+) -> Result<Outputs> {
     let mut inputs = Vec::new();
     let mut sampled = Vec::new();
     let mut aim = Value::Null;
     let mut display = crate::stat_group::native(native, donor)?;
     if let Some((p, group)) = curves {
         let mut used = BTreeSet::new();
-        for row in p.array(group, 56, Some(0x80803F8E))? {
+        for (curve, row) in p
+            .array(*group, 56, Some(0x80803F8E))?
+            .into_iter()
+            .enumerate()
+        {
             let input = p.u32(row + 32)?;
             let name = match input {
                 0 => 0xFF664809,
@@ -197,17 +289,18 @@ pub fn author_gameplay(
                 continue;
             };
             let value = i32::try_from(stat["value"].as_i64().context("Source stat value")?)?;
-            let output = sample(&p, row, value)?;
+            let output = sample(p, row, value)?;
             sampled.push(json!({"input":input,"stat":name,"investment":value,"outputs":output}));
             match (input,output.as_slice()) {
                 (0,[rate,mode]) if (0.05..=100.).contains(rate) && [0.,1.].contains(mode) => {
                     inputs.extend((0..4).map(|index|json!({"component":2,"input":index,"value":rate})));
-                    crate::stat_group::constant(&mut display, &definitions, name as u32, (*rate*60.).round() as i32)?;
+                    crate::stat_group::constant(&mut display, definitions, name as u32, (*rate*60.).round() as i32)?;
                 }
                 (1, [capacity, chamber]) | (1,[capacity,chamber,1.])
-                    if (1. ..=500.).contains(capacity) && capacity.fract()==0. && [0.,1.].contains(chamber) => {
+                    if (1. ..=500.).contains(capacity) && capacity.fract()==0. && [0.,1.].contains(chamber)
+                        && magazine::conventional(p,*group,curve)? => {
                     inputs.extend([0,3].map(|index|json!({"component":1,"input":index,"value":capacity})));
-                    crate::stat_group::constant(&mut display, &definitions, name as u32, *capacity as i32)?;
+                    crate::stat_group::constant(&mut display, definitions, name as u32, *capacity as i32)?;
                 }
                 (3,[magnification]) if (1. ..=10.).contains(magnification) => {
                     aim=json!({"magnification":magnification});
@@ -218,18 +311,41 @@ pub fn author_gameplay(
     } else {
         omitted.push(json!({"reason":"No unique single-group source stat translator"}));
     }
-    graph["source_item_identity"] = json!(identity);
-    graph["source_gameplay"] = json!({"source":"marathon","revision":2,"stats":values,
-        "investment_stats":mapped,"matched":matched,"display_group":display,"inputs":inputs,"sampled":sampled,"omitted":omitted,
-        "limits":"Base source curves only. Matched stats compare directly copied curve outputs at whole donor values. Donor firing mode, damage, perks, charge and energy consumption are retained. Source sampling between exact tiers is a format inference. Gameplay is unverified."});
-    if !aim.is_null() {
-        graph["source_gameplay"]["aim"] = aim;
+    Ok(Outputs {
+        inputs,
+        sampled,
+        aim,
+        display,
+    })
+}
+
+/// A magazine reload refills the whole magazine in one action, so the build needs the source's
+/// round count as Magazine inputs 0 and 3. A source that exports none keeps the carrier's shell
+/// reload: an energy reservoir, whose Magazine curve holds a capacity of 1000 and a cost for each
+/// shot that feeds Barrel input 30, names no rounds. The translated reload clips stay in the
+/// animation tables, where the carrier requests neither of them.
+pub(super) fn settle_reload(graph: &mut Value) {
+    if graph["animation"]["reload"] != "magazine" {
+        return;
     }
-    if let Some(tier) = tier {
-        graph["source_gameplay"]["tier"] = json!(tier);
+    let rounds = |input: u64| {
+        graph["source_gameplay"]["inputs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| row["component"] == 1 && row["input"] == input)
+            .and_then(|row| row["value"].as_f64())
+    };
+    if rounds(0).is_some() && rounds(0) == rounds(3) {
+        return;
     }
-    graph["source_gameplay"]["rarity"] = json!(rarity);
-    Ok(())
+    if let Some(animation) = graph["animation"].as_object_mut() {
+        animation.remove("reload");
+        animation.insert(
+            "reload_kept".into(),
+            json!({"mode":"carrier","reason":"The source exports no round count, so the carrier keeps its shell reload and the translated magazine reloads are not requested"}),
+        );
+    }
 }
 
 /// Existing authored values win when an import is refreshed. A fresh recipe receives every

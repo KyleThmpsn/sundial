@@ -33,7 +33,10 @@ fn incompatible_data(error: &DawnAccountError) -> bool {
             | rusqlite::Error::IntegralValueOutOfRange(..)
             | rusqlite::Error::InvalidColumnType(..)
             | rusqlite::Error::QueryReturnedNoRows => true,
-            rusqlite::Error::SqliteFailure(_, Some(message)) => {
+            // A statement that names a missing table or column fails when it is prepared, which
+            // reports the SQL input rather than a bare failure.
+            rusqlite::Error::SqliteFailure(_, Some(message))
+            | rusqlite::Error::SqlInputError { msg: message, .. } => {
                 message.starts_with("no such table:") || message.starts_with("no such column:")
             }
             _ => false,
@@ -57,7 +60,7 @@ fn load_inner(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountError> 
     if version == 0 {
         return Ok(DawnAccountDocumentLoad::Empty);
     }
-    if version != contract::SCHEMA_VERSION {
+    if !contract::supported(version) {
         return Ok(DawnAccountDocumentLoad::Incompatible(
             DawnAccountIncompatibility::SchemaVersion { found: version },
         ));
@@ -76,7 +79,7 @@ fn load_inner(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountError> 
     let allocators: DawnAllocators = read!(reader::allocators(&connection));
     let primary_soid = read!(reader::primary_soid(&connection));
     let profile = read!(reader::profile(&connection));
-    let characters = read!(reader::characters(&connection));
+    let characters = read!(reader::characters(&connection, version));
     let (settings, settings_index) = read!(reader::settings(&connection));
     let carried = super::carried::read(&connection, &profile)?;
     let activity = super::activity::ActivityState::load(&connection)?;
@@ -91,6 +94,7 @@ fn load_inner(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountError> 
     Ok(DawnAccountDocumentLoad::Loaded(Box::new(
         DawnAccountDocument {
             path: PathBuf::from(path),
+            schema_version: version,
             metadata,
             allocators,
             loaded: super::Loaded {

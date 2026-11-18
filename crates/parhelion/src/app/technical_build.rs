@@ -7,8 +7,7 @@
 use sundial::investment::WeaponDonor;
 use sundial::package_authoring::gear_markers::{self, MarkerSet, marker_name};
 use sundial::package_authoring::runtime::{
-    WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimeRoot,
-    WeaponRuntimeValue, WeaponRuntimeValueKind,
+    RuntimeField, RuntimeFieldSource, RuntimeGraph, RuntimeRoot, RuntimeValue, RuntimeValueKind,
 };
 
 use crate::ItemKind;
@@ -27,7 +26,7 @@ use report::*;
 
 /// The effective runtime entity behind the report, once the background scan has produced it.
 /// `None` while no scan has finished for the current recipe.
-pub(super) type Registry<'a> = Option<Result<&'a WeaponRuntimeGraph, &'a str>>;
+pub(super) type Registry<'a> = Option<Result<&'a RuntimeGraph, &'a str>>;
 
 /// The gear-art markers behind the appearance, once the background read has produced them.
 /// `None` while no read has finished for the arrangement on screen.
@@ -42,7 +41,7 @@ pub(super) type MarkerRead = (Vec<u16>, Result<Vec<MarkerSet>, String>);
 enum RegistrySource {
     Pending,
     Failed(String),
-    Graph(std::sync::Weak<WeaponRuntimeGraph>),
+    Graph(std::sync::Weak<RuntimeGraph>),
 }
 
 impl PartialEq for RegistrySource {

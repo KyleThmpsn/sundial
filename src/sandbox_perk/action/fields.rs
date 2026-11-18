@@ -188,7 +188,7 @@ pub(super) fn condition_facts(payload: &[u8], node: usize, kind: u8) -> Result<V
             ),
         ]),
         27 => two_objects_and_event_state_facts(payload, node),
-        29 | 30 | 37 => Ok(vec![Fact::new(
+        29 | 30 | 37 | 39 => Ok(vec![Fact::new(
             "Event Key",
             FactValue::Key(key(payload, node, 8)?),
         )]),
@@ -431,8 +431,12 @@ pub(super) fn effect_facts(payload: &[u8], node: usize, kind: u8) -> Result<Vec<
                 FactValue::Flag(flag(payload, node, 3)?),
             ),
         ]),
-        7 | 25 | 41 | 43 | 47 => Ok(vec![Fact::new(
+        7 | 25 | 43 | 47 => Ok(vec![Fact::new(
             "Property Key",
+            FactValue::Key(key(payload, node, 4)?),
+        )]),
+        41 => Ok(vec![Fact::new(
+            "Weapon Key",
             FactValue::Key(key(payload, node, 4)?),
         )]),
         8 => component_value_adjustment_facts(payload, node),
@@ -483,6 +487,10 @@ pub(super) fn effect_facts(payload: &[u8], node: usize, kind: u8) -> Result<Vec<
             Fact::new("Slot Mask", FactValue::Mask(byte(payload, node, 2)?.into())),
             Fact::new("Value", FactValue::Selector(byte(payload, node, 4)?)),
         ]),
+        23 => Ok(vec![
+            Fact::new("Slot Mask", FactValue::Mask(byte(payload, node, 2)?.into())),
+            Fact::new("Amount", FactValue::Selector(byte(payload, node, 4)?)),
+        ]),
         28 => Ok(vec![
             Fact::new("First State", FactValue::Selector(byte(payload, node, 2)?)),
             Fact::new("Second State", FactValue::Selector(byte(payload, node, 3)?)),
@@ -519,6 +527,29 @@ pub(super) fn effect_facts(payload: &[u8], node: usize, kind: u8) -> Result<Vec<
         42 => Ok(vec![
             Fact::new("Mode", FactValue::Selector(byte(payload, node, 2)?)),
             Fact::new("Value", FactValue::Number(float(payload, node, 4)?)),
+        ]),
+        9 => Ok(vec![
+            Fact::new("Ability Slot", FactValue::Selector(byte(payload, node, 2)?)),
+            Fact::new("Duration", FactValue::Seconds(float(payload, node, 4)?)),
+        ]),
+        31 => Ok(vec![Fact::new(
+            "Minimum Value",
+            FactValue::Number(float(payload, node, 4)?),
+        )]),
+        39 => Ok(vec![Fact::new(
+            "State Key",
+            FactValue::Key(key(payload, node, 4)?),
+        )]),
+        50 => Ok(vec![Fact::new(
+            "Property Key",
+            FactValue::Key(key(payload, node, 4)?),
+        )]),
+        44 => Ok(vec![
+            Fact::new("Duration", FactValue::Seconds(float(payload, node, 4)?)),
+            Fact::new(
+                "Repeat Ends It After",
+                FactValue::Seconds(float(payload, node, 8)?),
+            ),
         ]),
         48 => referenced_runtime_operation_facts(payload, node),
         49 => Ok(vec![

@@ -20,12 +20,50 @@ const MOVEMENT: u32 = 0x0437756D;
 const SOURCE_CATEGORIES: u32 = 0x80AAC26E;
 const NATIVE_CATEGORIES: u32 = 0x80C70CA1;
 
-/// What a carrier profile's private copy takes from its source: the damage type and the category
-/// names, each where it differs from the carrier's.
+/// What a carrier profile's private copy takes from its source: the damage type, the category
+/// names and the bodies of its push and `80802B30` responses, each where it differs from the
+/// carrier's. A body is kept by its offset in the carrier profile.
 #[derive(Clone, Default, PartialEq)]
 pub(super) struct Private {
     pub damage_type: Option<u8>,
     pub categories: Option<Vec<u32>>,
+    pub bodies: Vec<(usize, Vec<u8>)>,
+    /// The source's amount bounds and random extent, three Float32 values.
+    pub amount: Option<[u8; 12]>,
+}
+
+impl Private {
+    /// Whether the copy exists only for response bodies, which the carrier's own can stand in for.
+    pub fn bodies_only(&self) -> bool {
+        self.damage_type.is_none()
+            && self.categories.is_none()
+            && self.amount.is_none()
+            && !self.bodies.is_empty()
+    }
+}
+
+/// The source body a carrier response takes, when the two differ. Push `808023B0` with
+/// `80804B57` (40 bytes) and `80802B30` with `80804B56` (12 bytes) share one layout. The
+/// push body's resource word and the other's leading word must agree, so only scalars change.
+fn response_body(
+    class: u32,
+    s: &Payload,
+    sa: usize,
+    n: &Payload,
+    na: usize,
+) -> Result<Option<Vec<u8>>> {
+    let (size, fixed) = match class {
+        0x808023B0 => (40, 32..36),
+        0x80802B30 => (12, 0..4),
+        _ => return Ok(None),
+    };
+    let from =
+        s.0.get(sa..sa + size)
+            .context("Source profile response body")?;
+    let to =
+        n.0.get(na..na + size)
+            .context("Native profile response body")?;
+    Ok((from != to && from[fixed.clone()] == to[fixed]).then(|| from.to_vec()))
 }
 
 fn fingerprint(tag: u32, p: &Payload) -> Value {
@@ -58,13 +96,19 @@ fn profile(
             && n.u32(nd - 4)? == 0x80804B02,
         "Projectile profile layout differs"
     );
-    let amount = s.pointer(sd + 24)?;
-    let (source_amount, native_amount) = (s.bytes::<13>(amount)?, n.bytes::<13>(nd + 20)?);
+    let amount_offset = s.pointer(sd + 24)?;
+    let (source_amount, native_amount) = (s.bytes::<13>(amount_offset)?, n.bytes::<13>(nd + 20)?);
+    // A private copy needs the checked native profile shape. With it the copy can take the
+    // source's amount record, which both versions store as the same three floats.
+    let copyable = ability_damage::profile(to, &n.0).is_some_and(|shape| shape.root == nd);
+    let bounds = (source_amount[..12] != native_amount[..12])
+        .then(|| <[u8; 12]>::try_from(&source_amount[..12]))
+        .transpose()?;
     ensure!(
-        source_amount[..12] == native_amount[..12] && n.u8(nd + 16)? == 0 && n.u8(nd + 0x53)? == 0,
+        (bounds.is_none() || copyable) && n.u8(nd + 16)? == 0 && n.u8(nd + 0x53)? == 0,
         "Projectile amount or native scaling differs"
     );
-    for at in [amount, amount + 4, amount + 8] {
+    for at in [amount_offset, amount_offset + 4, amount_offset + 8] {
         s.f32(at)?;
     }
     let retype = (source_amount[12] != native_amount[12]).then_some(source_amount[12]);
@@ -128,6 +172,7 @@ fn profile(
         !sr.is_empty() && nr.len() >= sr.len(),
         "Projectile profile response family differs"
     );
+    let mut bodies = Vec::new();
     for (srow, nrow) in sr.iter().zip(&nr) {
         let (sa, na) = (s.pointer(*srow)?, n.pointer(*nrow)?);
         let class = s.u32(sa - 4)?;
@@ -135,6 +180,9 @@ fn profile(
             counterpart(class) == Some(n.u32(na - 4)?),
             "Projectile profile response order differs"
         );
+        if copyable && let Some(body) = response_body(class, &s, sa, &n, na)? {
+            bodies.push((na, body));
+        }
         if class == 0x8080218E {
             let (from, to) = (s.u32(sa + 8)?, n.u32(na + 8)?);
             ensure!(
@@ -154,10 +202,13 @@ fn profile(
         json!({"source":from,"native":to,"amount_bits":source_amount,
         "damage_type":{"source":source_amount[12],"native":native_amount[12],"private":retype.is_some()},
         "categories":{"source":from_categories,"native":to_categories,"private":recategorized},
-        "extra_native_responses":extra,"compatibility":"Native response bodies, audio and feedback are retained."}),
+        "extra_native_responses":extra,"source_response_bodies":bodies.len(),"source_amount":bounds.is_some(),
+        "compatibility":"Push and 80802B30 response bodies use source values in a private copy. Other native response bodies, audio and feedback are retained."}),
         Private {
             damage_type: retype,
             categories: recategorized.then_some(from_categories),
+            bodies,
+            amount: bounds,
         },
     ))
 }
@@ -212,27 +263,58 @@ fn fallback_profiles(
 
 /// Fingerprints and evidence for every paired resource, and what each carrier profile takes in its
 /// private copy. One carrier profile cannot pair with source profiles that deal different types
-/// or declare different categories.
+/// or declare different categories where the carrier names it. A profile only `created` profile
+/// responses name takes its own copy instead when it differs from the others on its carrier
+/// profile, as the four profiles of Telesto's created responses do on carrier profile `815266E8`.
 fn resources(
     source: &Source,
     native: &mut Reader,
-    pairs: &BTreeSet<(u8, u32, u32)>,
+    (pairs, created): ResourcePairs<'_>,
     graphs: &response::Counterparts,
 ) -> Result<RetypedResponses> {
     let mut fingerprints = Vec::new();
     let mut evidence = Vec::new();
     let mut types = BTreeMap::<u32, Private>::new();
-    for &(kind, from, to) in pairs {
+    let mut splits = bank::Splits::new();
+    let mut shared = BTreeSet::new();
+    let is_created = |pair: &&(u8, u32, u32)| pair.0 == 9 && created.contains(&(pair.1, pair.2));
+    let kept_first = pairs
+        .iter()
+        .filter(|pair| !is_created(pair))
+        .chain(pairs.iter().filter(is_created));
+    for pair in kept_first {
+        let &(kind, from, to) = pair;
         if matches!(from, 0 | u32::MAX) || matches!(to, 0 | u32::MAX) {
             ensure!(from == to, "Projectile resource presence differs");
             continue;
         }
         if kind == 9 {
             let (hash, report, private) = profile(source, native, (from, to), graphs)?;
+            let kept = types.entry(to).or_insert_with(|| private.clone());
+            let same = kept.damage_type == private.damage_type
+                && kept.categories == private.categories
+                && kept.amount == private.amount;
+            if !same && is_created(&pair) {
+                splits.insert(from, (to, private));
+                fingerprints.push(hash);
+                evidence.push(report);
+                continue;
+            }
             ensure!(
-                *types.entry(to).or_insert_with(|| private.clone()) == private,
-                "A carrier profile pairs with source profiles of different damage types or categories"
+                same,
+                "A carrier profile pairs with source profiles of different damage types or categories ({from:08X} on {to:08X}, among {})",
+                pairs
+                    .iter()
+                    .filter(|pair| pair.0 == 9 && pair.2 == to)
+                    .map(|pair| format!("{:08X}", pair.1))
+                    .collect::<Vec<_>>()
+                    .join(" ")
             );
+            // One carrier profile paired with source profiles of different bodies keeps its own.
+            if kept.bodies != private.bodies || shared.contains(&to) {
+                kept.bodies.clear();
+                shared.insert(to);
+            }
             fingerprints.push(hash);
             evidence.push(report);
             continue;
@@ -266,7 +348,7 @@ fn resources(
         .into_iter()
         .filter(|(_, private)| *private != Private::default())
         .collect();
-    Ok((fingerprints, evidence, retyped))
+    Ok((fingerprints, evidence, retyped, splits))
 }
 
 /// A child creation parameter only the source has can be left out when no graph the source
@@ -387,10 +469,52 @@ fn translate_spawns(
 
 pub(super) fn prepare(assembly: &mut Assembly<'_>, export: &Value, donor: u32) -> Result<Value> {
     let selected = selection::source(assembly.source, export)?;
-    let selection = selection::native(&mut assembly.native, donor, selected.key)?;
-    let (from, carrier) = (selected.graph, selection.graph);
-    prepare_pair(assembly, selected, selection)
-        .with_context(|| format!("Source projectile {from:08X} on carrier {carrier:08X}"))
+    let carriers = selection::carriers(&mut assembly.native, donor, selected.key)?;
+    // The base's own carrier comes first and is the one a refusal names. A later carrier of
+    // the base's content owner is tried only after it refuses, each from a clean assembly.
+    let mut refusal = None;
+    let mut others = Vec::new();
+    for selection in carriers {
+        let (from, carrier) = (selected.graph, selection.graph);
+        let nodes = assembly.nodes.len();
+        let evidence = assembly.evidence.len();
+        let symbols = assembly.symbols.clone();
+        let cues = assembly.projectile_cues.clone();
+        let result = prepare_pair(assembly, selected, selection)
+            .with_context(|| format!("Source projectile {from:08X} on carrier {carrier:08X}"));
+        match result {
+            Ok(mut report) => {
+                // Why each earlier carrier of the base was passed over.
+                let passed = refusal
+                    .iter()
+                    .map(|error| format!("{error:#}"))
+                    .chain(others)
+                    .collect::<Vec<_>>();
+                if !passed.is_empty() {
+                    report["passed_over_carriers"] = json!(passed);
+                }
+                return Ok(report);
+            }
+            Err(error) => {
+                crate::cancellation::check()?;
+                assembly.nodes.truncate(nodes);
+                assembly.evidence.truncate(evidence);
+                assembly.symbols = symbols;
+                assembly.projectile_cues = cues;
+                assembly.projectile_names.clear();
+                if refusal.is_none() {
+                    refusal = Some(error);
+                } else {
+                    others.push(format!("{carrier:08X} ({:#})", error.root_cause()));
+                }
+            }
+        }
+    }
+    let refusal = refusal.context("Native weapon offers no projectile carrier")?;
+    if others.is_empty() {
+        return Err(refusal);
+    }
+    anyhow::bail!("{refusal:#}. Other carriers: {}", others.join(", "))
 }
 
 fn prepare_pair(
@@ -463,8 +587,13 @@ fn prepare_pair(
     let mut resource_pairs = translation.resources.clone();
     // A fallback a created response names is qualified with the other profile pairs.
     let created = translation.plan.created_profiles();
+    let mut created_pairs = BTreeSet::new();
     for (&from, &to) in &fallback {
         if response::unique(&translation.graphs, from).is_none() && created.contains(&to) {
+            // A pair the tree or a profile field also holds is not a created response's alone.
+            if !resource_pairs.contains(&(9, from, to)) {
+                created_pairs.insert((from, to));
+            }
             resource_pairs.insert((9, from, to));
         }
     }
@@ -509,12 +638,18 @@ fn prepare_pair(
             fills.push((b, chosen, private));
             continue;
         }
+        created_pairs.remove(&(from, to));
         resource_pairs.insert((kind, from, to));
     }
-    let (mut fingerprints, resource_report, retyped) =
-        resources(source, native, &resource_pairs, &translation.graphs)?;
+    let (mut fingerprints, resource_report, retyped, splits) = resources(
+        source,
+        native,
+        (&resource_pairs, &created_pairs),
+        &translation.graphs,
+    )?;
     fingerprints.append(&mut fingerprints_extra);
     fingerprints.extend(materials.fingerprints);
+    let carrier_row = selection.row;
     fingerprints.extend(selection.fingerprints);
     fingerprints.push(fingerprint(selection.graph, &n.payload));
     fingerprints.extend(
@@ -537,7 +672,7 @@ fn prepare_pair(
             ]
             .concat(),
             &materials.patches,
-            (&retyped, &fills),
+            (&retyped, &fills, &splits),
         ),
         (&groups.paired, &groups.dropped),
         (&translation.plan, &variants.values),
@@ -550,6 +685,7 @@ fn prepare_pair(
         "native_graph":selection.graph,"native_content_owner":selection.content,
         "native_content_resource":selection.resource,"native_key":selection.key,"fingerprints":fingerprints,
         "source_selection":selected.route,"native_content_default":selection.content_default,"native_barrel":selection.barrel,
+        "native_carrier_row":carrier_row,
         "patches":patches,"scalar_patches":scalar_patches,"launch_patches":launch_patches,"launch":launch,
         "material_patches":materials.patches,"material_groups":materials.groups,
         "responses":sr.report(),"tree":translation.report,"channels":channels,"resources":resource_report,
@@ -568,4 +704,8 @@ fn prepare_pair(
     )
 }
 
-type RetypedResponses = (Vec<Value>, Vec<Value>, BTreeMap<u32, Private>);
+/// Paired resources by role, source and native tag, and the profile pairs among them that only
+/// created profile responses name, by source and carrier profile.
+type ResourcePairs<'a> = (&'a BTreeSet<(u8, u32, u32)>, &'a BTreeSet<(u32, u32)>);
+
+type RetypedResponses = (Vec<Value>, Vec<Value>, BTreeMap<u32, Private>, bank::Splits);

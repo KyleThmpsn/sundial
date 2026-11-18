@@ -19,6 +19,8 @@ struct Channel {
     modern: bool,
     preserved_pointers: Vec<(usize, usize)>,
     resting_procedure: Option<String>,
+    /// The source named-parameter component whose resting value this channel keeps.
+    parameter: Option<String>,
 }
 
 fn resource_index(row: &[u8], named: bool, computed: bool) -> Result<Option<u16>> {
@@ -209,6 +211,7 @@ fn declarations(
                 modern,
                 preserved_pointers,
                 resting_procedure: None,
+                parameter: None,
             },
         );
     }
@@ -367,7 +370,23 @@ fn source_channels(
             // A constant declaration has no storage either, but no variable
             // component feeds it. It keeps its initial vector as declared.
             if bank.u16(row + 72)? == u16::MAX && !procedural::constant(&bank, row, &rows)? {
+                // Both provider checks inspect only the source entity, so every donor reaches
+                // the same verdict and the donor loop should not keep trying.
+                let name = u32::from_str_radix(&hash, 16)?;
+                if let Some(parameter) = procedural::parameter_source(source, &bank, &entity, name)
+                    .map_err(crate::d2_mot::source_limit)
+                    .with_context(|| format!("source channel {hash}"))?
+                {
+                    // Only this channel leaves the bank. Its other rows keep their own routes.
+                    let mut channel = declarations(&bank, true, Some(&hash))?
+                        .remove(&hash)
+                        .context("source parameter channel declaration")?;
+                    channel.parameter = Some(parameter);
+                    merge_source_channel(&mut result, hash.clone(), channel)?;
+                    continue;
+                }
                 let provider = procedural::validate_source(source, &bank, &entity)
+                    .map_err(crate::d2_mot::source_limit)
                     .with_context(|| format!("source channel {hash}"))?;
                 ensure!(
                     variable.as_ref().is_none_or(|v| v == &provider),
@@ -582,10 +601,22 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
                 .map(|procedure| json!({"output":hash,"procedure":procedure}))
         })
         .collect::<Vec<_>>();
+    let parameters = extra
+        .iter()
+        .filter_map(|(hash, channel)| {
+            channel
+                .parameter
+                .as_ref()
+                .map(|component| json!({"channel":hash,"component":component}))
+        })
+        .collect::<Vec<_>>();
     for (hash, channel) in &mut extra {
-        if channel.resting_procedure.is_some() {
+        if channel.resting_procedure.is_some() || channel.parameter.is_some() {
             static_channel(hash, channel)?;
         }
+    }
+    if !parameters.is_empty() {
+        c.graph.manifest["resting_source_parameters"] = json!({"mode":"authored parameter values","channels":parameters,"gameplay_verified":false});
     }
     if !deferred.is_empty() {
         c.graph.manifest["resting_source_procedures"] = json!({"enabled":false,"mode":"validated authored initial vectors","procedures":deferred});
@@ -603,7 +634,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
             "source": variable,
             "enabled": false,
             "mode": "static authored initial vectors",
-            "reason": "Barrel animation deferred",
+            "reason": "Variable animation deferred",
             "channels": extra.keys().collect::<Vec<_>>(),
             "gameplay_verified": false
         });
@@ -1208,6 +1239,7 @@ mod tests {
             modern: true,
             preserved_pointers: vec![(16, 128)],
             resting_procedure: None,
+            parameter: None,
         };
         static_channel("6E8F4D11", &mut channel).unwrap();
         assert_eq!(
@@ -1238,6 +1270,7 @@ mod tests {
             modern: true,
             preserved_pointers: vec![],
             resting_procedure: None,
+            parameter: None,
         };
         let channels = BTreeMap::from([
             ("ROOT".to_owned(), channel(&["INPUT"])),

@@ -70,9 +70,9 @@ impl Output {
                 return Ok(None);
             }
             let template = spec.template_tag.0;
-            let companion = manager
-                .get_entry(spec.template_tag)
-                .is_some_and(|entry| entry.reference == crate::format::SHARED_TAG_COMPANION_CLASS);
+            let companion = manager.get_entry(spec.template_tag).is_some_and(|entry| {
+                entry.reference == crate::package::format::SHARED_TAG_COMPANION_CLASS
+            });
             if companion {
                 let [owner_offset] = PRIVATE_PERK_RESIDENCY_COMPANION_OWNER_OFFSETS;
                 let tag = allocator.assigned_tag(

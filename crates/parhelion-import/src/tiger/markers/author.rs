@@ -173,7 +173,7 @@ pub fn replace(template: &Payload, markers: &[Marker]) -> Result<Payload> {
             orientation: m.orientation,
         })
         .collect::<Vec<_>>();
-    append(&mut payload, &rows, None)?;
+    append(&mut payload, &rows, ROOT_BINDINGS)?;
     ensure!(
         read_native(&payload)?.len() == markers.len(),
         "source marker count differs"

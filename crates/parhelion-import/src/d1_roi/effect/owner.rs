@@ -52,17 +52,46 @@ pub(super) fn status(target: &mut Payload, fields: &Connected) -> Result<Value> 
     put(&mut target.0, d + 0x98, &fields.duration)?;
     put(&mut target.0, d + 0x120, &fields.timer)?;
     let (code, values) = expression(target, h + 0x98)?;
-    ensure!(
-        code == [0x34, 0, 0x3E, 0] && values.len() == 1,
-        "Native status count is not a constant"
-    );
-    put(&mut target.0, values[0], &fields.count)?;
+    match fields.count_input {
+        None => {
+            ensure!(
+                code == [0x34, 0, 0x3E, 0] && values.len() == 1,
+                "Native status count is not a constant"
+            );
+            put(&mut target.0, values[0], &fields.count)?;
+        }
+        // The stock status already counts its one input of the source's name.
+        Some((name, _)) => {
+            let requests = typed(target, owner, 0x80809789)?;
+            ensure!(
+                code == [0x3C, 1, 0x3E, 0]
+                    && values.is_empty()
+                    && requests.len() == 1
+                    && target.u32(requests[0] + 0x20)? == name,
+                "Native status does not count an input named {name:08X}"
+            );
+        }
+    }
     let program = lifetime(target, owner, d + 0x128, &fields.lifetime)?;
+    // An inactive source transform must stay inactive even when the carrier enables one.
+    // Enabled transforms retain the independently qualified identity over remaining seconds.
+    put(&mut target.0, h + 0xEC, &[u8::from(fields.display)])?;
+    if fields.display {
+        let mut patches = Vec::new();
+        pattern::display(target, h, &mut |at, bytes| {
+            patches.push((at, bytes));
+            Ok(())
+        })?;
+        for (at, bytes) in patches {
+            put(&mut target.0, at, &bytes)?;
+        }
+    }
     finish(target)?;
     Ok(
         json!({"competition":hex::encode(fields.competition),"hud":hex::encode(fields.hud),
         "duration":hex::encode(fields.duration),"timer":hex::encode(fields.timer),
-        "count":hex::encode(fields.count),"lifetime":program,"hud_name_translated":true}),
+        "count":hex::encode(fields.count),"lifetime":program,"display_seconds":fields.display,
+        "hud_name_translated":true}),
     )
 }
 

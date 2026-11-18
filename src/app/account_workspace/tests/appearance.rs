@@ -1,7 +1,7 @@
 //! Real-file appearance lifecycle, independent SQL readback and rollback.
 use super::*;
 use crate::character::Appearance;
-use crate::persistence::sqlite_account::{snapshot, tests::versions};
+use crate::persistence::sunrise_account::{snapshot, tests::versions};
 use std::path::Path;
 
 #[test]
@@ -44,7 +44,8 @@ fn check_lifecycle(case: &str) {
         .set_appearance(0, appearance.clone())
         .unwrap();
     let receipt = edited.save_account(|| Ok(())).unwrap();
-    let v5 = case == "v5-fresh";
+    // Schema 5 and later keep a header on every character and no validity flag.
+    let v5 = versions::version(case) >= 5;
     let validity = if v5 { "1" } else { "appearance_header_valid" };
     let saved: (i64, i64, i64, Vec<u8>, i64, String) = db.query_row(
         &format!("SELECT soid,race,gender,appearance_header,{validity},future FROM characters WHERE slot=0"),

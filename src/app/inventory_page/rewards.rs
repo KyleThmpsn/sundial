@@ -85,6 +85,12 @@ impl SundialApp {
                             ));
                         });
                         let hash = u64::from(reward.definition_hash);
+                        // An account that stores no kind delivers a reward by its definition.
+                        let kind = reward.kind.unwrap_or_else(|| {
+                            u8::from(self.manifest.inventory_definition(hash).is_some_and(
+                                |definition| definition.metadata.is_profile_items_candidate(),
+                            ))
+                        });
                         ui.horizontal(|ui| {
                             if let Some(texture) = self.manifest.icon_texture(ui.ctx(), hash) {
                                 ui.image((texture.id(), egui::vec2(24.0, 24.0)));
@@ -93,14 +99,14 @@ impl SundialApp {
                                 .label(self.manifest.names.get(&hash).cloned().unwrap_or_else(
                                     || format!("Invalid Item · 0x{:08X}", reward.definition_hash),
                                 ))
-                                .on_hover_text(kind_label(reward.kind));
+                                .on_hover_text(kind_label(kind));
                             inspector::definition_context_menu(&name, "Inspect Definition", hash);
                         });
                         ui.push_id((reward.id, "quantity"), |ui| {
                             if !editable {
                                 ui.disable();
                             }
-                            if reward.kind == 1 {
+                            if kind == 1 {
                                 let maximum =
                                     maximum_quantity(&self.manifest, Some(reward.definition_hash))
                                         .max(reward.quantity);

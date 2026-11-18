@@ -1,6 +1,6 @@
 use super::*;
 use sundial::package_authoring::{
-    runtime::resolve_weapon_runtime_field, sandbox_perk::sandbox_perk_action_boxed_value_offset,
+    runtime::resolve_runtime_field, sandbox_perk::sandbox_perk_action_boxed_value_offset,
 };
 
 #[derive(Default)]
@@ -39,7 +39,7 @@ fn verify_values(
                     }
                     locator.graph_tag = None;
                 }
-                resolve_weapon_runtime_field(manager, &graph.payload, &locator).ok()
+                resolve_runtime_field(manager, &graph.payload, &locator).ok()
             })
             .collect::<Vec<_>>();
         assert_eq!(matching.len(), 1);
@@ -193,7 +193,7 @@ fn native_bundled_variants_keep_private_identities_separate() {
                     sundial::investment::WeaponInventorySlot::Power => RecipeInventorySlot::Power,
                 }
             });
-            // A variable-damage weapon rests on the first of its own elements, never Kinetic.
+            // A variable-damage weapon rests on the first of its own damage types, never Kinetic.
             if recipe.overrides.variable_damage.is_none() {
                 recipe
                     .overrides

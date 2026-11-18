@@ -359,8 +359,8 @@ fn resolve_project_weapon(
             "This weapon definition has no socket block for gameplay authoring. Choose another base or use it as an appearance donor.",
         ));
     }
-    // Reload-hold element switching is an ordinary socket column plus, for a subset of
-    // elements, a private plug variant. Expand it here so every later stage sees plain
+    // Reload-hold damage type switching is an ordinary socket column plus, for a subset of
+    // damage types, a private plug variant. Expand it here so every later stage sees plain
     // socket overrides.
     let expanded = variable_damage::expand_spec(weapon, &definition)?;
     let weapon = expanded.as_ref().unwrap_or(weapon);
@@ -527,7 +527,7 @@ fn resolve_project_weapon(
             sources,
             runtime_pattern_source,
             &definition,
-            // Kinetic-slot elements use the same proven carrier source as Energy conversion.
+            // Kinetic-slot damage types use the same proven carrier source as Energy conversion.
             if authored_inventory_slot == WeaponInventorySlot::Kinetic {
                 WeaponInventorySlot::Energy
             } else {

@@ -1,5 +1,7 @@
 //! Compare persisted native graphs to the mounted source, independently of the converter.
 use super::*;
+mod highlight;
+mod labels;
 
 fn resource(p: &Payload, native: bool) -> Result<usize> {
     if native {
@@ -10,33 +12,101 @@ fn resource(p: &Payload, native: bool) -> Result<usize> {
     }
 }
 
-fn query(p: &Payload, native: bool) -> Result<Value> {
+fn object_kinds(p: &Payload, at: usize, native: bool) -> Result<Value> {
+    let mask = p.u32(at)?;
+    let biped = if native { 1 << 12 } else { 1 << 9 };
+    ensure!(mask & !biped == 0, "Unchecked query object kind");
+    let names = if mask == 0 { vec![] } else { vec!["biped"] };
+    Ok(json!(["object kinds", names]))
+}
+
+fn query(
+    p: &Payload,
+    native: bool,
+    source: &Source,
+    registry: &labels::Dictionary,
+) -> Result<Value> {
     let r = resource(p, native)?;
     let mut groups = Vec::new();
     for g in p.array(r + if native { 0x80 } else { 0x98 }, 24, None)? {
         let mut filters = Vec::new();
         for f in p.array(g + 8, 40, None)? {
             let mut terms = Vec::new();
+            let mut reachable = true;
             for t in p.array(f + 16, 16, None)? {
                 let v = p.pointer(t + 8)?;
                 let body = match p.u32(v - 4)? {
                     0x8080295D | 0x80804D76 => json!(["enum", p.u32(v)?]),
                     0x808026B3 | 0x80804D7A => json!(["pair", p.u32(v)?, p.u32(v + 4)?]),
+                    0x80802109 | 0x80804D72 => object_kinds(p, v, native)?,
                     0x80802C1C | 0x80804D5F => {
                         let provider = p.pointer(v)?;
+                        let class = p.u32(provider - 4)?;
+                        let identity = match (native, class) {
+                            (false, 0x8080306D) | (true, 0x80804D61) => 0x8080306Du32,
+                            (false, 0x808027D3) | (true, 0x80804D6E) => 0x808027D3u32,
+                            _ => anyhow::bail!("Unchecked query range provider {class:08X}"),
+                        };
                         ensure!(
-                            p.u32(provider - 4)? == if native { 0x80804D61 } else { 0x8080306D }
-                                && p.u32(provider + 8)? == p.u32(p.pointer(16)?)?
-                                && p.u64(provider + 16)? == provider as u64,
+                            p.u32(provider + 8)? == p.u32(p.pointer(16)?)?,
                             "Query range provider lost its private owner"
                         );
-                        json!(["range", p.u32(v + 8)?, p.u32(v + 12)?, p.u32(v + 16)?])
+                        let original = usize::try_from(p.u64(provider + 16)?)?;
+                        // Sealing retains the initialized provider, then appends its definition
+                        // view. A self offset may name that identical earlier record.
+                        let size = if native { 56 } else { 40 };
+                        ensure!(
+                            p.0.get(original..original + size).is_some()
+                                && p.0.get(original..original + size)
+                                    == p.0.get(provider..provider + size),
+                            "Query range provider names another record"
+                        );
+                        ensure!(
+                            p.u64(provider)? == u64::from(class),
+                            "Query provider base class"
+                        );
+                        if native {
+                            ensure!(
+                                p.u32(provider + 12)? == class,
+                                "Query provider native class"
+                            );
+                        } else {
+                            ensure!(
+                                p.u32(provider + 12)? == 0
+                                    && p.u64(provider + 24)? == u64::from(class),
+                                "Query provider source class"
+                            );
+                        }
+                        json!([
+                            "range",
+                            identity,
+                            p.u64(provider + if native { 48 } else { 32 })?,
+                            p.u32(v + 8)?,
+                            p.u32(v + 12)?,
+                            p.u32(v + 16)?
+                        ])
+                    }
+                    0x8080280E | 0x80804D73 => {
+                        let Some(names) = labels::check(p, v, native, source, registry)? else {
+                            ensure!(
+                                !native
+                                    && p.u64(t)? == 0
+                                    && p.u8(f + 8)? == 0
+                                    && p.u8(f + 33)? == 255,
+                                "An omitted query filter can change its output"
+                            );
+                            reachable = false;
+                            continue;
+                        };
+                        json!(["labels", names])
                     }
                     class => anyhow::bail!("Unchecked query predicate {class:08X}"),
                 };
                 terms.push(json!([p.u64(t)?, body]));
             }
-            filters.push(json!([p.bytes::<16>(f)?, p.bytes::<8>(f + 32)?, terms]));
+            if reachable {
+                filters.push(json!([p.bytes::<16>(f)?, p.bytes::<8>(f + 32)?, terms]));
+            }
         }
         groups.push(json!([p.u32(p.pointer(g)?)?, filters]));
     }
@@ -55,9 +125,29 @@ fn query(p: &Payload, native: bool) -> Result<Value> {
     }
     Ok(
         json!({"groups":groups,"outputs":outputs,"output_flags":p.bytes::<8>(at+16)?,
+        "presentation_controls":p.u32(r + if native {0x1D0} else {0x180})?,
         "parameters":[p.bytes::<8>(r + if native {0x78} else {0x90})?,
             p.bytes::<24>(r + if native {0xB8} else {0xD8})?]}),
     )
+}
+
+/// Compare an attached query after staged package reload, including its presentation controls.
+pub(crate) fn check_query(
+    source: &Source,
+    stock: &mut Reader,
+    reader: &mut Reader,
+    original: &Payload,
+    emitted: &Payload,
+) -> Result<Value> {
+    let registry = labels::dictionary(reader.tag(0x80C70CA1, None)?.as_ref(), true)?;
+    let expected = query(original, false, source, &registry)?;
+    let actual = query(emitted, true, source, &registry)?;
+    ensure!(
+        expected == actual,
+        "Attached query predicates or outputs changed"
+    );
+    let presentation = highlight::check(source, stock, reader, original, emitted)?;
+    Ok(json!({"query":actual,"presentation":presentation}))
 }
 
 struct Sequence<'a> {
@@ -300,6 +390,29 @@ fn getter(
         .context("Connected bank input name")?;
     let published = provider.pointer(output)?;
     let pr = resource(provider, native)?;
+    if matches!(provider.u32(pr - 4)?, 0x80802698 | 0x80804205) {
+        // This typed endpoint selects the embedded timer's remaining-seconds method.
+        // Its adjacent export label is not the bank's lookup name and may differ by carrier.
+        let (offset, timer, binding, class) = if native {
+            (0x3E0, 0x2D8, 0x80C23833, 0x80803C50)
+        } else {
+            (0x3F0, 0x308, 0x80AAC28A, 0x808027B5)
+        };
+        ensure!(
+            output == pr + offset
+                && published == pr + timer
+                && provider.u64(output + 8)? == binding
+                && provider.u32(published + if native { 4 } else { 16 })? == class,
+            "Connected status does not supply its timer's remaining seconds"
+        );
+        let live = usize::try_from(provider.u64(published + 8)?)?;
+        ensure!(
+            provider.u64(live + 8)? == published as u64
+                && provider.u32(live)? == provider.u32(published)?,
+            "Connected timer lost reciprocal ownership"
+        );
+        return Ok(json!(["getter", owner.u32(name + 4)?, "timer_remaining_seconds"]).to_string());
+    }
     let sequence = matches!(provider.u32(pr - 4)?, 0x80800610 | 0x808084E9);
     let name_at = if sequence {
         published + if native { 40 } else { 48 }
@@ -381,7 +494,13 @@ fn connections(
     Ok(links)
 }
 
-fn snapshot(entity: &Payload, owners: &BTreeMap<u32, Payload>, native: bool) -> Result<Value> {
+fn snapshot(
+    entity: &Payload,
+    owners: &BTreeMap<u32, Payload>,
+    native: bool,
+    source: &Source,
+    registry: &labels::Dictionary,
+) -> Result<Value> {
     let mut queries = Vec::new();
     let mut sequences = Vec::new();
     let mut procedures = Vec::new();
@@ -392,7 +511,7 @@ fn snapshot(entity: &Payload, owners: &BTreeMap<u32, Payload>, native: bool) -> 
             procedures.extend(programs(p, r)?);
         }
         if matches!(class, 0x80803136 | 0x80803820) {
-            queries.push(query(p, native)?.to_string());
+            queries.push(query(p, native, source, registry)?.to_string());
         }
         if matches!(class, 0x80800610 | 0x808084E9)
             && p.u64(r + if native { 0x178 } else { 0x190 })? != 0
@@ -407,7 +526,7 @@ fn snapshot(entity: &Payload, owners: &BTreeMap<u32, Payload>, native: bool) -> 
     Ok(json!({"queries":queries,"sequences":sequences,"connections":links,"programs":procedures}))
 }
 
-pub(super) fn check(
+pub(crate) fn check(
     source: &Source,
     reader: &mut Reader,
     from: &Payload,
@@ -423,8 +542,9 @@ pub(super) fn check(
         let tag = to.u32(row)?;
         emitted.insert(tag, (*reader.tag(tag, Some(0x80809C36))?).clone());
     }
-    let expected = snapshot(from, &originals, false)?;
-    let actual = snapshot(to, &emitted, true)?;
+    let registry = labels::dictionary(reader.tag(0x80C70CA1, None)?.as_ref(), true)?;
+    let expected = snapshot(from, &originals, false, source, &registry)?;
+    let actual = snapshot(to, &emitted, true, source, &registry)?;
     ensure!(
         expected == actual,
         "Source query, scalar sequence or connected channel changed: expected {expected}, actual {actual}"

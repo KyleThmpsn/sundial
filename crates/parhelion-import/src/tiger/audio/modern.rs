@@ -134,8 +134,62 @@ fn container(kind: u8, payload: &[u8], known: &BTreeMap<u32, (u8, Vec<u8>)>) -> 
         .context("container has no consistent child list")
 }
 
+type Objects = BTreeMap<u32, (u8, Vec<u8>)>;
+
+/// How an event of a modern bank starts sound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Start {
+    /// The event plays nothing.
+    Silent,
+    /// Another event of the same bank breaks or stops what this one plays, as the release of a
+    /// held automatic loop does.
+    Held,
+    /// The event plays and its bank never ends it.
+    OneShot,
+}
+
+/// How `event` starts sound. The bank must define the event.
+pub fn start(bank: &[u8], event: u32) -> Result<Start> {
+    let objects = objects(bank)?;
+    let played = actions(&objects, event)?
+        .into_iter()
+        .filter(|(kind, _)| kind >> 8 == 0x04)
+        .map(|(_, target)| target)
+        .collect::<Vec<_>>();
+    if played.is_empty() {
+        return Ok(Start::Silent);
+    }
+    for (&other, (kind, _)) in &objects {
+        if *kind != EVENT || other == event {
+            continue;
+        }
+        // Stop actions are type 0x01 and break actions 0x1A, each with a scope in the low byte.
+        if actions(&objects, other)?
+            .iter()
+            .any(|(kind, target)| matches!(kind >> 8, 0x01 | 0x1A) && played.contains(target))
+        {
+            return Ok(Start::Held);
+        }
+    }
+    Ok(Start::OneShot)
+}
+
 /// The media each default layer of `event` alternates between.
 pub fn default_layers(bank: &[u8], event: u32) -> Result<Vec<Vec<u32>>> {
+    let objects = objects(bank)?;
+    let mut layers = Vec::new();
+    for (kind, target) in actions(&objects, event)? {
+        // Stop (0x0103) and Play (0x0403) have the same scope.
+        if kind >> 8 == 0x04 {
+            walk(&objects, target, 0, &mut layers)?;
+        }
+    }
+    ensure!(!layers.is_empty(), "event plays nothing by default");
+    Ok(layers)
+}
+
+/// Every hierarchy object of a modern bank by identity, with its kind and payload.
+fn objects(bank: &[u8]) -> Result<Objects> {
     let mut objects = BTreeMap::new();
     let mut version = 0;
     let mut at = 0;
@@ -167,6 +221,12 @@ pub fn default_layers(bank: &[u8], event: u32) -> Result<Vec<Vec<u32>>> {
         at += 8 + size;
     }
     ensure!(version > 125, "bank version {version} is not a modern bank");
+    Ok(objects)
+}
+
+/// The actions of `event`, each as its type word and target. The high byte of the type is the
+/// action kind and the low byte its scope.
+fn actions(objects: &Objects, event: u32) -> Result<Vec<(u16, u32)>> {
     let (kind, payload) = objects.get(&event).context("event is not in its bank")?;
     ensure!(*kind == EVENT, "event ID names another object");
     let mut cursor = 4;
@@ -187,23 +247,19 @@ pub fn default_layers(bank: &[u8], event: u32) -> Result<Vec<Vec<u32>>> {
         cursor + 4 * count == payload.len(),
         "event action list length"
     );
-    let mut layers = Vec::new();
+    let mut found = Vec::new();
     for index in 0..count {
         let action = word(payload, cursor + 4 * index).context("event action")?;
         let (kind, action) = objects
             .get(&action)
             .context("event action is not in its bank")?;
         ensure!(*kind == ACTION, "event names a non-action");
-        // The high byte is the action kind, the low byte is its scope.
-        // Stop (0x0103) and Play (0x0403) have the same scope.
-        if half(action, 4).context("action type")? >> 8 != 0x04 {
-            continue;
-        }
-        let target = word(action, 6).context("action target")?;
-        walk(&objects, target, 0, &mut layers)?;
+        found.push((
+            half(action, 4).context("action type")?,
+            word(action, 6).context("action target")?,
+        ));
     }
-    ensure!(!layers.is_empty(), "event plays nothing by default");
-    Ok(layers)
+    Ok(found)
 }
 
 fn walk(

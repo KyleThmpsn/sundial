@@ -5,14 +5,13 @@ use parhelion_import::{
     d2_mot::gameplay::perks,
     tiger::{payload::Payload, reader::Reader},
 };
-use sha2::{Digest, Sha256};
 use sundial::package_authoring::{
     runtime::{
-        load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_entity_with_manager,
+        load_runtime_entity_at_pattern_index_with_manager, load_runtime_entity_with_manager,
     },
     sandbox_perk::{action, program::Action},
 };
+use sundial::storage::sha256_hex;
 
 const SWORD_ITEM_HASH: u32 = 0x0222_2CBF;
 const SWORD_BINDING: u32 = 0xCD2B_CEAC;
@@ -21,13 +20,6 @@ const PROFILE_DESCRIPTORS: [usize; 7] = [0x1140, 0x1998, 0x11B8, 0x2AD0, 0x3398,
 const PROFILE_RELATIVE_FIELDS: [usize; 13] = [
     0x20, 0x78, 0x88, 0xB0, 0xC0, 0xE8, 0xF8, 0x110, 0x120, 0x1A8, 0x1C8, 0x1D8, 0x1F8,
 ];
-
-fn digest(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
 
 fn scalar(owner: &[u8], row: usize, program: usize) -> u32 {
     let (code_count, _, code, code_class) = array_at(owner, row + program).unwrap();
@@ -94,7 +86,7 @@ fn stage_sword_profiles(item_hash: u32, profile_descriptors: &[usize], artifact_
         .to_owned();
     assert!(!description.is_empty());
     parhelion_import::d2_mot::icon::export(&mut source, 2_077_819_806, source_index).unwrap();
-    let source_icon = crate::icon_edit::ImportedIcon::from_bytes(
+    let source_icon = crate::icon::edit::ImportedIcon::from_bytes(
         &std::fs::read(source.output.join("item-icon.png")).unwrap(),
     )
     .unwrap();
@@ -114,7 +106,7 @@ fn stage_sword_profiles(item_hash: u32, profile_descriptors: &[usize], artifact_
         .weapon_pattern_index
         .unwrap();
     let source_entity =
-        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern_index).unwrap();
+        load_runtime_entity_at_pattern_index_with_manager(&stock, pattern_index).unwrap();
     if item_hash != SWORD_ITEM_HASH {
         assert_ne!(source_entity.item_hash, item_hash, "shared-pattern fixture");
     }
@@ -289,7 +281,7 @@ fn stage_sword_profiles(item_hash: u32, profile_descriptors: &[usize], artifact_
         output.join("presentation.json"),
         serde_json::to_vec_pretty(
             &serde_json::json!({"name":presentation.name,"description":presentation.description,
-            "icon":presentation.icon,"source_icon_sha256":digest(
+            "icon":presentation.icon,"source_icon_sha256":sha256_hex(
                 &std::fs::read(source.output.join("item-icon.png")).unwrap())}),
         )
         .unwrap(),
@@ -349,7 +341,7 @@ fn stage_sword_profiles(item_hash: u32, profile_descriptors: &[usize], artifact_
     let staged = open_manager(&view.path().join("packages")).unwrap();
     let objective_consumption = native_objectives::verify(&staged, &output);
     let authored_entity =
-        load_weapon_runtime_entity_with_manager(&staged, bundle.plan.weapons[0].item_hash).unwrap();
+        load_runtime_entity_with_manager(&staged, bundle.plan.weapons[0].item_hash).unwrap();
     let authored_binding =
         weapon_component_bindings(&authored_entity.payload, SWORD_BINDING).unwrap()[0];
     assert_ne!(authored_binding.owner_tag, source_binding.owner_tag);
@@ -521,24 +513,24 @@ fn stage_sword_profiles(item_hash: u32, profile_descriptors: &[usize], artifact_
             "source_pattern_index": pattern_index,
             "source_pattern_item": format!("{:08X}", source_entity.item_hash),
             "source_sword_owner": format!("{:08X}", source_binding.owner_tag),
-            "recipe_sha256": digest(encoded.as_bytes()),
+            "recipe_sha256": sha256_hex(encoded.as_bytes()),
             "profile_conflict": {
                 "baseline_artifact": "conflicting-sword-recipe.parhelion.json",
-                "baseline_sha256": digest(conflicting_before.as_bytes()),
+                "baseline_sha256": sha256_hex(conflicting_before.as_bytes()),
                 "error": conflict_error,
             },
             "authored_sword_owner": format!("{:08X}", authored_binding.owner_tag),
-            "stock_owner_sha256": digest(&source_owner),
-            "authored_owner_sha256": digest(&owner),
-            "source_action_sha256": digest(&source_action.0),
-            "source_lunge_owner_sha256": digest(&source_lunge_owner.0),
-            "source_tracking_owner_sha256": digest(&source_tracking_owner.0),
+            "stock_owner_sha256": sha256_hex(&source_owner),
+            "authored_owner_sha256": sha256_hex(&owner),
+            "source_action_sha256": sha256_hex(&source_action.0),
+            "source_lunge_owner_sha256": sha256_hex(&source_lunge_owner.0),
+            "source_tracking_owner_sha256": sha256_hex(&source_tracking_owner.0),
             "stock_lunge_graph": "8162C91A",
             "authored_lunge_graph": format!("{:08X}", authored_lunge_tag.0),
-            "stock_lunge_owner_sha256": digest(&lunge_owner),
-            "authored_lunge_owner_sha256": digest(&authored_lunge_owner),
+            "stock_lunge_owner_sha256": sha256_hex(&lunge_owner),
+            "authored_lunge_owner_sha256": sha256_hex(&authored_lunge_owner),
             "private_action": format!("{:08X}", assignment.runtime_tag),
-            "private_action_sha256": digest(&action_bytes),
+            "private_action_sha256": sha256_hex(&action_bytes),
             "hud_status": hud_status,
             "profile_banks": profile_descriptors.len(),
             "original_profiles": profiles,
@@ -586,8 +578,8 @@ fn verify_active_status(
     let table_tag = TagHash(0x80D5_FFD3);
     let stock_table = stock.read_tag(table_tag).unwrap();
     let table = staged.read_tag(table_tag).unwrap();
-    let stock_rows = crate::hud_icon::assets::table_rows(&stock_table).unwrap();
-    let rows = crate::hud_icon::assets::table_rows(&table).unwrap();
+    let stock_rows = crate::icon::hud::assets::table_rows(&stock_table).unwrap();
+    let rows = crate::icon::hud::assets::table_rows(&table).unwrap();
     assert_eq!(rows.len(), stock_rows.len() + 1);
     for (stock_key, row) in &stock_rows {
         assert_eq!(
@@ -627,7 +619,7 @@ fn verify_active_status(
                 .unwrap();
             textures.push(serde_json::json!({"tag":format!("{:08X}",texture_tag.0),
                 "data_tag":format!("{:08X}",data_tag.0),"width":width,"height":height,
-                "pixels_sha256":digest(&pixels),"image":image}));
+                "pixels_sha256":sha256_hex(&pixels),"image":image}));
         }
     }
 
@@ -645,13 +637,13 @@ fn verify_active_status(
         assert_eq!(name, "Private Sword Profile Key");
         locales.push(
             serde_json::json!({"tag":format!("{:08X}",tag.0),"name":name,
-            "sha256":digest(&locale)}),
+            "sha256":sha256_hex(&locale)}),
         );
     }
     assert_eq!(stock.read_tag(table_tag).unwrap(), stock_table);
     std::fs::write(output.join("private-status-action.bin"), action_bytes).unwrap();
     serde_json::json!({"key":format!("{key:08X}"),"mask":6,"priority":150,
-        "record_offset":record,"table_sha256":digest(&table),
+        "record_offset":record,"table_sha256":sha256_hex(&table),
         "icon_layer":format!("{:08X}",layer_tag.0),"icon_textures":textures,"locales":locales,
         "rendered_in_game":false})
 }

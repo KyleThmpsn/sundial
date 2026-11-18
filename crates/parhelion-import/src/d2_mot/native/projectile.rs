@@ -30,7 +30,7 @@ const SEQUENCE: u32 = 0x80F2E50A;
 
 pub struct Profile<'a> {
     pub namespace: &'a str,
-    pub element: f32,
+    pub damage_type: f32,
     /// Compensation for a native weapon that supplies a lower launch input.
     pub speed_boost: f32,
 }
@@ -307,7 +307,7 @@ pub fn convert(
                     native,
                     &mut assets,
                     profile.namespace,
-                    profile.element,
+                    profile.damage_type,
                     sound,
                 )
                 .context("prepare projectile sequence")?;

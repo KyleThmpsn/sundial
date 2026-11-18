@@ -87,7 +87,7 @@ fn consumables_and_pending_rewards_persist_together_for_the_selected_character()
     let settings = json!({"version":18,"future":17});
     std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
     let dbpath = directory.0.join("data/investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&dbpath, 3);
+    crate::persistence::sunrise_account::tests::create_fixture(&dbpath, 3);
     let db = rusqlite::Connection::open(&dbpath).unwrap();
     db.execute_batch("INSERT INTO characters SELECT 1,soid+1,race,gender,class,level,preview_available,appearance_value,last_orbited_destination,content_bypass,equipped_title,acquired_subclass_mask,next_inventory_serial FROM characters WHERE slot=0;
         ALTER TABLE character_stacks ADD COLUMN future TEXT NOT NULL DEFAULT 'new';
@@ -129,7 +129,7 @@ fn consumables_and_pending_rewards_persist_together_for_the_selected_character()
     let after = workspace.progression_view(0);
     assert!(workspace.apply_progression_view(0, stale).is_err());
     assert_eq!(workspace.progression_view(0), after);
-    crate::persistence::sqlite_account::tests::save_fixture_document(
+    crate::persistence::sunrise_account::tests::save_fixture_document(
         workspace.native_account_mut().unwrap(),
         &directory.0.join("backup.sqlite3"),
     );
@@ -153,7 +153,7 @@ fn direct_inventory_failure_rolls_back_pending_rewards_and_claim_flags() {
     let path = directory.0.join("settings.json");
     let settings = json!({"version":18});
     std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
-    crate::persistence::sqlite_account::tests::create_fixture(
+    crate::persistence::sunrise_account::tests::create_fixture(
         &directory.0.join("data/investment.sqlite3"),
         3,
     );

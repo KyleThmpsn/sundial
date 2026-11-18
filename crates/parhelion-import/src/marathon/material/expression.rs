@@ -121,6 +121,9 @@ pub(super) struct Context<'a> {
     /// Whether [`SIGHT_DISPLAY`] reads live aim visibility. Pixel stages fade the display layers
     /// through it. Vertex stages keep its cached value, so their branches on it still resolve.
     pub live_display: bool,
+    /// A trial distance in metres for `reticle_distance`. The rangefinder adapter evaluates a
+    /// readout expression at several distances with it. Emission leaves it unset.
+    pub distance: Option<f32>,
 }
 
 pub(super) struct Lowered {
@@ -207,6 +210,11 @@ impl Context<'_> {
                 code: vec![0x4d, index],
                 ..Expr::default()
             }
+        } else if let Some(metres) = self
+            .distance
+            .filter(|_| name == rangefinder::RETICLE_DISTANCE)
+        {
+            self.constant(resources::vector_bytes([metres; 4]))?
         } else if let Some(d) = declaration.as_ref().filter(|d| !d.code.is_empty()) {
             let mut at = 0;
             let mut stack = Vec::new();

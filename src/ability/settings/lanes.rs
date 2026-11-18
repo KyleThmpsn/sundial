@@ -29,9 +29,7 @@
 //!   fraction of one charge, clamped to 0 through 1. The survey found them in the 25 classes of
 //!   [`ENERGY_CONTROLLERS`].
 use super::{BYTECODE_ROW, CONSTANT_ROW, ELEMENT, Kind, Setting, TRACKING, through};
-use crate::runtime::{
-    WeaponRuntimeFieldSource, WeaponRuntimeRoot, WeaponRuntimeValue, WeaponRuntimeValueKind,
-};
+use crate::runtime::{RuntimeFieldSource, RuntimeRoot, RuntimeValue, RuntimeValueKind};
 
 const GLIDE_PHASE: u32 = 0x8080_424E;
 const PREPARATION: u32 = 0x8080_44BF;
@@ -104,15 +102,15 @@ pub struct Lane {
 
 impl Lane {
     /// The lane's bytes in `value`, an opaque field's bytes.
-    pub(super) fn bytes(self, value: &WeaponRuntimeValue) -> Option<&[u8]> {
-        let WeaponRuntimeValue::Bytes(bytes) = value else {
+    pub(super) fn bytes(self, value: &RuntimeValue) -> Option<&[u8]> {
+        let RuntimeValue::Bytes(bytes) = value else {
             return None;
         };
         bytes.get(self.at..self.at + self.codec.width())
     }
 
     /// The number the lane holds in `value`.
-    pub(super) fn read(self, value: &WeaponRuntimeValue) -> Option<f32> {
+    pub(super) fn read(self, value: &RuntimeValue) -> Option<f32> {
         let bytes = self.bytes(value)?;
         Some(match self.codec {
             Codec::Float => f32::from_le_bytes(bytes.try_into().ok()?),
@@ -136,13 +134,9 @@ impl Lane {
 
     /// `value` with the lane's bytes replaced by `bytes`. `None` when `value` is not an opaque
     /// field that holds the lane.
-    pub(super) fn with(
-        self,
-        value: &WeaponRuntimeValue,
-        bytes: &[u8],
-    ) -> Option<WeaponRuntimeValue> {
+    pub(super) fn with(self, value: &RuntimeValue, bytes: &[u8]) -> Option<RuntimeValue> {
         let mut next = value.clone();
-        let WeaponRuntimeValue::Bytes(all) = &mut next else {
+        let RuntimeValue::Bytes(all) = &mut next else {
             return None;
         };
         all.get_mut(self.at..self.at + bytes.len())?
@@ -266,7 +260,7 @@ const LANES: [(&[u32], u32, Kind, Codec); 32] = [
 /// trigger to a receiver, without which its range and timers do nothing.
 pub(super) fn find(
     owner: u32,
-    root: &WeaponRuntimeRoot,
+    root: &RuntimeRoot,
     (timed, proximity): (bool, bool),
 ) -> Vec<Setting> {
     let mut found = Vec::new();
@@ -277,9 +271,9 @@ pub(super) fn find(
         }
         let end = offset + codec.width() as u32;
         let mut covering = root.fields.iter().filter(|field| {
-            field.source != WeaponRuntimeFieldSource::NativeDeclaration
+            field.source != RuntimeFieldSource::NativeDeclaration
                 && field.locator.type_handle.get() == class
-                && matches!(field.value, WeaponRuntimeValue::Bytes(_))
+                && matches!(field.value, RuntimeValue::Bytes(_))
                 && field.locator.value_offset <= offset
                 && field
                     .locator
@@ -331,10 +325,10 @@ pub(super) fn separate(mut settings: Vec<Setting>) -> Vec<Setting> {
         let codec = match setting.lane {
             Some(lane) => lane.codec,
             None if matches!(setting.kind, Kind::Native(_)) => match setting.field.kind {
-                WeaponRuntimeValueKind::Float32 => Codec::Float,
-                WeaponRuntimeValueKind::SignedInteger { bits: 32 } => Codec::Integer,
-                WeaponRuntimeValueKind::SignedInteger { bits: 8 } => Codec::Byte,
-                WeaponRuntimeValueKind::UnsignedInteger { bits: 8 } => Codec::UnsignedByte,
+                RuntimeValueKind::Float32 => Codec::Float,
+                RuntimeValueKind::SignedInteger { bits: 32 } => Codec::Integer,
+                RuntimeValueKind::SignedInteger { bits: 8 } => Codec::Byte,
+                RuntimeValueKind::UnsignedInteger { bits: 8 } => Codec::UnsignedByte,
                 _ => continue,
             },
             None => continue,
@@ -345,7 +339,7 @@ pub(super) fn separate(mut settings: Vec<Setting>) -> Vec<Setting> {
             .iter()
             .filter(|candidate| {
                 candidate.owner_tag == setting.owner_tag
-                    && matches!(candidate.field.value, WeaponRuntimeValue::Bytes(_))
+                    && matches!(candidate.field.value, RuntimeValue::Bytes(_))
                     && candidate.field.owner_offset <= start
                     && candidate
                         .field
@@ -406,7 +400,7 @@ pub(super) fn separate(mut settings: Vec<Setting>) -> Vec<Setting> {
 
 /// Whether another reader takes over a lane's role in this graph, or nothing reads it, so editing
 /// it would do nothing.
-fn withheld(root: &WeaponRuntimeRoot, kind: Kind, (timed, proximity): (bool, bool)) -> bool {
+fn withheld(root: &RuntimeRoot, kind: Kind, (timed, proximity): (bool, bool)) -> bool {
     match kind {
         Kind::MinimumFinishTime | Kind::MaximumFinishTime => timed,
         Kind::TurnRate => turn_program(root),
@@ -419,7 +413,7 @@ fn withheld(root: &WeaponRuntimeRoot, kind: Kind, (timed, proximity): (bool, boo
 
 /// Whether tracking holds the optional turn-rate program at +0x160: any bytecode or constant row
 /// of a program in that block.
-fn turn_program(root: &WeaponRuntimeRoot) -> bool {
+fn turn_program(root: &RuntimeRoot) -> bool {
     root.fields.iter().any(|field| {
         through(field, TURN_PROGRAM, TURN_PROGRAM_OFFSET)
             && field.locator.path.iter().any(|step| {

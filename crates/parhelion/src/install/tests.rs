@@ -1,5 +1,5 @@
 use super::*;
-use crate::format::build_test_package_with_physical_payload;
+use crate::package::format::build_test_package_with_physical_payload;
 use serde_json::json;
 use tempfile::TempDir;
 

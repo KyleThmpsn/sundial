@@ -65,6 +65,33 @@ pub(crate) fn read_native(native: &Path, out: &Path) -> Result<Native> {
     })
 }
 
+/// Does the item's translation block list a default, custom or locked dye? Conversion reads
+/// the weapon's three dye banks from those lists.
+fn dyed(item: &crate::tiger::payload::Payload) -> Result<bool> {
+    if item.u64(0x70)? == 0 {
+        return Ok(false);
+    }
+    let block = item.pointer(0x70)?;
+    for list in [0x28, 0x38, 0x48] {
+        if item.u64(block + list)? != 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Does the weapon keep its perk sockets? A record with no socket block is a stub. A record
+/// that closes the two sockets after its frame, a weapon's barrel or sight and its magazine,
+/// offers no perks to convert. Each such record but a few stubs stands beside a record of the
+/// same name with those sockets open, which is the weapon to import.
+fn perks_open(item: &crate::tiger::payload::Payload) -> Result<bool> {
+    if item.u64(0x60)? == 0 {
+        return Ok(false);
+    }
+    let rows = item.array(item.pointer(0x60)?, 0x60, Some(0x808077C3))?;
+    Ok(rows.len() < 3 || item.u16(rows[1])? != u16::MAX || item.u16(rows[2])? != u16::MAX)
+}
+
 pub(crate) fn match_native(
     weapons: &mut [super::service::Weapon],
     native_hashes: &BTreeSet<u32>,
@@ -147,13 +174,17 @@ pub fn weapons_with_progress(
             let name = labels.label(&mut r, &strings, 0x80)?;
             if !name.is_empty() {
                 // Display-only definitions cannot equip. Do not infer this from duplicate names.
-                // Shaders and ornaments are plugs, which never equip.
+                // Shaders and ornaments are plugs, which never equip. A weapon record that names
+                // no dyes has no colors to convert, and its dyed twin is the weapon to import.
+                // The same holds for a weapon record with its perk sockets closed.
                 let dummy = !matches!(
                     family,
                     super::service::Family::Shader
                         | super::service::Family::Ornament
                         | super::service::Family::WeaponOrnament
-                ) && item.u64(0x18)? == 0;
+                ) && (item.u64(0x18)? == 0
+                    || (family == super::service::Family::Weapon
+                        && !(dyed(&item)? && perks_open(&item)?)));
                 let plug_category = if matches!(
                     family,
                     super::service::Family::Ornament | super::service::Family::WeaponOrnament

@@ -9,7 +9,7 @@ pub(in crate::item) use share::CompiledRuntimes;
 #[derive(Default)]
 pub(in crate::item) struct PrivateRuntimeEdits<'a> {
     pub program: Option<&'a sundial::package_authoring::sandbox_perk::program::Program>,
-    pub values: &'a [WeaponRuntimeValueOverride],
+    pub values: &'a [RuntimeValueOverride],
     pub action_float_values: &'a [WeaponSandboxPerkActionFloatOverride],
     pub projectiles: &'a [sundial::package_authoring::sandbox_perk::entity::Selection],
     pub activation: Option<sundial::package_authoring::sandbox_perk::activation::PerkActivation>,
@@ -171,7 +171,7 @@ pub(in crate::item) fn clone_private_sandbox_perk_runtime(
         )));
     }
 
-    let mut values_by_graph = vec![Vec::<WeaponRuntimeValueOverride>::new(); graphs.len()];
+    let mut values_by_graph = vec![Vec::<RuntimeValueOverride>::new(); graphs.len()];
     for (value_index, value) in values.iter().enumerate() {
         let matching_graphs = graphs
             .iter()
@@ -180,9 +180,7 @@ pub(in crate::item) fn clone_private_sandbox_perk_runtime(
                 value
                     .locator
                     .for_graph(graph.tag.0.into())
-                    .and_then(|locator| {
-                        resolve_weapon_runtime_field(manager, &graph.payload, &locator)
-                    })
+                    .and_then(|locator| resolve_runtime_field(manager, &graph.payload, &locator))
                     .is_ok()
                     .then_some(index)
             })
@@ -199,7 +197,7 @@ pub(in crate::item) fn clone_private_sandbox_perk_runtime(
                 )
             }));
         };
-        values_by_graph[*graph_index].push(WeaponRuntimeValueOverride {
+        values_by_graph[*graph_index].push(RuntimeValueOverride {
             locator: value
                 .locator
                 .for_graph((graphs[*graph_index].tag.0).into())
@@ -339,7 +337,7 @@ pub(super) fn append_private_asset_graph(
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<TagHash> {
-    let checkpoint = crate::appended_tags::checkpoint();
+    let checkpoint = crate::package::appended_tags::checkpoint();
     let first = tags.len();
     let result = asset_graph(
         manager,
@@ -391,7 +389,7 @@ fn asset_graph(
                 "{label} append {append_index} has a stale owner size or an aliased owner"
             )));
         }
-        appends.push(WeaponRuntimeResourceAppend {
+        appends.push(RuntimeResourceAppend {
             binding_hash: append.binding_hash,
             resource_index: append.resource_index,
             bytes: append.bytes.clone(),
@@ -399,6 +397,8 @@ fn asset_graph(
             arrays: Vec::new(),
             pointers: Vec::new(),
             references: Vec::new(),
+            retained_pointers: Vec::new(),
+            retained_bytes: Vec::new(),
         });
     }
     let mut patches =
@@ -458,7 +458,7 @@ fn checked_asset_patches(
     edit_patches: &[sundial::package_authoring::sandbox_perk::program::NativeAssetResourcePatch],
     appended_owners: &BTreeSet<u32>,
     label: &str,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let mut patches = Vec::with_capacity(edit_patches.len());
     for (patch_index, patch) in edit_patches.iter().enumerate() {
         let bindings = weapon_component_bindings(graph, patch.binding_hash).map_err(invalid)?;
@@ -495,7 +495,7 @@ fn checked_asset_patches(
                 "{label} patch {patch_index} has stale stock owner bytes"
             )));
         }
-        patches.push(WeaponRuntimeResourcePatch {
+        patches.push(RuntimeResourcePatch {
             binding_hash: patch.binding_hash,
             resource_index: patch.resource_index,
             offset: patch.offset,

@@ -142,7 +142,13 @@ impl PackageAuthoringApp {
             let menu = ui.menu_button(
                 crate::app::style::icon(ui, egui_phosphor::regular::CARET_DOWN),
                 |ui| {
+                    let dawn =
+                        self.presentation_editor.branding() == crate::branding::Branding::Dawn;
                     for kind in ItemKind::ALL {
+                        // Dawn has no artifact slot, and its builds leave artifacts out.
+                        if dawn && kind == ItemKind::Artifact {
+                            continue;
+                        }
                         // Weapons and armor, then the rest of the loadout.
                         if kind == ItemKind::Sparrow {
                             ui.separator();
@@ -193,6 +199,8 @@ impl PackageAuthoringApp {
                 self.start_account_resync();
                 ui.close();
             }
+            #[cfg(feature = "dawn")]
+            self.draw_dawn_menu(ui);
         });
     }
 

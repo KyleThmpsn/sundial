@@ -5,7 +5,6 @@
 use super::*;
 use crate::subclass::{EntryEdits, ImportedAbility, Place, SubclassAbilities, layout};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use sundial::package_authoring::{
     ability_definition, ability_reference,
@@ -17,12 +16,9 @@ use sundial::package_authoring::{
         },
     },
 };
+use sundial::storage::sha256_hex;
 
 mod hud;
-
-fn sha(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
 
 #[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES, SUNDIAL_TEST_ARTIFACTS and SUNDIAL_TEST_REVISION"]
@@ -36,7 +32,7 @@ fn persisted_imported_abilities_equip_private_roots_and_retarget_child_condition
     let (view, source) = stock_view(&packages, ".parhelion-imported-ability-", Oodle::Required);
     fs::write(view.path().join("destiny2.exe"), []).unwrap();
     let catalog = crate::test_support::catalog(view.path()).unwrap();
-    let subclasses = catalog.subclasses(crate::package_profile::is_stock_item_definition);
+    let subclasses = catalog.subclasses(crate::package::profile::is_stock_item_definition);
     let base = subclasses
         .iter()
         .find(|base| base.name == "Stormcaller")
@@ -291,8 +287,8 @@ fn persisted_imported_abilities_equip_private_roots_and_retarget_child_condition
         fs::write(output.join(format!("{child:08X}.bin")), &child_bytes).unwrap();
         receipt.push(
             json!({"item":subclass.hash,"row":row,"identity":pairs[usize::from(row)].identity,
-            "pattern":pairs[usize::from(row)].pattern,"root":root,"root_sha256":sha(&actual),
-            "child_action":child,"child_sha256":sha(&child_bytes),"ability_references":references}),
+            "pattern":pairs[usize::from(row)].pattern,"root":root,"root_sha256":sha256_hex(&actual),
+            "child_action":child,"child_sha256":sha256_hex(&child_bytes),"ability_references":references}),
         );
     }
     for (&tag, bytes) in &originals {
@@ -319,7 +315,7 @@ fn persisted_imported_abilities_equip_private_roots_and_retarget_child_condition
     fs::write(output.join("readback.json"), serde_json::to_vec_pretty(&json!({
         "revision":revision,"native_build":"86657.20.08.23.1800.d2_rc","source_packages":packages,
         "manifest":build.manifest_path,"fixture_root":source_root,"donor_root":donor_root,"readback":receipt,
-        "stock_unchanged":true,"changed_asset_rejected":true,"executable_sha256":sha(&fs::read(std::env::current_exe().unwrap()).unwrap()),
+        "stock_unchanged":true,"changed_asset_rejected":true,"executable_sha256":sha256_hex(&fs::read(std::env::current_exe().unwrap()).unwrap()),
         "installed":false,"gameplay_verified":false
     })).unwrap()).unwrap();
 }

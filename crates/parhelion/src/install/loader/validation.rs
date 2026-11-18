@@ -275,12 +275,20 @@ pub(super) fn check_other_mods(
 /// claims them.
 pub(crate) fn package_window(
     target: &Path,
-) -> Result<crate::package_profile::Window, InstallError> {
+) -> Result<crate::package::profile::Window, InstallError> {
     let install = target
         .parent()
         .ok_or_else(|| InstallError::validation("Missing game root"))?;
+    // A stock view of a Dawn install that composes packages names the ids its other content
+    // holds. Dawn refuses a package folder where two families share an id.
+    #[cfg(feature = "dawn")]
+    if let Some(taken) = crate::parhelion_dawn::install::taken(target) {
+        return crate::package::profile::Window::avoiding(&taken).ok_or_else(|| {
+            InstallError::validation("The Dawn install's content holds every authored package id")
+        });
+    }
     if !uses_mod_loader(target) {
-        return Ok(crate::package_profile::Window::FULL);
+        return Ok(crate::package::profile::Window::FULL);
     }
     let mut taken = installed_generations(target)?
         .into_iter()
@@ -294,11 +302,11 @@ pub(crate) fn package_window(
     for other in other_mods(install)? {
         taken.extend(other.packages.iter().filter_map(|path| package_id(path)));
     }
-    crate::package_profile::Window::avoiding(&taken).ok_or_else(|| {
+    crate::package::profile::Window::avoiding(&taken).ok_or_else(|| {
         InstallError::validation(format!(
             "Installed packages and other mods hold every package id from {:04X} to {:04X}",
-            crate::package_profile::MIN_AUTHORED_STANDALONE_PACKAGE_ID,
-            crate::package_profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID,
+            crate::package::profile::MIN_AUTHORED_STANDALONE_PACKAGE_ID,
+            crate::package::profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID,
         ))
     })
 }
@@ -339,6 +347,49 @@ pub(crate) fn other_mods_change(target: &Path, tag: u32) -> Result<bool, Install
         }
     }
     Ok(false)
+}
+
+/// Each other installed mod's copy of the entry `tag`, where one of its patches of the entry's
+/// package holds a different entry record than the stock package. None on a runtime without the
+/// mod loader.
+pub(crate) fn other_mods_entries(target: &Path, tag: u32) -> Result<Vec<Vec<u8>>, InstallError> {
+    use sundial::package_authoring::mod_content::plaintext;
+    let install = target
+        .parent()
+        .ok_or_else(|| InstallError::validation("Missing game root"))?;
+    if !uses_mod_loader(target) {
+        return Ok(Vec::new());
+    }
+    let tag = tiger_pkg::TagHash(tag);
+    let Some(stock) = canonical_package(tag.pkg_id()) else {
+        return Ok(Vec::new());
+    };
+    let stock_path = target.join(stock.stock_file_name(stock.stock_patch_id));
+    let stock_records = plaintext::records(&stock_path).map_err(|reason| {
+        InstallError::validation(format!("{} {}", stock_path.display(), reason.text()))
+    })?;
+    let index = usize::from(tag.entry_index());
+    let mut copies = Vec::new();
+    for other in other_mods(install)? {
+        for patch in other
+            .patches
+            .iter()
+            .filter(|path| package_id(path) == Some(tag.pkg_id()))
+        {
+            // A patch Sunrise can't read is the loader's to refuse, and changes nothing here.
+            let Ok(records) = plaintext::records(patch) else {
+                continue;
+            };
+            if records.rows.get(index) == stock_records.rows.get(index) {
+                continue;
+            }
+            if let Ok(mut entries) = plaintext::read_entries(patch, &[u32::from(tag.entry_index())])
+            {
+                copies.append(&mut entries);
+            }
+        }
+    }
+    Ok(copies)
 }
 
 /// Whether the installation's runtime loads Sunrise mods. Installation reads the runtime again
@@ -495,7 +546,10 @@ pub(super) fn snapshot_folder(folder: &Path) -> Result<Folder, InstallError> {
             continue;
         } else if matches!(
             name.as_str(),
-            mod_content::MANIFEST | mod_content::RECEIPT | mod_content::map_diagnostics::FILE_NAME
+            mod_content::MANIFEST
+                | mod_content::RECEIPT
+                | mod_content::map_diagnostics::FILE_NAME
+                | mod_content::activity_pack::FILE_NAME
         ) && entry.file_type().map_err(failure)?.is_file()
         {
             found.push((name, entry.path()));

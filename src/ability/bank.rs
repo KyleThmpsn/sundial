@@ -77,8 +77,9 @@ pub use names::{
 };
 pub(crate) use read::has_property_rows;
 pub use read::{
-    bank_owner, block_count, handler_slot, instance_shift, membership_keys, parameter_rows,
-    parameters, property_rows, retarget_references, row_modifiers, validate, validate_native_owner,
+    bank_owner, block_count, handler_slot, instance_offset, instance_shift, membership_keys,
+    parameter_rows, parameters, property_rows, retarget_references, row_modifiers, validate,
+    validate_native_owner,
 };
 pub use registry::{bank_name, bank_names, parameter_abilities, register_bank_names};
 

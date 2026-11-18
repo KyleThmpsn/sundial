@@ -1,5 +1,6 @@
 //! Bind-relative body motion with native proportions and explicit limb guides.
 use super::{Options, source::Source};
+use crate::math::cross;
 use crate::{
     halo_reach::rig::normalize,
     tiger::{
@@ -23,14 +24,6 @@ fn rotation(mut pose: Pose) -> Pose {
 
 fn difference(a: Pose, b: Pose) -> [f32; 3] {
     std::array::from_fn(|i| a.0[i + 4] - b.0[i + 4])
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 pub(super) struct Calibration {

@@ -181,7 +181,7 @@ impl Library {
             if removed.contains(&key) {
                 continue;
             }
-            let digest = bundled_defaults::digest(encoded.as_bytes());
+            let digest = sundial::storage::sha256_hex(encoded.as_bytes());
             let path = self.root.join(format!("{}.perk.json", recipe.id));
             match sundial::storage::create_file(&path, encoded.as_bytes()) {
                 Ok(_) => {

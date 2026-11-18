@@ -64,17 +64,17 @@ fn package_profiles_distinguish_supported_topologies() {
     }
     assert_eq!(
         item_damage_profile(
-            &item_with_damage_perks(&VARIABLE_ELEMENT_PERK_INDICES),
+            &item_with_damage_perks(&VARIABLE_DAMAGE_PERK_INDICES),
             ENERGY_BUCKET
         ),
         ItemDamageProfile::Variable
     );
-    // Borealis ships the other Arc effect. Both compile to one action, so reading it as
-    // a fixed Void weapon was wrong: the legacy Void marker it also carries is only the
-    // unwritten default the effects select between.
+    // Borealis ships the other Arc effect. Both compile to one action, so it is variable and
+    // not a fixed Void weapon: the legacy Void marker it also carries is only the unwritten
+    // default the effects select between.
     assert_eq!(
         item_damage_profile(
-            &item_with_damage_perks(&BOREALIS_VARIABLE_ELEMENT_PERK_INDICES),
+            &item_with_damage_perks(&BOREALIS_VARIABLE_DAMAGE_PERK_INDICES),
             ENERGY_BUCKET
         ),
         ItemDamageProfile::Variable
@@ -88,7 +88,7 @@ fn package_profiles_distinguish_supported_topologies() {
 }
 
 #[test]
-fn fixed_element_can_share_the_array_with_other_sandbox_perks() {
+fn fixed_damage_type_can_share_the_array_with_other_sandbox_perks() {
     assert_eq!(
         item_damage_profile(
             &item_with_damage_perks(&[LEGACY_SOLAR_DAMAGE_PERK_INDEX, 1048]),

@@ -7,10 +7,10 @@ use super::*;
     reason = "Byte-level integration audit checks every native variant without sharing production validation"
 )]
 fn real_native_ammo_clone_preserves_every_other_field() {
-    use sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager;
+    use sundial::package_authoring::runtime::load_runtime_entity_with_manager;
     let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
-    let source = load_weapon_runtime_entity_with_manager(&manager, 0x4CE3_CE93).unwrap();
+    let source = load_runtime_entity_with_manager(&manager, 0x4CE3_CE93).unwrap();
     let binding = weapon_component_bindings(&source.payload, 0x5F0D_D954).unwrap()[0];
     assert_eq!(binding.owner_tag, 0x8152_AEA5);
     assert_eq!(binding.resource_offset, 0x80);
@@ -84,7 +84,7 @@ fn real_native_ammo_clone_preserves_every_other_field() {
         stock
     );
     if std::env::var_os("PARHELION_VERIFY_INSTALLED_NATIVE_AMMO").is_some() {
-        let installed = load_weapon_runtime_entity_with_manager(&manager, 0x72F7_F442).unwrap();
+        let installed = load_runtime_entity_with_manager(&manager, 0x72F7_F442).unwrap();
         let installed_binding =
             weapon_component_bindings(&installed.payload, 0x5F0D_D954).unwrap()[0];
         assert_ne!(installed_binding.owner_tag, binding.owner_tag);

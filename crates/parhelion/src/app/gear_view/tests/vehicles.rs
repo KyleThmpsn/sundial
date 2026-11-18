@@ -525,10 +525,8 @@ fn sparrow_controls_stage_private_speed_and_complete_vehicle_graphs() {
         );
         let original = source.read_tag(TagHash(*donor)).unwrap();
         let graph =
-            load_weapon_runtime_graph_for_entity(&manager, hash, global, entity_tag, &entity)
-                .unwrap();
-        let old_graph =
-            load_weapon_runtime_graph_for_entity(&source, 0, 0, *donor, &original).unwrap();
+            load_runtime_graph_for_entity(&manager, hash, global, entity_tag, &entity).unwrap();
+        let old_graph = load_runtime_graph_for_entity(&source, 0, 0, *donor, &original).unwrap();
         let tuned = recipe.name.starts_with("Tuned ");
         let edited_owners = old_graph
             .resources
@@ -729,14 +727,9 @@ fn sparrow_controls_stage_private_speed_and_complete_vehicle_graphs() {
                     }
                     if *donor == 0x80C0D7A6 {
                         let projectile = manager.read_tag(TagHash(0x80BFAB5F)).unwrap();
-                        let loaded = load_weapon_runtime_graph_for_entity(
-                            &manager,
-                            0,
-                            0,
-                            0x80BFAB5F,
-                            &projectile,
-                        )
-                        .unwrap();
+                        let loaded =
+                            load_runtime_graph_for_entity(&manager, 0, 0, 0x80BFAB5F, &projectile)
+                                .unwrap();
                         for resource in loaded.resources {
                             assert!(dependencies.contains(&resource.owner_tag));
                         }

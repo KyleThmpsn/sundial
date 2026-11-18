@@ -3,7 +3,7 @@ use super::*;
 
 /// What a timer's length reads with `values`: its seconds, or [`UNLIMITED`] when it never ends.
 pub(super) fn length_reading(
-    values: &[WeaponRuntimeValueOverride],
+    values: &[RuntimeValueOverride],
     length: &EffectLength,
 ) -> Option<f32> {
     let seconds = own(values, &length.field)
@@ -18,23 +18,23 @@ pub(super) fn length_reading(
     })
 }
 
-pub(super) fn float(value: &WeaponRuntimeValue) -> Option<f32> {
+pub(super) fn float(value: &RuntimeValue) -> Option<f32> {
     match value {
-        WeaponRuntimeValue::Float32Bits(bits) => Some(f32::from_bits(*bits)),
+        RuntimeValue::Float32Bits(bits) => Some(f32::from_bits(*bits)),
         _ => None,
     }
 }
 
-pub(super) fn integer(value: &WeaponRuntimeValue) -> Option<i64> {
+pub(super) fn integer(value: &RuntimeValue) -> Option<i64> {
     match value {
-        WeaponRuntimeValue::Signed(number) => Some(*number),
-        WeaponRuntimeValue::Unsigned(number) => i64::try_from(*number).ok(),
+        RuntimeValue::Signed(number) => Some(*number),
+        RuntimeValue::Unsigned(number) => i64::try_from(*number).ok(),
         _ => None,
     }
 }
 
 /// A field whose name came from the game or a traced reader, not a placeholder.
-pub(super) fn named(field: &WeaponRuntimeField) -> bool {
+pub(super) fn named(field: &RuntimeField) -> bool {
     !["Unnamed", "Member 0x", "Unreflected", "Value 0x", "M "]
         .iter()
         .any(|prefix| field.name.starts_with(prefix))

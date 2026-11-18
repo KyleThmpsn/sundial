@@ -1,6 +1,7 @@
 //! Rise of Iron source intake. D1 layouts never pass through the D2 reader.
 pub mod ability;
 mod armor;
+mod artifact;
 mod audio;
 mod cloth;
 mod codec;
@@ -26,7 +27,14 @@ mod talent;
 pub mod texture;
 mod weapon;
 pub use ability::Choice as AbilityChoice;
+
+/// The namespace an import of source item `item` takes, which names its authored identity.
+#[must_use]
+pub fn namespace(name: &str, item: u32) -> String {
+    crate::graph::import_namespace("d1_roi", name, item)
+}
 pub use armor::Armor;
+pub use artifact::Artifact;
 pub use icon::Icon;
 pub use native::NativeOptions;
 pub use weapon::Weapon;
@@ -112,6 +120,7 @@ pub struct Source {
     /// Every equippable weapon, read once. An import reads the list for its export and again
     /// for its conversion, and each read visits every item definition.
     weapons: std::sync::OnceLock<Vec<Weapon>>,
+    artifacts: std::sync::OnceLock<Vec<Artifact>>,
     /// Talent names that only exotic weapons' grids show, with the weapons showing each, read once.
     exotic_talents: std::sync::OnceLock<BTreeMap<String, std::collections::BTreeSet<String>>>,
     /// Talent names that only exotic armor grids show, with the armor showing each, read once.
@@ -221,6 +230,7 @@ impl Source {
             blocks: Mutex::new(BTreeMap::new()),
             human_skeleton: Mutex::new(None),
             weapons: std::sync::OnceLock::new(),
+            artifacts: std::sync::OnceLock::new(),
             exotic_talents: std::sync::OnceLock::new(),
             exotic_armor_talents: std::sync::OnceLock::new(),
         };

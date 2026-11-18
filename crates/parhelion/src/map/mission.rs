@@ -103,7 +103,7 @@ pub(super) fn prepare(
     else {
         return Ok(());
     };
-    if !crate::package_profile::host().is_standalone() || !recipe.name.starts_with("mission_") {
+    if !crate::package::profile::host().is_standalone() || !recipe.name.starts_with("mission_") {
         return Err(crate::error::invalid(
             "Encounter controllers require a managed mission activity",
         ));

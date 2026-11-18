@@ -329,8 +329,8 @@ fn native_records(clip: &Payload) -> Result<Option<Records>> {
 }
 
 /// The cue records of a native clip: value-2 named events, resource references and sequence
-/// selectors, the kinds a source clip's omitted events have. Other named values request actions
-/// and stay with their own controller.
+/// selectors, the kinds a source clip's omitted events have. Other named values are not borrowed
+/// because their target and lifecycle semantics have not been qualified.
 pub(super) fn cues(clip: &Payload) -> Result<Vec<usize>> {
     let Some((_, records)) = native_records(clip)? else {
         return Ok(Vec::new());
@@ -430,6 +430,37 @@ pub(super) fn carry_cues(
         "Carried cues did not relocate cleanly"
     );
     Ok(json!(report))
+}
+
+/// Append value-2 named foley cues, as (frame, name), to a clip without events. The names
+/// resolve through the equipped weapon's own event table, so they must be names the carrier's
+/// clips already cue.
+pub(super) fn name_cues(clip: &mut Payload, cues: &[(u32, u32)]) -> Result<Value> {
+    ensure!(
+        clip.u64(0x160)? == 0 && clip.u64(0x168)? == 0,
+        "Translated clip already carries events"
+    );
+    let frames = u32::from(clip.u16(0x13C)?);
+    let events = cues
+        .iter()
+        .map(|&(frame, name)| Event {
+            class: 0x8080AE32,
+            kind: (5 << 16) | frame,
+            value: 2,
+            name,
+        })
+        .collect::<Vec<_>>();
+    write_events(clip, &events.iter().collect::<Vec<_>>(), frames)?;
+    let (_, written) = native_records(clip)?.context("Named cues are unreadable")?;
+    ensure!(
+        written.len() == cues.len() && written.iter().all(|record| record.1 == 0x80809031),
+        "Named cues did not write cleanly"
+    );
+    Ok(json!(
+        cues.iter()
+            .map(|&(frame, name)| json!({"class":"80809031","type":5,"frame":frame,"name":format!("{name:08X}")}))
+            .collect::<Vec<_>>()
+    ))
 }
 
 /// Named type-5 events a native clip contains.

@@ -19,6 +19,9 @@ struct PrivatePlugSource {
     perk_indices: Vec<u16>,
     classification: Option<crate::plug_classification::PlugClassification>,
     classification_perk_index: Option<usize>,
+    /// Whether the plug replaces its effects with programs of its own on a layout that shows
+    /// no perk row and that no perk socket admits: a masterwork tier, a catalyst or a mod.
+    outside_perk_sockets: bool,
 }
 
 /// The first visible finished perk among `indices`, and whether every visible one shares its
@@ -201,6 +204,7 @@ fn read_private_plug_source(
         .classification_donor_hash
         .map(|hash| read_plug_classification(sources, hash, &mut classification_perk_index))
         .transpose()?;
+    let mut outside_perk_sockets = false;
     if variant.replace_effects && !variant.sandbox_perks.is_empty() {
         // Independent programs can borrow finished rows from a different kind of perk.
         // The visible tooltip belongs to the plug's classification, not that runtime carrier.
@@ -224,6 +228,7 @@ fn read_private_plug_source(
             // borrow the ordinary trait's neutral grouping without changing the plug itself. An
             // intrinsic with no visible row keeps none, since that grouping would present a frame
             // as a trait.
+            outside_perk_sockets = !sources.perk_plug_categories.contains(&layout.category);
             if layout.category != 0x67FB_A961 {
                 read_plug_classification(
                     sources,
@@ -249,6 +254,7 @@ fn read_private_plug_source(
         perk_indices,
         classification,
         classification_perk_index,
+        outside_perk_sockets,
     })
 }
 
@@ -430,7 +436,7 @@ pub(super) fn plan(
                     // A mod's perk is the item itself, so it takes the item's own place,
                     // tags and text, and never shares a plug with a socket's perk.
                     let identity = donor.weapon.identity;
-                    let host = crate::package_profile::host();
+                    let host = crate::package::profile::host();
                     let tag = |offset: usize| -> AuthoringResult<TagHash> {
                         AppendedTagAllocator::records(host.first).assigned_tag(
                             weapon_ordinal * 2 + offset,
@@ -497,7 +503,7 @@ pub(super) fn plan(
                             .ok_or_else(|| invalid("Private socket-plug tag index overflowed"))?,
                     )
                     .ok_or_else(|| invalid("Private socket-plug tag index overflowed"))?;
-                let host = crate::package_profile::host();
+                let host = crate::package::profile::host();
                 let allocator = AppendedTagAllocator::records(host.first);
                 let authored_definition_tag =
                     allocator.assigned_tag(tag_ordinal, "Private socket plug", "definition")?;
@@ -574,6 +580,11 @@ fn resolve_plug(
     occupied: &mut Occupied,
 ) -> AuthoringResult<ResolvedCustomPlug> {
     let roles = &placement.roles;
+    // A socket plug outside the perk sockets is presented as the stock plugs of those sockets
+    // are: every perk hidden, so the item tooltip lists none, and its artwork without its
+    // template's plate and overlays, which describe the template item. A mod's own item keeps
+    // its row and its template's layers.
+    let standalone = source.outside_perk_sockets && placement.owner.is_none();
     let authored_item_hash = match placement.own {
         Some((item_hash, _, _)) => item_hash,
         None => allocate_identity_hash(
@@ -626,7 +637,7 @@ fn resolve_plug(
         .enumerate()
         .map(|(position, perk)| {
             let hidden = if variant.replace_effects {
-                position > 0
+                standalone || position > 0
             } else {
                 variant
                     .additional_sandbox_perks
@@ -772,6 +783,7 @@ fn resolve_plug(
         authored_name,
         classification: source.classification,
         classification_perk_index: source.classification_perk_index,
+        standalone,
         classification_item_index: variant
             .classification_donor_hash
             .map(|hash| sources.stock_item_rows_by_hash[&hash][0]),
@@ -818,6 +830,26 @@ pub(super) struct CustomPlugPayloads {
     pub strings: Vec<NewTagSpec>,
 }
 
+/// Points the plug's name and description at its authored strings, where it has them.
+fn write_authored_text(
+    custom_plug: &ResolvedCustomPlug,
+    strings: &mut [u8],
+) -> AuthoringResult<()> {
+    let table = crate::package::profile::localization_table() as u32;
+    if let Some(name_hash) = custom_plug.authored_name_hash {
+        write_localized_reference(strings, ITEM_NAME_REFERENCE_OFFSET, table, name_hash)?;
+    }
+    if let Some(description_hash) = custom_plug.authored_description_hash {
+        write_localized_reference(
+            strings,
+            ITEM_DESCRIPTION_REFERENCE_OFFSET,
+            table,
+            description_hash,
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn author_payloads(
     manager: &PackageManager,
     custom_plugs: &[ResolvedCustomPlug],
@@ -851,6 +883,9 @@ pub(super) fn author_payloads(
                 .as_deref()
                 .unwrap_or("Unnamed Perk")
         ));
+        // An imported item's private effects are translated from its source game. One that does
+        // not compile is left out of its perk, and the items of the build compile on.
+        let translated = translated(custom_plug, resolved);
         (|| -> AuthoringResult<()> {
             let mut definition = custom_plug.source_definition.clone();
             if custom_plug.cosmetic {
@@ -870,22 +905,7 @@ pub(super) fn author_payloads(
             )? {
                 write_u32(&mut definition, offset, custom_plug.authored_item_hash)?;
             }
-            if let Some(name_hash) = custom_plug.authored_name_hash {
-                write_localized_reference(
-                    &mut strings,
-                    ITEM_NAME_REFERENCE_OFFSET,
-                    crate::package_profile::localization_table() as u32,
-                    name_hash,
-                )?;
-            }
-            if let Some(description_hash) = custom_plug.authored_description_hash {
-                write_localized_reference(
-                    &mut strings,
-                    ITEM_DESCRIPTION_REFERENCE_OFFSET,
-                    crate::package_profile::localization_table() as u32,
-                    description_hash,
-                )?;
-            }
+            write_authored_text(custom_plug, &mut strings)?;
             if !custom_plug.cosmetic
                 && (custom_plug.replace_effects || !custom_plug.additional_sandbox_perks.is_empty())
             {
@@ -918,20 +938,24 @@ pub(super) fn author_payloads(
                     sandbox_perk_string_template,
                 )?;
             }
+            // The rows of the definition that hold this plug's private effects so far.
+            let mut placed = Vec::new();
+            let mut failure = None;
             for perk in &custom_plug.sandbox_perks {
                 let authored_name =
                     custom_plug
                         .authored_name_hash
                         .map(|string_hash| FinishedSandboxPerkName {
-                            bank_index: u16::try_from(crate::package_profile::localization_table())
-                                .expect("localization donor table index fits 16 bits"),
+                            bank_index:
+                                u16::try_from(crate::package::profile::localization_table())
+                                    .expect("localization donor table index fits 16 bits"),
                             string_hash,
                         });
                 let presentation = FinishedSandboxPerkPresentation {
                     name: authored_name,
                     description: custom_plug.authored_description_hash.map(|string_hash| {
                         FinishedSandboxPerkName {
-                            bank_index: crate::package_profile::localization_table() as u16,
+                            bank_index: crate::package::profile::localization_table() as u16,
                             string_hash,
                         }
                     }),
@@ -942,7 +966,15 @@ pub(super) fn author_payloads(
                     category_source_index: custom_plug.classification_perk_index,
                     hidden: perk.hidden,
                 };
-                let authored_perk_index = append_effect(manager, perk, presentation, catalog)?;
+                let authored_perk_index =
+                    match append_effect(manager, perk, presentation, catalog) {
+                        Ok(index) => index,
+                        Err(error) if translated => {
+                            failure = Some(error);
+                            break;
+                        }
+                        Err(error) => return Err(error),
+                    };
                 replace_weapon_sandbox_perk_index(
                     &mut definition,
                     u16::try_from(perk.source_index).map_err(|_| {
@@ -950,18 +982,47 @@ pub(super) fn author_payloads(
                     })?,
                     authored_perk_index,
                 )?;
+                placed.push(authored_perk_index);
+            }
+            if let Some(error) = failure {
+                // The effects of one perk work together, so none of them stays. The rows not
+                // yet replaced still name the base plug's own effects and go as well.
+                let dropped = custom_plug
+                    .sandbox_perks
+                    .iter()
+                    .filter_map(|perk| u16::try_from(perk.source_index).ok())
+                    .chain(placed)
+                    .collect::<BTreeSet<_>>();
+                let kept = weapon_sandbox_perks(&definition)?
+                    .into_iter()
+                    .filter(|perk| !dropped.contains(perk))
+                    .collect::<Vec<_>>();
+                set_weapon_base_sandbox_perks_with_strings(
+                    &mut definition,
+                    &mut strings,
+                    &kept,
+                    sandbox_perk_definition_template,
+                    sandbox_perk_string_template,
+                )?;
+                progress.diagnostic(format!(
+                    "Left out the effects of {}, which did not compile. The perk stays on {users} and does nothing.\n{error}",
+                    custom_plug
+                        .authored_name
+                        .as_deref()
+                        .unwrap_or("Unnamed Perk")
+                ));
             }
             for &(source_index, perk_hash) in &custom_plug.presented_perks {
                 let presentation = FinishedSandboxPerkPresentation {
                     name: custom_plug.authored_name_hash.map(|string_hash| {
                         FinishedSandboxPerkName {
-                            bank_index: crate::package_profile::localization_table() as u16,
+                            bank_index: crate::package::profile::localization_table() as u16,
                             string_hash,
                         }
                     }),
                     description: custom_plug.authored_description_hash.map(|string_hash| {
                         FinishedSandboxPerkName {
-                            bank_index: crate::package_profile::localization_table() as u16,
+                            bank_index: crate::package::profile::localization_table() as u16,
                             string_hash,
                         }
                     }),
@@ -1092,7 +1153,7 @@ fn append_effect_at(
             program
         });
     let first = catalog.private_perk_runtime_new_tags.len();
-    let checkpoint = crate::appended_tags::checkpoint();
+    let checkpoint = crate::package::appended_tags::checkpoint();
     let compiled = clone_private_sandbox_perk_runtime(
         manager,
         &perk.runtime_action,
@@ -1113,7 +1174,11 @@ fn append_effect_at(
     let mut authored_runtime_tag = match compiled {
         Ok(tag) => tag,
         Err(error) => {
-            checkpoint.commit();
+            // Dropping the checkpoint returns the record pages to their state before this
+            // perk, so a caller that leaves the perk out compiles the next one as if this one
+            // had never started.
+            catalog.private_perk_runtime_new_tags.truncate(first);
+            drop(checkpoint);
             return Err(error);
         }
     };
@@ -1670,7 +1735,7 @@ fn hud_glyph_patches(
     manager: &PackageManager,
     source: TagHash,
     glyph: u32,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let entity = read_tag(manager, source, "ability entity")?;
     let site = sundial::package_authoring::ability_hud::glyph_site(manager, &entity)
         .map_err(invalid)?
@@ -1681,7 +1746,7 @@ fn hud_glyph_patches(
         .offsets()
         .map_err(invalid)?
         .into_iter()
-        .map(|offset| WeaponRuntimeResourcePatch {
+        .map(|offset| RuntimeResourcePatch {
             binding_hash: site.binding_hash,
             resource_index,
             offset,
@@ -1700,6 +1765,26 @@ fn unedited(perk: &WeaponSandboxPerkRuntimeOverride) -> bool {
         && perk.activation.is_none()
         && perk.runtime_values.is_empty()
         && perk.action_float_values.is_empty()
+}
+
+/// Whether every item that uses `plug` is an imported recipe.
+fn translated(plug: &ResolvedCustomPlug, resolved: &[resolve::ResolvedWeapon]) -> bool {
+    #[cfg(feature = "d2-model-importer")]
+    {
+        let mut users = plug
+            .uses
+            .iter()
+            .map(|usage| usage.weapon_ordinal)
+            .chain(plug.owner)
+            .peekable();
+        users.peek().is_some()
+            && users.all(|item| resolved[item].weapon.overrides.imported_graph.is_some())
+    }
+    #[cfg(not(feature = "d2-model-importer"))]
+    {
+        let _ = (plug, resolved);
+        false
+    }
 }
 
 fn plug_context(plug: &ResolvedCustomPlug, resolved: &[resolve::ResolvedWeapon]) -> String {

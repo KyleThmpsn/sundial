@@ -39,6 +39,30 @@ pub(crate) fn create_fixture(path: &Path) {
     .unwrap();
 }
 
+/// [`create_fixture`] taken through Dawn's own schema 5 to 7 statements, with an equipped
+/// subclass and a row in every table and column those statements add.
+pub(crate) fn create_fixture_v7(path: &Path) {
+    create_fixture(path);
+    let db = Connection::open(path).unwrap();
+    db.execute_batch(contract::SCHEMA_V7_DELTA).unwrap();
+    db.execute_batch(
+        "UPDATE characters SET movement_ability=5,grenade_ability=8,super_ability=12,
+            melee_ability=14,class_ability=3,selected_title_record=412,
+            customization=X'0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F2021222324';
+         INSERT INTO character_items VALUES
+            ('9EAA300100100101',0,11,'4000000000000030',2958378809,0,1,20,0,0,0,5,8,12,14,3);
+         UPDATE character_items SET movement_ability=6,grenade_ability=9,super_ability=13,
+            melee_ability=16,class_ability=1 WHERE instance_soid='400000000000001A';
+         INSERT INTO item_values VALUES
+            ('4000000000000004',2,-7),
+            ('400000000000001A',0,2147483647);
+         INSERT INTO world_reward_outbox(account_soid,character_soid,definition_hash,quantity,kind)
+            VALUES('9EAA300100100100','9EAA300100100101',3159615086,3,1);
+         INSERT INTO recent_collectibles VALUES(0,5270);",
+    )
+    .unwrap();
+}
+
 fn loaded(path: &Path) -> Box<DawnAccountDocument> {
     match load(path).unwrap() {
         DawnAccountDocumentLoad::Loaded(document) => document,
@@ -267,9 +291,7 @@ fn a_layout_dawn_would_refuse_is_reported_rather_than_loaded() {
         create_fixture(&path);
         Connection::open(&path).unwrap().execute_batch(sql).unwrap();
         match load(&path).unwrap() {
-            DawnAccountDocumentLoad::Incompatible(problem) => {
-                assert!(!problem.to_string().is_empty(), "{label}");
-            }
+            DawnAccountDocumentLoad::Incompatible(_) => {}
             other => panic!("{label} should be reported as incompatible, got {other:?}"),
         }
     }

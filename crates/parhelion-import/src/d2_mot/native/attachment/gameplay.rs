@@ -175,6 +175,23 @@ pub fn convert_gameplay(
         !closure.graphs.is_empty(),
         "gameplay attachment closure has no graphs"
     );
+    // An entity with no selector names no category dictionary. Assembly expects one
+    // namespace, so the stock modern registry stands in and contributes no category.
+    let dictionary = crate::d2_mot::native::categories::MODERN_CLASS;
+    if !closure
+        .resources
+        .values()
+        .any(|resource| resource.class == dictionary)
+    {
+        const REGISTRY: u32 = 0x80C3_A713;
+        closure.resources.insert(
+            REGISTRY,
+            closure::Resource {
+                class: dictionary,
+                payload: (*source.tag(REGISTRY, Some(dictionary))?).clone(),
+            },
+        );
+    }
     for (&graph, values) in parameters {
         ensure!(
             roots.contains(&graph),

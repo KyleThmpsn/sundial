@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::package_profile::canonical_package;
+use crate::package::profile::canonical_package;
 use sundial::package_authoring::ability_bank::{
     CHARGE_ROWS, CLASS_ABILITY_CHARGE_KEY, GRENADE_SLOT, MELEE_CHARGE_KEY, MELEE_SLOT, Modifier,
     handler_slot, parameters, property_rows, slot_banks,
@@ -38,7 +38,7 @@ const ENTITY_REFERRERS: [(u32, u32); 3] = [
 /// manager over the staged install, and a project that applies nothing of the kind leaves
 /// those packages alone.
 #[test]
-#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and a fresh SUNDIAL_TEST_ARTIFACTS directory"]
 fn real_private_perk_applying_bank_keys_ships_the_banks() {
     const BREACHLIGHT_ITEM_HASH: u32 = 0x4CE3_CE93;
     const MICRO_MISSILE_PLUG_HASH: u32 = 0xDD5C_B37A;
@@ -80,59 +80,50 @@ fn real_private_perk_applying_bank_keys_ships_the_banks() {
 
     let spec = |namespace: &str, program: Option<Program>| {
         let mut socket_columns = vec![None; socket_count];
-        socket_columns[TRAIT_SOCKET_INDEX] = Some(WeaponSocketColumnOverride {
-            choices: vec![MICRO_MISSILE_PLUG_HASH],
-            ..WeaponSocketColumnOverride::default()
+        socket_columns[TRAIT_SOCKET_INDEX] = Some(crate::recipe::WeaponSocketColumnRecipe {
+            choices: vec![MICRO_MISSILE_PLUG_HASH.into()],
+            ..crate::recipe::WeaponSocketColumnRecipe::default()
         });
-        WeaponCloneSpec {
-            kind: crate::ItemKind::Weapon,
-            namespace: namespace.to_owned(),
-            donor_item_hash: BREACHLIGHT_ITEM_HASH,
-            expected_donor_name: Some("Breachlight".to_owned()),
-            presentation_donor: None,
-            icon_donor: None,
-            render_gear_donor: None,
-            runtime_component_donors: Vec::new(),
-            identity: WeaponCloneIdentity::from_namespace(namespace)
-                .expect("test namespace should allocate"),
-            text: WeaponCloneText {
-                name: "Bank Row Fixture".to_owned(),
-                flavor: "An ability bank fixture.".to_owned(),
-                source: "Source: integration test".to_owned(),
-                ..WeaponCloneText::default()
-            },
-            overrides: WeaponCloneOverrides {
-                socket_columns,
-                socket_plug_variants: vec![WeaponSocketPlugVariantOverride {
-                    offer_everywhere: false,
-                    replace_effects: false,
-                    investment_stats: Vec::new(),
-                    socket_index: TRAIT_SOCKET_INDEX as u16,
-                    choice_index: 0,
-                    source_plug_hash: MICRO_MISSILE_PLUG_HASH,
-                    icon: None,
-                    classification_donor_hash: None,
-                    description: None,
-                    additional_sandbox_perks: Vec::new(),
-                    name: Some("Bank Rows".to_owned()),
-                    sandbox_perks: vec![WeaponSandboxPerkRuntimeOverride {
-                        program,
-                        projectiles: Vec::new(),
-                        source_perk_index: MICRO_MISSILE_PERK_INDEX,
-                        activation: None,
-                        runtime_values: Vec::new(),
-                        action_float_values: Vec::new(),
-                    }],
+        let mut recipe = crate::recipe::WeaponRecipe::new_weapon_for_donor(
+            namespace,
+            BREACHLIGHT_ITEM_HASH,
+            "Breachlight",
+        )
+        .unwrap();
+        recipe.name = "Bank Row Fixture".to_owned();
+        recipe.flavor = "An ability bank fixture.".to_owned();
+        recipe.source = "Source: integration test".to_owned();
+        recipe.overrides.socket_columns = socket_columns;
+        recipe.overrides.socket_plug_variants =
+            vec![crate::recipe::WeaponSocketPlugVariantRecipe {
+                projectile: None,
+                offer_everywhere: false,
+                replace_effects: false,
+                investment_stats: Vec::new(),
+                socket_index: TRAIT_SOCKET_INDEX as u16,
+                choice_index: 0,
+                source_plug_hash: MICRO_MISSILE_PLUG_HASH.into(),
+                icon: None,
+                classification_donor_hash: None,
+                description: None,
+                additional_sandbox_perks: Vec::new(),
+                name: Some("Bank Rows".to_owned()),
+                sandbox_perks: vec![crate::recipe::WeaponSandboxPerkRuntimeRecipe {
+                    program,
+                    projectiles: Vec::new(),
+                    source_perk_index: MICRO_MISSILE_PERK_INDEX,
+                    activation: None,
+                    runtime_values: Vec::new(),
+                    action_float_values: Vec::new(),
                 }],
-                ..WeaponCloneOverrides::default()
-            },
-        }
+            }];
+        recipe
     };
-    let build = |spec: WeaponCloneSpec| {
+    let build = |recipe: crate::recipe::WeaponRecipe| {
         build_weapon_project_after_catalog_validation(
             &packages,
             &WeaponProjectSpec {
-                weapons: vec![spec],
+                weapons: vec![recipe.to_spec().unwrap()],
             },
         )
     };
@@ -167,8 +158,8 @@ fn real_private_perk_applying_bank_keys_ships_the_banks() {
 
     assert!(!affected.is_empty());
     // Without the keys, none of those packages is touched.
-    let control = build(spec("parhelion.ability-banks.control", None))
-        .expect("the control project should build");
+    let control_spec = spec("parhelion.ability-banks.control", None);
+    let control = build(control_spec.clone()).expect("the control project should build");
     assert!(
         control
             .artifacts
@@ -177,7 +168,7 @@ fn real_private_perk_applying_bank_keys_ships_the_banks() {
         "a project applying no bank key must not replace any bank"
     );
 
-    let program = Program {
+    let mut program = Program {
         trigger: Trigger::Equipped,
         actions: vec![
             Action::AbilityProperty {
@@ -200,12 +191,96 @@ fn real_private_perk_applying_bank_keys_ships_the_banks() {
         ..Program::default()
     };
     program.validate().expect("the program should validate");
-    let bundle = build(spec("parhelion.ability-banks.rows", Some(program)))
-        .expect("the bank row project should build");
+    let row_spec = spec("parhelion.ability-banks.rows", Some(program.clone()));
+    let bundle = build(row_spec.clone()).expect("the bank row project should build");
     overlays_keep_their_tables(&bundle, &affected);
     let view = staged_view(&packages, "parhelion-ability-banks-", &bundle);
     let staged = open_manager(&view.path().join("packages")).expect("staged view should open");
     staged_banks_carry_their_rows(&manager, &staged, &tuning);
+
+    // A value-only change with the same row layout changes the bank's behavior, while every
+    // referrer still names the same blocks. This is the observable basis for keeping a family
+    // member when the main mod's bank bytes change but its instance boundary does not.
+    let changed_tuning = AbilityTuning::new(GRENADE_SLOT, EXPLOSION_RADIUS_SCALAR, 0.75, true);
+    for action in &mut program.actions {
+        if let Action::AbilityProperty { key, .. } = action
+            && *key == tuning.key
+        {
+            *key = changed_tuning.key;
+        }
+    }
+    program.ability_tunings = vec![changed_tuning.clone()];
+    let changed_spec = spec("parhelion.ability-banks.rows", Some(program));
+    let changed = build(changed_spec.clone()).expect("the changed bank project should build");
+    let changed_view = staged_view(&packages, "parhelion-ability-banks-changed-", &changed);
+    let changed_manager = open_manager(&changed_view.path().join("packages")).unwrap();
+    let changed_bank = changed_manager.read_tag(TagHash(0x80B8_075C)).unwrap();
+    let changed_rows = property_rows(&changed_bank).unwrap();
+    let changed_row = changed_rows
+        .iter()
+        .find(|row| row.key == changed_tuning.key)
+        .expect("the new grenade value must reach the emitted bank");
+    assert_eq!(changed_row.parameters[0].applied, 0.75);
+    assert!(!changed_rows.iter().any(|row| row.key == tuning.key));
+    let mut readback = Vec::new();
+    let output = crate::test_support::artifact_dir("ability-bank-layout");
+    assert!(!output.exists(), "Choose a fresh artifact directory");
+    fs::create_dir_all(&output).unwrap();
+    for (entity, bank) in ENTITY_REFERRERS {
+        let first = staged.read_tag(TagHash(entity)).unwrap();
+        let second = changed_manager.read_tag(TagHash(entity)).unwrap();
+        assert_eq!(
+            first, second,
+            "{entity:08X} moved after a value-only bank edit"
+        );
+        let original_bank = staged.read_tag(TagHash(bank)).unwrap();
+        let next_bank = changed_manager.read_tag(TagHash(bank)).unwrap();
+        let instance = relative_target(&original_bank, 0x18).unwrap();
+        assert_eq!(instance, relative_target(&next_bank, 0x18).unwrap());
+        fs::write(output.join(format!("{entity:08X}.bin")), &second).unwrap();
+        fs::write(output.join(format!("{bank:08X}-first.bin")), &original_bank).unwrap();
+        fs::write(output.join(format!("{bank:08X}-changed.bin")), &next_bank).unwrap();
+        readback.push(serde_json::json!({
+            "entity": entity, "bank": bank, "instance_offset": instance,
+            "referrer_sha256": crate::artifact::digest_bytes(&second).sha256,
+            "first_bank_sha256": crate::artifact::digest_bytes(&original_bank).sha256,
+            "changed_bank_sha256": crate::artifact::digest_bytes(&next_bank).sha256,
+        }));
+    }
+    let mut emitted = Vec::new();
+    for (name, built) in [
+        ("control", &control),
+        ("first", &bundle),
+        ("changed", &changed),
+    ] {
+        let folder = output.join(name);
+        for artifact in &built.artifacts {
+            let path = artifact.write_new(&folder).unwrap();
+            emitted.push(serde_json::json!({
+                "generation": name, "file": artifact.plan.output_file_name,
+                "digest": crate::artifact::digest_file(&path).unwrap(),
+            }));
+        }
+    }
+    fs::write(
+        output.join("inputs.json"),
+        serde_json::to_vec_pretty(&[control_spec, row_spec, changed_spec]).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        output.join("readback.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "source_revision": std::env::var("SUNDIAL_TEST_REVISION").ok(),
+            "executable": crate::artifact::digest_file(&std::env::current_exe().unwrap()).unwrap(),
+            "stock_packages": packages,
+            "emitted": emitted,
+            "references": readback,
+            "changed_parameter": {"key": changed_tuning.key, "applied": 0.75},
+            "limits": ["Package readback only", "No live loader or gameplay execution"],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
 }
 
 /// One overlay per affected package, each keeping its entry table and canonical name.

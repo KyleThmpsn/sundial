@@ -27,7 +27,7 @@ const KINDS: [Kind; 15] = [
 /// reader replaces, such as Turn Rate under a turn-rate program, and one nothing reads.
 pub(super) fn discover(
     manager: &sundial::package_authoring::PackageManager,
-    graphs: &[(u32, WeaponRuntimeGraph)],
+    graphs: &[(u32, RuntimeGraph)],
 ) -> Vec<(u32, Setting)> {
     let mut found = graphs
         .iter()
@@ -88,7 +88,7 @@ pub(in crate::app::custom_perks) fn draw(
     ui: &mut egui::Ui,
     loaded: &PrivatePerkRuntimeGraph,
     tag: u32,
-    draft: &mut Vec<WeaponRuntimeValueOverride>,
+    draft: &mut Vec<RuntimeValueOverride>,
 ) -> Option<Result<(), String>> {
     let settings = mapped(loaded)
         .into_iter()
@@ -113,7 +113,7 @@ fn draw_setting(
     width: f32,
     tag: u32,
     setting: &Setting,
-    draft: &mut Vec<WeaponRuntimeValueOverride>,
+    draft: &mut Vec<RuntimeValueOverride>,
 ) -> Option<Result<(), String>> {
     let kind = setting.kind;
     let label = kind.label();

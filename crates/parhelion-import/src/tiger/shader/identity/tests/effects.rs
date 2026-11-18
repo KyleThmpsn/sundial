@@ -106,7 +106,7 @@ fn effect_shader_package_oracle() -> Result<()> {
             }
         };
         rows.push(json!({"source":tag,"stage":stage(entry)?,"binding":binding,
-            "refusal":refusal,"header_sha256":digest(&header.0),"bytecode_sha256":digest(&code)}));
+            "refusal":refusal,"header_sha256":sha256_hex(&header.0),"bytecode_sha256":sha256_hex(&code)}));
     }
     ensure!(
         exact + identities + unmatched == source_tags.len() && rows.len() == source_tags.len(),

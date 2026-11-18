@@ -86,6 +86,6 @@ pub(super) fn readback(
     }
     assert_eq!(observed, expected);
     json!({"source_resource":from_tag,"native_resource":to_tag,"values_by_name":observed,
-        "source_config_sha256":sha(&source_config.0),"native_config_sha256":sha(&native_config.0),
-        "source_sha256":sha(&original.0),"native_sha256":sha(&translated.0)})
+        "source_config_sha256":sha256_hex(&source_config.0),"native_config_sha256":sha256_hex(&native_config.0),
+        "source_sha256":sha256_hex(&original.0),"native_sha256":sha256_hex(&translated.0)})
 }

@@ -227,11 +227,11 @@ impl Icons {
                         .map(|art| art.draw(manager))
                         .transpose()?
                         .flatten();
-                    crate::icon_edit::render_weapon_icon_preview_from_manager(
+                    crate::icon::edit::render_weapon_icon_preview_from_manager(
                         manager,
                         TagHash(key.container_tag),
                         key.rarity,
-                        &crate::icon_art::edited(key.art.as_ref(), &key.edit, art.as_ref()),
+                        &crate::icon::art::edited(key.art.as_ref(), &key.edit, art.as_ref()),
                         corner.as_ref(),
                         branding,
                         key.plain,

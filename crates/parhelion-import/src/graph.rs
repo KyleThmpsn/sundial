@@ -19,7 +19,7 @@ pub use place::{GRAPH, ORNAMENTS, conversion_folder, in_place, place, settle, un
 /// The importer revision a new import records in its graph. Raise it with any change to what
 /// conversion writes. Raise `MINIMUM_CONVERTER_REVISION` to it as well when imports made before
 /// the change are unsafe or wrong to install, so Parhelion asks for those to be imported again.
-pub const CONVERTER_REVISION: u32 = 370;
+pub const CONVERTER_REVISION: u32 = 462;
 /// Imports from an earlier revision need importing again. Imports made before revisions were
 /// recorded count as revision 0.
 pub const MINIMUM_CONVERTER_REVISION: u32 = 0;
@@ -140,7 +140,15 @@ impl GraphReference {
         ensure!(
             !matches!(
                 graph["kind"].as_str(),
-                Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament")
+                Some(
+                    "artifact"
+                        | "shader"
+                        | "armor"
+                        | "ghost_shell"
+                        | "ship"
+                        | "sparrow"
+                        | "ornament"
+                )
             ) && graph.get("gear_art").is_none(),
             "Choose imported weapon assets for a weapon model"
         );
@@ -257,7 +265,7 @@ impl GraphReference {
         ensure!(
             matches!(
                 kind,
-                "shader" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament"
+                "artifact" | "shader" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament"
             ),
             "This item kind does not use reusable imported assets"
         );
@@ -581,7 +589,15 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
         ensure!(
             matches!(
                 graph["kind"].as_str(),
-                Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament")
+                Some(
+                    "artifact"
+                        | "shader"
+                        | "armor"
+                        | "ghost_shell"
+                        | "ship"
+                        | "sparrow"
+                        | "ornament"
+                )
             ),
             "Imported graph is not reusable item assets"
         );
@@ -594,7 +610,10 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
         );
     }
     let nodes = graph["nodes"].as_array().context("Missing asset nodes")?;
-    ensure!(!nodes.is_empty(), "Imported graph has no assets");
+    ensure!(
+        !nodes.is_empty() || graph["kind"] == "artifact",
+        "Imported graph has no assets"
+    );
     let mut digest = Sha256::new();
     digest.update((bytes.len() as u64).to_le_bytes());
     digest.update(&bytes);
@@ -622,7 +641,25 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
         digest.update((payload.len() as u64).to_le_bytes());
         digest.update(payload);
     }
-    if graph["kind"] == "shader" {
+    if graph["kind"] == "artifact" {
+        ensure!(
+            graph["source"] == "d1_roi"
+                && nodes.is_empty()
+                && graph.get("parent").is_none()
+                && graph.get("gear_art").is_none()
+                && graph["source_bucket"] == 1_506_418_338u32
+                && graph["source_class"]
+                    .as_u64()
+                    .is_some_and(|class| class <= 3)
+                && graph["source_talents"].is_object()
+                && graph["perk_translation"].is_object()
+                && (graph["source_icon_png"].is_null()
+                    || graph["source_icon_png"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty())),
+            "Artifact graph requires checked source talents without model assets"
+        );
+    } else if graph["kind"] == "shader" {
         let dyes = graph["dyes"]
             .as_array()
             .context("Imported shader has no dyes")?;

@@ -277,7 +277,7 @@ pub(super) fn append(
                 &mut graph.node_strings,
                 rows + usize::from(page.index) * PRESENTATION_NODE_STRING_ROW_SIZE
                     + PRESENTATION_NODE_STRING_NAME_REFERENCE_OFFSET,
-                crate::package_profile::localization_table() as u32,
+                crate::package::profile::localization_table() as u32,
                 hash,
             )?;
         }
@@ -370,7 +370,7 @@ fn brand_page(
         write_localized_reference(
             &mut graph.node_strings,
             row + offset,
-            crate::package_profile::localization_table() as u32,
+            crate::package::profile::localization_table() as u32,
             hash,
         )?;
     }

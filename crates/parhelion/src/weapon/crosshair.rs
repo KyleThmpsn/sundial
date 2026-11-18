@@ -26,11 +26,14 @@
 use crate::{
     AuthoringResult,
     error::{invalid, validation},
-    item::WeaponRuntimeResourcePatch,
+    item::RuntimeResourcePatch,
     tag_payload::{read_u32, read_u64},
 };
 use sundial::package_authoring::PackageManager;
 use tiger_pkg::TagHash;
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) const TABLE: TagHash = TagHash(0x80B4_79A9);
 const MARK: u32 = 0x8080_9FBD;
@@ -53,13 +56,13 @@ pub(crate) fn content_patches(
     manager: &PackageManager,
     entity: &[u8],
     type_key: u32,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
-    crate::hud_icon::runtime::field_patches(manager, entity, &[(TYPE_FIELD, type_key)])
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
+    crate::icon::hud::runtime::field_patches(manager, entity, &[(TYPE_FIELD, type_key)])
 }
 
 /// The type keys the weapon content's property blocks hold now.
 pub(crate) fn type_keys(manager: &PackageManager, entity: &[u8]) -> AuthoringResult<Vec<u32>> {
-    crate::hud_icon::runtime::field_values(manager, entity, TYPE_FIELD)
+    crate::icon::hud::runtime::field_values(manager, entity, TYPE_FIELD)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -180,6 +183,19 @@ impl Table {
     /// The rows in table order.
     pub(crate) fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    /// Hosted rows cannot silently select another member's scene or styles under a shared key.
+    pub(crate) fn insert_hosted(&mut self, row: Row) -> AuthoringResult<bool> {
+        if let Some(existing) = self.row(row.bucket, row.key)
+            && *existing != row
+        {
+            return Err(invalid(format!(
+                "Shared crosshair bucket {:08X} key {:08X} names different scenes or styles in separate members",
+                row.bucket, row.key
+            )));
+        }
+        self.insert(row)
     }
 
     /// Add a row unless the bucket and key already have one. A row hash may not repeat.

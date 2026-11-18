@@ -5,18 +5,14 @@
 use super::*;
 use parhelion_import::{d1_roi::Source, tiger::payload::Payload};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use sundial::package_authoring::{ability_definition, sandbox_perk::program};
+use sundial::storage::sha256_hex;
 mod callback;
 mod event;
 mod hud;
 mod lifecycle;
 mod revival;
-
-fn sha(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
 
 fn pair(payload: &Payload, tag: u32, classes: (u32, u32)) -> (usize, usize) {
     let live = payload.pointer(16).unwrap();
@@ -275,7 +271,7 @@ fn sequence_inputs(
             evidence.push(
                 json!({"mode":mode,"selector":phase,"source_helper":from_def,
                 "native_helper":to_def,"provider_occurrence":occurrence,"provider":provider_tag,
-                "provider_sha256":sha(&provider.0)}),
+                "provider_sha256":sha256_hex(&provider.0)}),
             );
         }
     }
@@ -490,10 +486,10 @@ fn saved_radiance_reaches_private_controller_bank_and_fireborn_property() {
         fs::write(output.join(format!("{tag:08X}.bin")), &payload.0).unwrap();
     }
     fs::write(output.join("readback.json"),serde_json::to_vec_pretty(&json!({
-        "revision":revision,"source_packages":source_packages,"source_bank_sha256":sha(&source_bank.0),
+        "revision":revision,"source_packages":source_packages,"source_bank_sha256":sha256_hex(&source_bank.0),
         "recipe":recipe_path,"manifest":build.manifest_path,"row":row,"identity":pairs[usize::from(row)].identity,
         "pattern":pairs[usize::from(row)].pattern,"root":root,"controller":controller_tag,"bank":bank_tag,
-        "fireborn_rows":flag_rows,"property_readback":property_readback,"sequence_readback":sequence_readback,"event_readback":event_readback,"callback_readback":callback_readback,"lifecycle_readback":lifecycle_readback,"root_sha256":sha(&graph.0),"controller_sha256":sha(&controller.0),"bank_sha256":sha(&bank.0),
-        "executable_sha256":sha(&fs::read(std::env::current_exe().unwrap()).unwrap()),"installed":false,"gameplay_verified":false
+        "fireborn_rows":flag_rows,"property_readback":property_readback,"sequence_readback":sequence_readback,"event_readback":event_readback,"callback_readback":callback_readback,"lifecycle_readback":lifecycle_readback,"root_sha256":sha256_hex(&graph.0),"controller_sha256":sha256_hex(&controller.0),"bank_sha256":sha256_hex(&bank.0),
+        "executable_sha256":sha256_hex(&fs::read(std::env::current_exe().unwrap()).unwrap()),"installed":false,"gameplay_verified":false
     })).unwrap()).unwrap();
 }

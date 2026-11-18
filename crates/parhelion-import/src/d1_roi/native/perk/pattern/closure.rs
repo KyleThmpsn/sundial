@@ -42,7 +42,9 @@ const ENVELOPES: [u32; 3] = [0x8152BB5D, 0x80EFAEAE, 0x80F2E9FF];
 /// Stock resources of each translated resource class, used as package templates. Feedback member
 /// `80C70634` has the layout of the Explosive Rounds member it templates. Grouped presentation
 /// table `80BF9D65` belongs to `80BC57DB`, Bungie's port of the Incendiary explosion sequence.
-const TEMPLATES: [(u32, u32); 7] = [
+const TEMPLATES: [(u32, u32); 9] = [
+    (0x8080707E, 0x80C0E2D4),
+    (0x808071DC, 0x80C0E2D3),
     (0x80809C36, 0x8152BB69),
     (0x80803EB0, 0x80C23C06),
     (0x80803E94, 0x80C23A42),
@@ -66,8 +68,15 @@ pub(crate) struct Group {
 fn omitted() -> BTreeSet<(u32, u32)> {
     let mut kinds = effect::OMITTED
         .into_iter()
-        .filter(|kind| !matches!(kind, (0x808003BB, 10) | (0x808028A6, 26) | (0x80802402, 24)))
+        .filter(|kind| {
+            !matches!(
+                kind,
+                (0x808003BB, 10) | (0x808028A6, 26) | (0x80802402, 24) | (0x8080052F, 20)
+            )
+        })
         .collect::<BTreeSet<_>>();
+    // Screen color records of the lens form translate. Other records of that event stay delays.
+    kinds.insert(crate::d1_roi::sequence::screen::OTHER_RECORDS);
     kinds.insert((0x80801AA2, 31));
     kinds.insert((0x80801EF1, 3));
     kinds
@@ -124,7 +133,12 @@ fn created(source: &Source, root: u32, omitted: &BTreeSet<(u32, u32)>) -> Result
         order.push(tag);
         for sequence in effect::sequences(source, tag)? {
             let plan = Plan::read_omitting(source, &source.read(sequence)?, omitted)?;
-            for graph in plan.graphs() {
+            // A profile's response list names graphs as events do.
+            let mut graphs = plan.graphs();
+            for profile in plan.profiles() {
+                graphs.extend(damage_profile::response_graphs(source, profile)?);
+            }
+            for graph in graphs {
                 if ported(graph).is_none() {
                     stack.push((graph, depth + 1));
                 }
@@ -176,7 +190,12 @@ fn named(
         words: Vec::new(),
     };
     for tag in profiles {
-        let translated = damage_profile::translate(source, native, tag, prefix)?;
+        let translated = damage_profile::translate(source, native, tag, prefix, &|graph| {
+            Ok(match ported(graph) {
+                Some(stock) => damage_profile::Graph::Stock(stock),
+                None => damage_profile::Graph::Private(symbol(prefix, root, graph)),
+            })
+        })?;
         named
             .resources
             .profiles
@@ -186,7 +205,7 @@ fn named(
             .words
             .push(json!({"profile":tag,"source_90":translated.unqualified[0],
             "source_A8":translated.unqualified[1],"absent_categories":translated.absent,
-            "silent_cues":translated.silent}));
+            "silent_cues":translated.silent,"left_out_response_name":translated.unnamed}));
         for asset in translated.assets {
             named.assets.entry(asset.symbol.clone()).or_insert(asset);
         }
@@ -368,7 +387,7 @@ pub(crate) fn translate_closure(
     prefix: &str,
     private_hud: bool,
 ) -> Result<Closure> {
-    translate_closure_without(source, native, root, prefix, private_hud, None)
+    translate_closure_without(source, native, root, prefix, private_hud, None, None)
 }
 
 /// [`translate_closure`] with the root graph's detached modifier bank left out.
@@ -379,6 +398,7 @@ fn translate_closure_without(
     prefix: &str,
     private_hud: bool,
     detached: Option<u32>,
+    assignment: Option<&effect::Assignment>,
 ) -> Result<Closure> {
     let omitted = omitted();
     let graphs = created(source, root, &omitted)?;
@@ -388,6 +408,7 @@ fn translate_closure_without(
         .collect::<Result<Vec<_>>>()?;
     let mut shared = effect::Shared::prepare_omitting(source, native, &groups, prefix, &omitted)?;
     shared.private_hud = private_hud;
+    shared.assignment = assignment.cloned();
     let named = named(source, native, &shared, prefix, &graphs)?;
     shared.set_resources(named.resources);
     let words = named.words;
@@ -407,6 +428,18 @@ fn translate_closure_without(
             cues.iter()
                 .map(|&cue| (graph_audio::cue_symbol(cue), 0x80809802)),
         )
+        .chain(
+            shared
+                .lookups
+                .values()
+                .map(|texture| (texture.clone(), crate::d1_roi::sequence::screen::LOOKUP)),
+        )
+        .chain(
+            shared
+                .cones
+                .values()
+                .map(|hull| (hull.clone(), crate::d1_roi::sequence::query::cone::CLASS)),
+        )
         .collect::<BTreeMap<_, _>>();
     let evidence = translated.evidence.clone();
     let hud = translated.hud.clone();
@@ -417,7 +450,14 @@ fn translate_closure_without(
     let referenced = assets
         .iter()
         .flat_map(|asset| &asset.patches)
-        .filter(|patch| patch.class == 0x80806E28)
+        .filter(|patch| {
+            matches!(
+                patch.class,
+                0x80806E28
+                    | crate::d1_roi::sequence::screen::LOOKUP
+                    | crate::d1_roi::sequence::query::cone::CLASS
+            )
+        })
         .map(|patch| patch.symbol.as_str())
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -431,6 +471,7 @@ fn translate_closure_without(
         "source":"d1_roi","root_graph":root,"native_template":TEMPLATE,
         "graphs":evidence,"shared_resources":shared.evidence,"closure":closure,
         "profile_words_without_roles":words,
+        "assignment_marker":assignment,
         "gameplay_verified":false,
         "limits":["Shared network, effect context and category owners keep the stock Shadowkeep owners of the same role.",
             "Query action programs and native-only query fields take stock values, as recorded in the query converter.",
@@ -451,16 +492,83 @@ fn translate_closure_without(
 /// attachment group under `folder`. Choices of one import that attach the same source graph
 /// share its prepared group. `detached` is the root's modifier bank the caller attaches
 /// separately, which [`effect::detachable_modifier`] decides from the graph alone.
-pub(super) fn prepare(
+pub(crate) fn prepare(
     source: &Source,
     native: &mut Reader,
     root: u32,
     folder: &Path,
     detached: Option<u32>,
 ) -> Result<Group> {
+    prepare_with_assignment(source, native, root, folder, detached, None)
+}
+
+/// [`prepare`] into `directory`, a folder of the importing item's own. A group only the item's
+/// graph names stays with that item's conversion, where the library keeps it with the item.
+pub(crate) fn prepare_at(
+    source: &Source,
+    native: &mut Reader,
+    root: u32,
+    directory: &Path,
+) -> Result<Group> {
+    let prefix = format!("d1-closure-{root:08X}");
+    if directory.join("asset-graph.json").is_file() {
+        return prepared(directory, symbol(&prefix, root, root));
+    }
+    let closure = translate_closure_without(source, native, root, &prefix, true, None, None)?;
+    let audio = if closure.cues.is_empty() {
+        None
+    } else {
+        Some(graph_audio::plan(source, native, &closure.cues)?.into_parts())
+    };
+    save(
+        directory,
+        &Contents {
+            assets: &closure.assets,
+            templates: &closure.templates,
+            nodes: &closure.nodes,
+            audio,
+            provenance: closure.provenance,
+            root: closure.root,
+            hud: &closure.hud,
+        },
+    )
+}
+
+pub(in crate::d1_roi::native::perk) fn prepare_assignment(
+    source: &Source,
+    native: &mut Reader,
+    folder: &Path,
+    assignment: &effect::Assignment,
+) -> Result<Group> {
+    prepare_with_assignment(
+        source,
+        native,
+        assignment.graph,
+        folder,
+        None,
+        Some(assignment),
+    )
+}
+
+fn prepare_with_assignment(
+    source: &Source,
+    native: &mut Reader,
+    root: u32,
+    folder: &Path,
+    detached: Option<u32>,
+    assignment: Option<&effect::Assignment>,
+) -> Result<Group> {
     let prefix = format!("d1-closure-{root:08X}");
     let directory = group_folder(folder, root, &prefix);
     if directory.join("asset-graph.json").is_file() {
+        if let Some(assignment) = assignment {
+            let provenance: Value =
+                serde_json::from_slice(&fs::read(directory.join("provenance.json"))?)?;
+            ensure!(
+                provenance["assignment_marker"] == serde_json::to_value(assignment)?,
+                "Prepared assignment graph has a different cancellation marker"
+            );
+        }
         let directory = directory.canonicalize()?;
         return Ok(Group {
             sha256: fingerprint(&directory)?,
@@ -468,7 +576,8 @@ pub(super) fn prepare(
             symbol: symbol(&prefix, root, root),
         });
     }
-    let closure = translate_closure_without(source, native, root, &prefix, true, detached)?;
+    let closure =
+        translate_closure_without(source, native, root, &prefix, true, detached, assignment)?;
     let audio = if closure.cues.is_empty() {
         None
     } else {
@@ -500,7 +609,10 @@ pub(super) fn prepare_profile(
 ) -> Result<Group> {
     let prefix = format!("d1-profile-{tag:08X}");
     let directory = group_folder(folder, tag, &prefix);
-    let translated = damage_profile::translate(source, native, tag, &prefix)?;
+    // A profile a direct effect names is a group of its own, with no graphs beside it.
+    let translated = damage_profile::translate(source, native, tag, &prefix, &|graph| {
+        anyhow::bail!("Direct profile names response graph {graph:08X}")
+    })?;
     let root = translated
         .assets
         .first()

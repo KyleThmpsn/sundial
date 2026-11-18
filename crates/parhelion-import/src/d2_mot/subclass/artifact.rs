@@ -9,16 +9,12 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
 };
-
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
+use sundial::storage::sha256_hex;
 
 fn report(value: Value) -> Result<Value> {
     let input: Input = serde_json::from_value(value.clone()).context("Subclass planning input")?;
@@ -29,7 +25,7 @@ fn report(value: Value) -> Result<Value> {
         "target_build": TARGET_BUILD,
         "installable": false,
         "gameplay_verified": false,
-        "input_sha256": digest(&serde_json::to_vec(&value)?),
+        "input_sha256": sha256_hex(&serde_json::to_vec(&value)?),
         "input": value,
         "plan": plan
     }))
@@ -92,7 +88,7 @@ fn payload_evidence(reader: &Reader) -> Result<Vec<source::PayloadEvidence>> {
             file_type: number(&entry["type"], "payload type")?,
             file_subtype: number(&entry["subtype"], "payload subtype")?,
             bytes: bytes.len() as u64,
-            sha256: digest(&bytes),
+            sha256: sha256_hex(&bytes),
         });
     }
     ensure!(!result.is_empty(), "Source capture read no payloads");

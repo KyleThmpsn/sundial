@@ -54,7 +54,7 @@ pub(super) fn fixture() -> Fixture {
         .unwrap();
     }
     for profile in CANONICAL_PACKAGES {
-        let authored = crate::extend::build_extended_overlay(
+        let authored = crate::package::extend::build_extended_overlay(
             &fixture.target,
             profile.package_id,
             &[crate::ReplacementSpec {
@@ -109,9 +109,9 @@ fn staged_file(fixture: &Fixture, name: &str) -> PathBuf {
 }
 
 pub(super) fn change_assets(fixture: &mut Fixture) {
-    let name = crate::package_profile::PARHELION_ASSET_FILE_NAME;
+    let name = crate::package::profile::PARHELION_ASSET_FILE_NAME;
     let bytes = build_test_package_with_physical_payload(
-        crate::package_profile::PARHELION_ASSET_PACKAGE_ID,
+        crate::package::profile::PARHELION_ASSET_PACKAGE_ID,
         0,
         b"updated assets",
     )
@@ -133,7 +133,7 @@ fn legacy(fixture: &Fixture) -> BTreeMap<String, Vec<u8>> {
     for profile in CANONICAL_PACKAGES {
         let stock = profile.stock_file_name(profile.stock_patch_id);
         fs::copy(fixture.target.join(&stock), packages.join(&stock)).unwrap();
-        let overlay = crate::extend::build_extended_overlay(
+        let overlay = crate::package::extend::build_extended_overlay(
             &packages,
             profile.package_id,
             &[crate::ReplacementSpec {
@@ -153,7 +153,7 @@ fn legacy(fixture: &Fixture) -> BTreeMap<String, Vec<u8>> {
         );
     }
     for name in fixture.staged_bytes.keys() {
-        if let Some(profile) = crate::package_profile::authored_package_for_file_name(name)
+        if let Some(profile) = crate::package::profile::authored_package_for_file_name(name)
             && canonical_package(profile.package_id).is_none()
         {
             let bytes =
@@ -203,23 +203,23 @@ pub(super) fn account(fixture: &Fixture, schema: u64) -> (PathBuf, Vec<u8>) {
         db.execute_batch("BEGIN").unwrap();
         for sql in [
             include_str!(
-                "../../../../../src/persistence/sqlite_account/fixtures/investment_schema.sql"
+                "../../../../../src/persistence/sunrise_account/fixtures/investment_schema.sql"
             ),
             include_str!(
-                "../../../../../src/persistence/sqlite_account/fixtures/account_settings_schema.sql"
+                "../../../../../src/persistence/sunrise_account/fixtures/account_settings_schema.sql"
             ),
             include_str!(
-                "../../../../../src/persistence/sqlite_account/fixtures/investment_defaults.sql"
+                "../../../../../src/persistence/sunrise_account/fixtures/investment_defaults.sql"
             ),
             include_str!(
-                "../../../../../src/persistence/sqlite_account/fixtures/account_settings_defaults.sql"
+                "../../../../../src/persistence/sunrise_account/fixtures/account_settings_defaults.sql"
             ),
         ] {
             db.execute_batch(sql).unwrap();
         }
         if schema == 3 {
             db.execute_batch(include_str!(
-                "../../../../../src/persistence/sqlite_account/fixtures/v3/migration.sql"
+                "../../../../../src/persistence/sunrise_account/fixtures/v3/migration.sql"
             ))
             .unwrap();
             db.execute(
@@ -266,7 +266,7 @@ fn assert_mod_readback(fixture: &Fixture) -> serde_json::Value {
         let payload = package.read_entry(0).unwrap();
         if !name.starts_with("w64_parhelion_sandbox_") {
             assert_eq!(payload, b"authored payload");
-        } else if name != crate::package_profile::PARHELION_ASSET_FILE_NAME {
+        } else if name != crate::package::profile::PARHELION_ASSET_FILE_NAME {
             assert_eq!(payload, b"spill payload");
         }
         json!({"file": name, "sha256": digest_file(&path).unwrap().sha256, "entry_zero": hex::encode(payload)})
@@ -543,7 +543,7 @@ fn a_build_whose_patch_adds_entries_never_reaches_the_mod_folder() {
         .join(profile.stock_file_name(profile.stock_patch_id));
     let view = tempfile::tempdir().unwrap();
     fs::copy(&stock, view.path().join(stock.file_name().unwrap())).unwrap();
-    let appended = crate::extend::build_extended_overlay(
+    let appended = crate::package::extend::build_extended_overlay(
         view.path(),
         profile.package_id,
         &[],
@@ -709,12 +709,12 @@ fn recovery_keeps_concurrent_files_and_install_refuses_conflicting_mods() {
     let foreign = root.join("bin/x64/Sunrise/mods/dev.other.content/packages");
     fs::create_dir_all(&foreign).unwrap();
     fs::write(
-        foreign.join(crate::package_profile::PARHELION_ASSET_FILE_NAME),
+        foreign.join(crate::package::profile::PARHELION_ASSET_FILE_NAME),
         b"foreign package",
     )
     .unwrap();
     assert!(install_staged_packages(&request(&fixture)).is_err());
-    fs::remove_file(foreign.join(crate::package_profile::PARHELION_ASSET_FILE_NAME)).unwrap();
+    fs::remove_file(foreign.join(crate::package::profile::PARHELION_ASSET_FILE_NAME)).unwrap();
     let reached = std::cell::Cell::new(false);
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         backend::install_with_observer(&request(&fixture), &mut |_| {}, &mut |phase| {
@@ -728,7 +728,7 @@ fn recovery_keeps_concurrent_files_and_install_refuses_conflicting_mods() {
     assert!(reached.get(), "the install did not publish its folder");
     let changed = mod_content::directory(root)
         .join("packages")
-        .join(crate::package_profile::PARHELION_ASSET_FILE_NAME);
+        .join(crate::package::profile::PARHELION_ASSET_FILE_NAME);
     fs::write(&changed, b"concurrent content").unwrap();
     assert!(recover_interrupted_install(&recovery(&fixture)).is_err());
     assert_eq!(fs::read(changed).unwrap(), b"concurrent content");

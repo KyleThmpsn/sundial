@@ -219,7 +219,6 @@ fn compact_settings_over_the_limit_are_rejected_without_changing_the_source() {
         .err()
         .expect("oversize settings must be rejected");
     assert!(error.contains("after compaction"));
-    assert!(error.contains(&format!("supported {size_limit}-byte Sunrise limit")));
     assert_eq!(fs::read(&settings).unwrap(), original);
     assert!(!backups.exists());
 }

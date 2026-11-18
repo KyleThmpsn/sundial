@@ -7,7 +7,7 @@ pub(crate) mod dawn_account;
 pub(crate) mod json_account;
 pub(crate) mod native_account;
 pub(crate) mod progression;
-pub(crate) mod sqlite_account;
+pub(crate) mod sunrise_account;
 
 /// Sunrise stores its database beneath the selected artifact directory.
 pub(crate) fn investment_path(settings_path: &std::path::Path) -> std::path::PathBuf {

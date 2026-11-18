@@ -6,7 +6,8 @@
 //! result at `+20`. A negative result selects choice `!result` and a positive one the operation
 //! `result - 1`. An operation's low byte names its builtin and its high half its root record.
 //! The traversal follows the native `F67190` rules. Every builtin without a declared producer
-//! takes the unset name `811C9DC5`, so an emitted route is fully specialized.
+//! takes the unset name `811C9DC5` for that evaluated request. The compiler preserves qualified
+//! dynamic requests in native exact-name selectors.
 use super::*;
 
 pub(super) const LOOKUP: u32 = 0x8080_3936;
@@ -56,6 +57,21 @@ fn short(record: &[u8; 36], at: usize) -> i16 {
 }
 
 impl Controller {
+    /// Inputs declared by this action's operations, including branches behind its fixed profile.
+    pub fn inputs(&self, action: u32) -> Result<BTreeSet<u8>> {
+        let node = &self.nodes[*self.names.get(&action).context("Source action is absent")?];
+        node.operations
+            .iter()
+            .map(|&op| {
+                ensure!(
+                    op & 0xFF00 == 0 && (op & 0xFF) < 24,
+                    "Source selector operation is untranslated"
+                );
+                Ok(op as u8)
+            })
+            .collect()
+    }
+
     pub fn read(reader: &mut Reader, lookup: &Payload) -> Result<Self> {
         let base = lookup.pointer(24)?;
         ensure!(
@@ -182,6 +198,31 @@ impl Controller {
         group != u16::MAX && self.masks[usize::from(group)].contains_key(&name)
     }
 
+    /// A name and its ancestors in the dictionary group a builtin reads, without the unset
+    /// name. A dictionary mask holds its own name and every ancestor, so an ancestor is a name
+    /// whose mask the given name's mask includes.
+    pub fn lineage(&self, builtin: u8, name: u32) -> BTreeSet<u32> {
+        let group = self.builtins[usize::from(builtin)];
+        if group == u16::MAX {
+            return BTreeSet::new();
+        }
+        self.masks[usize::from(group)]
+            .keys()
+            .copied()
+            .filter(|&ancestor| ancestor != UNSET && self.accepts(builtin, ancestor, name))
+            .collect()
+    }
+
+    /// Supplemental conditions use an exact name or the required name's ancestry mask.
+    pub fn accepts(&self, builtin: u8, required: u32, value: u32) -> bool {
+        if required == value {
+            return true;
+        }
+        let (required, _) = self.input(builtin, required);
+        let (value, _) = self.input(builtin, value);
+        required[23] & value[23] & 128 != 0 && required.iter().zip(value).all(|(&a, b)| a & !b == 0)
+    }
+
     fn input(&self, builtin: u8, name: u32) -> ([u8; 24], u32) {
         let group = self.builtins[usize::from(builtin)];
         let mask = if group == u16::MAX {
@@ -249,6 +290,14 @@ impl Controller {
     pub fn route(&self, action: u32, fixed: &BTreeMap<u8, u32>) -> Result<Vec<(u32, f32)>> {
         let node = &self.nodes[*self.names.get(&action).context("Source action is absent")?];
         if node.operations.is_empty() {
+            ensure!(
+                node.records.is_empty() && node.choices.len() == 1,
+                "Source selector has no entry operation"
+            );
+            ensure!(
+                !node.choices[0].is_empty() && node.choices[0].last().map(|c| c.1) == Some(1.),
+                "Source action choice does not cover its interval"
+            );
             return Ok(node.choices[0].clone());
         }
         let mut operation = 0;

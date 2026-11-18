@@ -17,17 +17,14 @@ pub(super) fn check(
     assert!(native.u32(n + 0x30)? <= 1);
     let rows = source.array(s + 8, 32, Some(0x8080316C))?;
     let emitted = native.array(n + 8, 32, Some(0x80803E32))?;
-    assert!(!rows.is_empty());
     assert_eq!(rows.len(), emitted.len());
     let mut mask = 0u64;
-    let mut held = 0;
     let mut ordinals = BTreeSet::from([native.u8(n + 7)?]);
     for (s, n) in rows.into_iter().zip(emitted) {
         assert_eq!(source.bytes::<8>(s + 8)?, native.bytes::<8>(n + 8)?);
         assert_eq!(source.bytes::<12>(s + 20)?, native.bytes::<12>(n + 20)?);
         let seconds = source.f32(s + 16)?;
         if seconds > 0.0 {
-            held += 1;
             // D1's setter rounds to the nearest tick, ties to even, then enforces
             // one tick. Decode the staged duration back into that clock domain.
             let scaled = seconds * 60.0;
@@ -60,11 +57,11 @@ pub(super) fn check(
         mask |= 1u64 << translated_kind;
         super::check(reader, stock, source, s, native, n)?;
     }
-    assert_eq!(native.u64(n + 0x18)?, mask);
-    assert!(
-        held <= 1,
-        "Multiple source holds need distinct timer allocation"
-    );
+    // The empty counter's internal default is one, without an actual child event.
+    // Root routing below follows contributing conditions rather than that default.
+    assert_eq!(native.u64(n + 0x18)?, mask.max(1));
+    // Both original threshold callbacks renew timer zero with the contributing
+    // row's hold. Multiple positive rows need every hold preserved, not extra timers.
     // The root action must route both the counter and its contributing event kinds.
     for (descriptor, compiled) in [(0x20, 0x88), (0x48, 0x90), (0x58, 0x98)] {
         if native

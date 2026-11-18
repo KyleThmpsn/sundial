@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{manifest::MANIFEST_FILE_NAME, package_profile::authored_package_for_file_name};
+use crate::{manifest::MANIFEST_FILE_NAME, package::profile::authored_package_for_file_name};
 
 const ROOT_LOCK: &str = ".parhelion-staging-lock";
 const LEASE_FILE: &str = ".parhelion-staged-run-lease";
@@ -353,13 +353,14 @@ fn owned_inventory(directory: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 fn owned_file_name(name: &str) -> bool {
-    use sundial::package_authoring::mod_content::{map_diagnostics, mission_script};
+    use sundial::package_authoring::mod_content::{activity_pack, map_diagnostics, mission_script};
 
     // Partial runs can fail before their manifest is written. Recognize the
     // producers' flat artifact names without requiring completed file contents.
     matches!(name, LEASE_FILE | COMPLETE_FILE | MANIFEST_FILE_NAME)
-        || name == crate::merge_data::REPORT_FILE_NAME
+        || name == crate::package::merge_data::REPORT_FILE_NAME
         || name == map_diagnostics::FILE_NAME
+        || name == activity_pack::FILE_NAME
         || mission_script::path(name).is_some()
         || authored_package_for_file_name(name).is_some()
         || name

@@ -20,8 +20,9 @@ impl fmt::Display for DawnAccountIncompatibility {
         match self {
             Self::SchemaVersion { found } => write!(
                 formatter,
-                "player-state.db reports schema {found} and Sundial supports schema {}",
-                super::contract::SCHEMA_VERSION
+                "player-state.db reports schema {found} and Sundial supports schemas {} and {}",
+                super::contract::SCHEMA_VERSION,
+                super::contract::PER_ITEM_SCHEMA_VERSION
             ),
             Self::Metadata { detail } => {
                 write!(formatter, "player-state.db metadata is unusable: {detail}")

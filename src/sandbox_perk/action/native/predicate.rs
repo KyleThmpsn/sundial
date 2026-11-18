@@ -110,8 +110,8 @@ pub fn plain_variable(name: &str) -> &str {
         "Nearby Ally Count" => "Nearby Allies",
         // Osmosis ("changes this weapon's damage type to match your subclass") and
         // Elemental Capacitor ("based on the currently equipped subclass") gate their Arc,
-        // Solar and Void effects on these three, so each is the equipped subclass element.
-        // Thermal is the engine's word for Solar, the one element the other two leave.
+        // Solar and Void effects on these three, so each is the equipped subclass damage type.
+        // Thermal is the engine's word for Solar, the one damage type the other two leave.
         "Is Arc" => "Subclass Is Arc",
         "Is Thermal" => "Subclass Is Solar",
         "Is Void" => "Subclass Is Void",
@@ -197,7 +197,7 @@ pub const VARIABLES: &[Variable] = &[
     Variable {
         name: "is_thermal",
         plain: "Subclass Is Solar",
-        evidence: "Osmosis and Elemental Capacitor gate their Solar effects on this = 1. Thermal is the engine's word for the one element the Arc and Void variables leave.",
+        evidence: "Osmosis and Elemental Capacitor gate their Solar effects on this = 1. Thermal is the engine's word for the one damage type the Arc and Void variables leave.",
         operation: "=",
         threshold: 1.0,
     },

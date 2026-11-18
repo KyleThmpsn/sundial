@@ -785,7 +785,7 @@ pub(super) const ALL: &[EventKey] = &[
     },
     EventKey {
         hash: 0x787F_C58D,
-        name: "Precision Hit Buff",
+        name: "Precision Hit Boost",
         evidence: "Used only by the undescribed perk #29, which attaches it to the player on a precision hit and publishes the signal focused_fire_triggered at the same time. Its entity multiplies a Super input by 0.7 and adds 0.45 to a Barrel input. No engine name matched.",
     },
     EventKey {

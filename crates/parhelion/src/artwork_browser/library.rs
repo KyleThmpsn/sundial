@@ -1,6 +1,6 @@
 //! Local icon library and opt-in download. Only a validated selection enters a recipe.
 use super::{Icon, Purpose};
-use crate::icon_edit::ImportedIcon;
+use crate::icon::edit::ImportedIcon;
 use std::{
     fs,
     io::{Cursor, Read, Write},

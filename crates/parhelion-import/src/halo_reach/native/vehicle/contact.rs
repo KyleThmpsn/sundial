@@ -275,9 +275,8 @@ fn source_coefficient(friction: f32, wheel_mass: f32) -> f32 {
 /// Native static and moving lateral coefficients for one source friction pair, with the
 /// slip threshold in source units. Native static friction is flat from 0.1 m/s of slip, so
 /// it takes the source force's mean over the static range. A zero threshold leaves only the
-/// moving branch. Both are held below `bound`, the flat-ground tipping coefficient with a reserve.
-/// In game, translated bodies whose sliding coefficient exceeded it rolled over where the source
-/// stays on its wheels, while a body below it did not.
+/// moving branch. Both are held below `bound`, the flat-ground tipping coefficient with a reserve,
+/// measured from the contact markers where the tire forces act.
 fn lateral(friction: f32, moving: f32, threshold: f32, wheel_mass: f32, bound: f32) -> (f32, f32) {
     let moving = source_coefficient(moving, wheel_mass);
     let mean = if threshold > 0. {
@@ -507,6 +506,74 @@ fn steered_axle(scene: &Scene, wheels: &[Value]) -> Result<Vec<Option<bool>>> {
     Ok(ahead.into_iter().map(|x| Some(x > centre)).collect())
 }
 
+/// The lateral friction at which a side force tips the body on flat ground, with the half track
+/// and the height of its centre of mass above the wheel markers it comes from.
+///
+/// Both engines apply a tire's force at its contact marker, not at the ground. Reach 233944 takes
+/// the lever from the centre of mass to the friction point's sphere centre, and native `00EA17D0`
+/// to the marker position its ray starts from (wheel scratch `+0x30`). A side force therefore
+/// rolls the body about the height of its centre of mass above the markers. A centre of mass at
+/// or below the markers cannot be rolled over by its tires.
+fn tipping_grip(positions: &[[f32; 3]], center: [f32; 3]) -> Result<(f32, f32, f32)> {
+    let left = positions
+        .iter()
+        .map(|p| p[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let right = positions.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+    let half_track = (left - center[1]).min(center[1] - right);
+    let lever = center[2] - positions.iter().map(|p| p[2]).sum::<f32>() / positions.len() as f32;
+    ensure!(
+        half_track > 0. && lever.is_finite(),
+        "Source wheeled body has no supported lateral balance"
+    );
+    let grip = if lever > 0. {
+        half_track / lever
+    } else {
+        f32::INFINITY
+    };
+    Ok((grip, half_track, lever))
+}
+
+/// Copies the template's owner multipliers and writes the source's tire slope attenuation into
+/// the contact definition at `d`, returning the two cosines. Reach 234D2A and native EA208D apply
+/// the same clamped cosine ramp.
+fn owner_slopes(
+    output: &mut Payload,
+    template: &Payload,
+    (d, td): (usize, usize),
+    controls: &Value,
+) -> Result<[f32; 2]> {
+    for field in [0xa8, 0xac] {
+        put(
+            &mut output.0,
+            d + field,
+            &template.f32(td + field)?.to_le_bytes(),
+        )?;
+    }
+    let slopes = [
+        super::motion::number(controls, "maximum_slope_cosine_0")?,
+        super::motion::number(controls, "maximum_slope_cosine_1")?,
+    ];
+    ensure!(
+        slopes.iter().all(|v| (-1. ..=1.).contains(v)) && slopes[0] > slopes[1],
+        "Source tire slope attenuation requires ordered distinct cosines"
+    );
+    for (field, value) in [0xb4, 0xb8].into_iter().zip(slopes) {
+        put(&mut output.0, d + field, &value.to_le_bytes())?;
+    }
+    Ok(slopes)
+}
+
+/// The native wheel flags for source wheel `flags`, which turn with the front axle when the
+/// wheel is steered and never with the rear.
+fn wheel_flags(flags: u32, steered: Option<bool>) -> u32 {
+    match steered {
+        Some(true) => ((flags >> 1) & 0x1f & !REAR_TURNING) | FRONT_TURNING,
+        Some(false) => (flags >> 1) & 0x1f & !REAR_TURNING,
+        None => (flags >> 1) & 0x1f,
+    }
+}
+
 pub(super) fn build(
     native: &mut Reader,
     original: &Payload,
@@ -546,52 +613,22 @@ pub(super) fn build(
     put(&mut output.0, d + 0x120, &[0; 16])?;
     let source_grip = number(controls, "ground_friction")?;
     let source_moving_grip = number(controls, "ground_moving_friction")?;
-    let mut left = f32::NEG_INFINITY;
-    let mut right = f32::INFINITY;
-    let mut ground = f32::INFINITY;
-    let mut positions = Vec::new();
-    for wheel in wheels {
-        let name = wheel["marker"].as_str().context("Source wheel marker")?;
-        let (position, _) = seat::marker(model, name)?;
-        left = left.max(position[1]);
-        right = right.min(position[1]);
-        ground = ground.min(wheel_bottom(model, wheel)?);
-        positions.push(position);
-    }
+    let positions = wheels
+        .iter()
+        .map(|wheel| {
+            let name = wheel["marker"].as_str().context("Source wheel marker")?;
+            Ok(seat::marker(model, name)?.0)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let loads = suspension::loads(&positions, body.center)?;
-    let half_track = (left - body.center[1]).min(body.center[1] - right);
-    let height = body.center[2] - ground;
-    ensure!(
-        half_track > 0. && height > 0. && height.is_finite(),
-        "Source wheeled body has no supported lateral balance"
-    );
-    let tipping_grip = half_track / height;
-    // Native static friction reaches full strength at 0.1 m/s of slip. Bound
-    // that plateau below the selected body's flat-ground tipping threshold so
-    // its tires can yield before lateral load transfer lifts the inner wheels.
-    // The threshold is static. Suspension roll, bumps and turn-in overshoot tip a body
-    // sooner, and a Mongoose held at 0.95 of it still rolled easily in game (2026-11-06).
+    let (tipping_grip, half_track, lever) = tipping_grip(&positions, body.center)?;
+    // Native static friction reaches full strength at 0.1 m/s of slip. Bound that plateau below
+    // the selected body's flat-ground tipping threshold so its tires can yield before lateral
+    // load transfer lifts the inner wheels. The threshold is static, and suspension roll, bumps
+    // and turn-in overshoot tip a body sooner, hence the reserve.
     let static_bound = tipping_grip * TIPPING_RESERVE;
     let multipliers = (template.f32(td + 0xa8)?, template.f32(td + 0xac)?);
-    for field in [0xa8, 0xac] {
-        put(
-            &mut output.0,
-            d + field,
-            &template.f32(td + field)?.to_le_bytes(),
-        )?;
-    }
-    let slopes = [
-        super::motion::number(controls, "maximum_slope_cosine_0")?,
-        super::motion::number(controls, "maximum_slope_cosine_1")?,
-    ];
-    ensure!(
-        slopes.iter().all(|v| (-1. ..=1.).contains(v)) && slopes[0] > slopes[1],
-        "Source tire slope attenuation requires ordered distinct cosines"
-    );
-    // Reach 234D2A and native EA208D apply the same clamped cosine ramp.
-    for (field, value) in [0xb4, 0xb8].into_iter().zip(slopes) {
-        put(&mut output.0, d + field, &value.to_le_bytes())?;
-    }
+    let slopes = owner_slopes(&mut output, &template, (d, td), controls)?;
     append(
         &mut output.0,
         i + 0x40,
@@ -610,15 +647,18 @@ pub(super) fn build(
     let definitions = output.array(d + 0x130, 0x88, Some(0x80803d4f))?;
     let mut report = Vec::new();
     let mut markers = Vec::new();
-    let travel = number(controls, "ground_depth_source")? * scene.metres();
+    let depth = number(controls, "ground_depth_source")? * scene.metres();
     let source_damping = number(controls, "ground_damping")?;
-    let damping_ratio = source_damping.min(0.85);
+    // Reach clamps the normal force its low-slip friction reads to this multiple of the body
+    // mass. It does not bound the spring, and the native tire consumer has no such clamp.
     let maximum_normal = number(controls, "maximum_normal_force_contribution")?;
     let gravity = number(controls, "gravity_scale")?;
     ensure!(
-        travel > 0. && gravity > 0. && damping_ratio > 0. && maximum_normal > 1.,
+        depth > 0. && gravity > 0.,
         "Source wheel suspension values are invalid"
     );
+    let damping = suspension::damping(source_damping, wheels.len())?;
+    let heave_ratio = suspension::heave_ratio(source_damping, depth, wheels.len(), gravity);
     put(&mut output.0, d + 0xd4, &gravity.to_le_bytes())?;
     let steering = steered_axle(scene, wheels)?;
     for (((((&instance, &definition), wheel), &load), row), steered) in instances
@@ -663,11 +703,7 @@ pub(super) fn build(
         )?;
         let flags = u32::try_from(wheel["flags"].as_u64().context("Source wheel flags")?)?;
         ensure!(flags & !0x7f == 0, "Unsupported source wheel flags");
-        let native_flags = row.flags.unwrap_or(match steered {
-            Some(true) => ((flags >> 1) & 0x1f & !REAR_TURNING) | FRONT_TURNING,
-            Some(false) => (flags >> 1) & 0x1f & !REAR_TURNING,
-            None => (flags >> 1) & 0x1f,
-        });
+        let native_flags = row.flags.unwrap_or_else(|| wheel_flags(flags, *steered));
         put(
             &mut output.0,
             definition + 0x70,
@@ -769,26 +805,58 @@ pub(super) fn build(
         let source = seat::marker(&scene.models[0].model, name)?;
         let bottom = wheel_bottom(&scene.models[0].model, wheel)?;
         let height = source.0[2] - bottom;
-        let reach = height + travel;
-        ensure!(
-            radius > 0. && height > 0. && reach.is_finite(),
-            "Invalid wheel support distance"
-        );
-        // The native compression curve peaks at 1 + rest * stiffness times
-        // supported weight. Honor the source static normal-force bound, and
-        // use an authored damping ratio to avoid excessive bump impulses.
-        let (rest, stiffness) = suspension::parameters(height, travel, load, maximum_normal)?;
-        let (equilibrium_slope, damping) =
-            suspension::damping(height, reach, rest, stiffness, load, damping_ratio, gravity)?;
+        ensure!(radius > 0. && height > 0., "Invalid wheel support distance");
+        let (spring, resting, damping) = if tracked {
+            // A tracked source keeps the support its carrier's tread drive was checked against:
+            // its balanced share of the weight at the visible tread height, within the source
+            // ground depth and friction normal clamp, and a corner damping ratio.
+            ensure!(
+                maximum_normal > 1. && source_damping > 0.,
+                "Source tread suspension values are invalid"
+            );
+            let reach = height + depth;
+            let (rest, stiffness) = suspension::tracked(height, depth, load, maximum_normal)?;
+            let damping = suspension::tracked_damping(
+                height,
+                reach,
+                rest,
+                stiffness,
+                load,
+                source_damping.min(0.85),
+                gravity,
+            )?;
+            (
+                suspension::Spring {
+                    reach,
+                    rest,
+                    stiffness,
+                },
+                height,
+                damping,
+            )
+        } else {
+            // The source spring is the same line for every contact, so the body settles where
+            // each sphere's penetration carries its share of the weight. That resting distance
+            // is reported beside the visible tire height, which the suspension overlays draw.
+            let resting = radius - load * depth / wheels.len() as f32;
+            ensure!(
+                resting > 0.,
+                "Source wheel load exceeds its sphere radius (radius {radius}, depth {depth}, load {load})"
+            );
+            (
+                suspension::spring(radius, depth, wheels.len())?,
+                resting,
+                damping,
+            )
+        };
         // Compression stiffness and damping are normalized against base gravity
         // by EB60C0. Extension support instead follows the selected gravity.
-        let stiffness = stiffness * gravity;
-        // The native spring supports one equal share of weight at +C. Offset
-        // that distance so the visible tire height balances the actual body.
-        // Its two damping fields are coefficients per unit supported weight.
+        let stiffness = spring.stiffness * gravity;
+        // Settings +8 is the ray length, +C the distance at which the spring carries one equal
+        // share, +10 the compression stiffness and +14 and +18 the two directional dampers.
         for (field, value) in [
-            (8, reach),
-            (12, rest),
+            (8, spring.reach),
+            (12, spring.rest),
             (16, stiffness),
             (20, damping),
             (24, damping),
@@ -812,11 +880,11 @@ pub(super) fn build(
         append(&mut output.0, definition + 0x60, 0x80809c00, &marker, 64)?;
         markers.push(definition + 0x20);
         report.push(json!({"source":name,"flags":native_flags,"radius_metres":radius,
-            "rest_distance_metres":rest,"visible_bottom_metres":bottom,"travel_metres":travel,
-            "visible_contact_distance_metres":height,"static_weight_multiple":load,
-            "stiffness_per_metre":stiffness,"damping_ratio":damping_ratio,"damping_seconds_per_metre":damping,
-            "equilibrium_slope_per_metre":equilibrium_slope,"damping_mass_equal_share_multiple":load,
-            "suspension_reach_metres":reach,"source_mass":wheel_mass,
+            "rest_distance_metres":spring.rest,"visible_bottom_metres":bottom,"ground_depth_metres":depth,
+            "visible_contact_distance_metres":height,"resting_contact_distance_metres":resting,
+            "static_weight_multiple":load,
+            "stiffness_per_metre":stiffness,"damping_seconds_per_metre":damping,
+            "suspension_reach_metres":spring.reach,"source_mass":wheel_mass,
             "lateral_static":normal.0,"lateral_moving":normal.1,
             "handbrake_lateral_static":handbrake.0,"handbrake_lateral_moving":handbrake.1,
             "slip_threshold_metres_per_second":slip_speed,"brake_slip_threshold_metres_per_second":brake_slip_speed,
@@ -860,10 +928,12 @@ pub(super) fn build(
             "retained_tread_sensors":sensors.len(),
             "tracked":tracked,"untranslated_centre_line_points":centre_line,
             "friction":{"source_ground_friction":source_grip,"source_ground_moving_friction":source_moving_grip,
-                "static_bound":static_bound,"static_tipping_coefficient":tipping_grip,"support_half_width_metres":half_track,"center_height_metres":height,
+                "static_bound":static_bound,"static_tipping_coefficient":tipping_grip,"support_half_width_metres":half_track,"center_height_above_contacts_metres":lever,
                 "slope_attenuation_cosines":slopes,"grip_policy":"source_moving_and_static_mean_bounded_by_tipping","tipping_reserve":TIPPING_RESERVE,"rolling_policy":"native_template_unchanged","source_force_curve_translated":"moving_branch"},
-            "source_ground_damping":source_damping,"maximum_static_normal_weight_multiple":maximum_normal,
-            "limits":["Support loads balance the selected center of mass at the visible tire height. Travel follows source geometry. Wheel slip thresholds and slope attenuation follow source controls. Lateral moving coefficients equal the source moving force per unit normal force. Native static friction is flat above 0.1 m/s of slip while the source force grows with slip, so each static coefficient is the source mean over its static slip range. Both are bounded by 70 percent of the flat-ground tipping coefficient, so tires slide before the body rolls. Where the bound applies, cornering grip is lower than the source force. Handbrake wheels use their source brake friction the same way. Rolling friction retains the native template. The step between static and moving friction does not reproduce the source's continuous growth, so this does not establish handling parity. Source damping is adapted to a native corner damping ratio capped at 0.85, using the equilibrium branch slope and supported corner mass. Whole-body coupling is not a set of independent corners. The tipping estimate does not bound dynamic terrain or suspension impulses. The normal-force bound applies to the static spring curve, not dynamic damping forces.",
+            "source_ground_damping":source_damping,"heave_damping_ratio":(!tracked).then_some(heave_ratio),
+            "source_maximum_normal_force_contribution":maximum_normal,
+            "spring_policy":if tracked {"balanced_share_at_visible_tread_height"} else {"source_sphere_spring"},
+            "limits":["A wheeled body's contacts each carry the source spring: a sphere of the source radius about its marker that pushes with the whole weight times its penetration over the source ground depth, and with the source ground damping on the whole mass. Every contact takes the same spring, so the body settles on its own load distribution, and the resting distances differ from the visible tire heights the suspension overlays draw. Wheel slip thresholds and slope attenuation follow source controls. Lateral moving coefficients equal the source moving force per unit normal force. Native static friction is flat above 0.1 m/s of slip while the source force grows with slip, so each static coefficient is the source mean over its static slip range. Tire forces act at the contact markers, so both are bounded by 70 percent of the half track over the height of the center of mass above the markers. Where the bound applies, cornering grip is lower than the source force. Handbrake wheels use their source brake friction the same way. Rolling friction retains the native template. The step between static and moving friction does not reproduce the source's continuous growth, so this does not establish handling parity. The source clamp on the normal force its low-slip friction reads is not translated. The native ray measures distance along the vehicle's down axis where the source measures the sphere's nearest surface, so the two differ on slopes and edges. The tipping estimate does not bound dynamic terrain or suspension impulses. A tracked body's contacts instead hold their balanced share of the weight at the visible tread height, within the source ground depth and friction normal clamp, with a corner damping ratio capped at 0.85.",
                 "Each source suspension row takes a ground sensor copied from the stock tank's tread sensors at its marker, reporting one at the compression depth and zero at the extension depth. Wheel contact with the ground needs a gameplay check. Destroyed-region suspension depths are not translated."]
         }),
     )?;

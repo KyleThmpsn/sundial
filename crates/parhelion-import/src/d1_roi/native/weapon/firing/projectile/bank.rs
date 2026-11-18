@@ -271,7 +271,7 @@ fn reshape(
     native: &graph::Graph,
     movement: &mut Component,
     (paired, dropped): (&[Option<usize>], &[usize]),
-    plan: &edit::Plan,
+    (plan, splits): (&edit::Plan, &Splits),
 ) -> Result<Vec<(usize, u32)>> {
     let native_movement = native.owner(graph::Role::Movement)?;
     // Patches and plan edits address the carrier layout, so groups are left out after them.
@@ -312,9 +312,19 @@ fn reshape(
             )?;
             tree::drop_allocation(&mut allocation, groups, dropped)?;
         }
-        // A created spawn names its translated graph's root.
+        // A created spawn names its translated graph's root. A created profile response whose
+        // source profile differs from the others on its carrier profile names its own copy.
+        let graphs = plan.spawns();
         for (at, tag) in spawned {
-            movement.patch(at, &spawn_symbol(tag))?;
+            if graphs.contains(&tag) {
+                movement.patch(at, &spawn_symbol(tag))?;
+            } else if let Some((carrier, private)) = splits.get(&tag) {
+                let symbol = format!("projectile-profile-{carrier:08X}-source-{tag:08X}");
+                if !assembly.symbols.contains(&symbol) {
+                    private_profile(assembly, *carrier, private, &symbol)?;
+                }
+                movement.patch(at, &symbol)?;
+            }
         }
         if movement.payload.0.len() != length {
             movement.seal()?;
@@ -339,6 +349,13 @@ fn private_profile(
         .context("Retyped projectile profile shape differs")?;
     if let Some(mode) = private.damage_type {
         payload.0[shape.root + 0x20] = mode;
+    }
+    for (at, body) in &private.bodies {
+        put(&mut payload.0, *at, body)?;
+    }
+    // Native `80804B02` stores the amount bounds and extent inline at `+14`.
+    if let Some(amount) = &private.amount {
+        put(&mut payload.0, shape.root + 0x14, amount)?;
     }
     // Native category rows of `808094B3` name the native dictionary at `+10`.
     if let Some(names) = &private.categories {
@@ -402,28 +419,41 @@ fn retype_profiles(
     let mut report = Vec::new();
     for (&tag, private) in retyped {
         let symbol = format!("projectile-profile-{tag:08X}");
-        private_profile(assembly, tag, private, &symbol)?;
         // Sealing a reshaped movement keeps the original records and appends a copy with the
         // definition view, so both definitions name the profile.
         let definitions = [native_movement.definition, movement.payload.pointer(24)?];
         let mut places = Vec::new();
+        let mut unqualified = None;
         for at in (0..movement.payload.0.len().saturating_sub(3)).step_by(4) {
             if movement.payload.u32(at)? != tag {
                 continue;
             }
-            ensure!(
-                definitions
-                    .iter()
-                    .any(|&definition| at == definition + 0x118 || at == definition + 0x1D0)
-                    || (at >= 12 && movement.payload.u32(at - 12)? == 0x808037F3),
+            let qualified = definitions
+                .iter()
+                .any(|&definition| at == definition + 0x118 || at == definition + 0x1D0)
+                || (at >= 12 && movement.payload.u32(at - 12)? == 0x808037F3);
+            if !qualified {
+                unqualified = Some(at);
+            }
+            places.push(at);
+        }
+        // A copy made for response bodies alone is optional: the carrier's own profile stands in
+        // where a reference cannot be redirected.
+        if private.bodies_only() && (unqualified.is_some() || places.is_empty()) {
+            report.push(json!({"native":tag,"kept_native_bodies":true,
+                "reason":"The carrier profile has a reference that cannot name a private copy"}));
+            continue;
+        }
+        if let Some(at) = unqualified {
+            anyhow::bail!(
                 "Retyped projectile profile {tag:08X} has an unqualified reference at {at:X}"
             );
-            places.push(at);
         }
         ensure!(
             !places.is_empty(),
             "Retyped projectile profile is not referenced"
         );
+        private_profile(assembly, tag, private, &symbol)?;
         for &at in &places {
             movement.patch(at, &symbol)?;
         }
@@ -513,7 +543,7 @@ pub(super) fn prepare(
     source: &graph::Graph,
     native: &graph::Graph,
     entity_tag: u32,
-    (edits, material_edits, (retyped, fills)): ResponseEdits<'_>,
+    (edits, material_edits, (retyped, fills, splits)): ResponseEdits<'_>,
     (paired, dropped): (&[Option<usize>], &[usize]),
     (plan, values): (&edit::Plan, &[BankValue]),
 ) -> Result<Value> {
@@ -604,7 +634,13 @@ pub(super) fn prepare(
     }
     let receiver_providers = replace_receiver_rows(source, native, &mut retained)?;
     edit_movement(&mut movement, native_movement, (edits, material_edits))?;
-    let created = reshape(assembly, native, &mut movement, (paired, dropped), plan)?;
+    let created = reshape(
+        assembly,
+        native,
+        &mut movement,
+        (paired, dropped),
+        (plan, splits),
+    )?;
     let mut profiles = retype_profiles(assembly, native_movement, &mut movement, retyped)?;
     profiles.extend(fill_profiles(
         assembly,
@@ -628,14 +664,27 @@ pub(super) fn prepare(
         (48, &mut connections.named_connections),
     ] {
         for at in native.payload.array(field, 72, Some(0x80809BC9))? {
-            if left_out.contains(&native.payload.u32(at + 8)?)
-                || left_out.contains(&native.payload.u32(at + 40)?)
-            {
+            if left_out.contains(&native.payload.u32(at + 8)?) {
                 continue;
             }
             let mut row = native.payload.bytes::<72>(at)?;
+            // A kept settings input a left-out component supplied reads nothing, written as the
+            // carrier writes an unconnected provider. Its other rows leave with it.
+            let disconnected = left_out.contains(&native.payload.u32(at + 40)?);
+            if disconnected {
+                if native.payload.u32(at + 12)? != 0x80809BD9 {
+                    continue;
+                }
+                put(&mut row, 40, &[0xFF; 8])?;
+                put(&mut row, 48, &0u64.to_le_bytes())?;
+                put(&mut row, 56, &0xFFFFu64.to_le_bytes())?;
+                put(&mut row, 64, &0u32.to_le_bytes())?;
+            }
             // Component selectors count the kept owners only.
             for (owner, selector) in [(8, 24), (40, 56)] {
+                if disconnected && owner == 40 {
+                    continue;
+                }
                 if native.payload.u64(at + selector)? < 0xFFFF {
                     let tag = native.payload.u32(at + owner)?;
                     let index = order
@@ -703,7 +752,9 @@ pub(super) fn prepare(
                     "Private bank output is not its typed vector provider"
                 );
                 let ordinal = if native.payload.u32(at + 12)? == 0x80809BD9 {
-                    // Source declarations keep their ordinals in the private bank.
+                    // The source's selected declaration, where the private bank holds it. A bank
+                    // whose carrier already declares the source's names keeps the carrier's
+                    // order, as fusion carrier `80EF0CEB`'s bank holds `8A0D4131` ninth.
                     let tag = native.payload.u32(at + 8)?;
                     let role = native
                         .owners
@@ -711,9 +762,17 @@ pub(super) fn prepare(
                         .find(|(_, owner)| owner.tag == tag)
                         .map(|(role, _)| *role)
                         .context("Native settings input owner")?;
-                    *settings
+                    let channel = *settings
                         .get(&role)
-                        .context("Source settings input is unbound")? as usize
+                        .context("Source settings input is unbound")?
+                        as usize;
+                    let name = *names(source_bank)?
+                        .get(channel)
+                        .context("Source settings ordinal")?;
+                    bank_names
+                        .iter()
+                        .position(|&value| value == name)
+                        .context("Source settings declaration is absent from the private bank")?
                 } else {
                     let name = *native_names
                         .get(native.payload.u32(at + 64)? as usize)
@@ -880,9 +939,17 @@ pub(super) fn prepare(
         "gameplay_verified":false}}))
 }
 
+/// Source profiles of created profile responses that take their own private copy of a carrier
+/// profile: the carrier profile and what the copy takes, by source profile.
+pub(super) type Splits = BTreeMap<u32, (u32, Private)>;
+
 type ResponseEdits<'a> = (
     &'a [Value],
     &'a [NativeAssetResourcePatch],
-    (&'a BTreeMap<u32, Private>, &'a [(usize, u32, Private)]),
+    (
+        &'a BTreeMap<u32, Private>,
+        &'a [(usize, u32, Private)],
+        &'a Splits,
+    ),
 );
 type BankValue = (u32, usize, Vec<u8>);

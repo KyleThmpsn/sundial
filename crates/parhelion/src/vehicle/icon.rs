@@ -5,7 +5,7 @@
 //! [`WeaponIconEdit::with_art`](crate::WeaponIconEdit::with_art).
 use super::{Sparrow, Summon};
 use crate::WeaponIconEdit;
-use crate::icon_edit::ImportedIcon;
+use crate::icon::edit::ImportedIcon;
 use sundial::package_authoring::PackageManager;
 use tiger_pkg::TagHash;
 
@@ -34,7 +34,7 @@ pub(crate) fn silhouette(
     let payload = manager
         .read_tag(TagHash(entity))
         .map_err(|error| format!("Vehicle entity 0x{entity:08X}: {error}"))?;
-    let Some(hud) = crate::hud_icon::silhouette(manager, &payload)? else {
+    let Some(hud) = crate::icon::hud::silhouette(manager, &payload)? else {
         return Ok(None);
     };
     let [width, height] = hud.size.map(|edge| u32::try_from(edge).unwrap_or(u32::MAX));

@@ -493,11 +493,18 @@ pub(super) fn blocks(payload: &[u8], owner: u32) -> BTreeMap<usize, usize> {
 /// Where the instance block was before an edit and how far the edit moved it, for the tags
 /// that name the bank's blocks by absolute offset.
 pub fn instance_shift(before: &[u8], after: &[u8]) -> Result<(usize, usize), String> {
-    let was = layout(before)?.instance;
-    let now = layout(after)?.instance;
+    let was = instance_offset(before)?;
+    let now = instance_offset(after)?;
     now.checked_sub(was)
         .map(|delta| (was, delta))
         .ok_or_else(|| "The edited bank's instance block moved backwards".into())
+}
+
+/// The validated instance block's payload offset. Relative to one immutable stock bank, this
+/// boundary determines every external reference move performed by [`retarget_references`].
+/// Row values and arrays after the boundary do not change that relocation.
+pub fn instance_offset(payload: &[u8]) -> Result<usize, String> {
+    Ok(layout(payload)?.instance)
 }
 
 /// A tag's references into the bank by absolute offset, the ability entity's way of naming a

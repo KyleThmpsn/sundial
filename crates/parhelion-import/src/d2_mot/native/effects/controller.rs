@@ -19,6 +19,7 @@ pub mod parameters;
 pub mod perk;
 pub mod response;
 pub mod scalar;
+pub mod stat;
 #[cfg(test)]
 mod tests;
 pub mod timed;

@@ -19,6 +19,7 @@ mod aim;
 mod battery;
 mod charge;
 pub(super) mod heat;
+pub(super) mod loadout;
 pub(super) mod lock;
 mod range;
 pub(super) mod release;

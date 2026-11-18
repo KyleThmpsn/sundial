@@ -738,7 +738,7 @@ pub(super) fn validate_raw_payload_patch_shapes(
 }
 
 pub(super) fn validate_runtime_resource_patch_shapes(
-    patches: &[WeaponRuntimeResourcePatch],
+    patches: &[RuntimeResourcePatch],
 ) -> AuthoringResult<()> {
     for (patch_index, patch) in patches.iter().enumerate() {
         if !patch.graph_values.is_empty()
@@ -807,7 +807,7 @@ pub(super) fn validate_runtime_resource_patch_shapes(
 }
 
 pub(super) fn validate_runtime_value_override_shapes(
-    overrides: &[WeaponRuntimeValueOverride],
+    overrides: &[RuntimeValueOverride],
 ) -> AuthoringResult<()> {
     let mut locators = BTreeSet::new();
     for (index, runtime) in overrides.iter().enumerate() {
@@ -918,8 +918,8 @@ pub(crate) fn validate_catalog_with_progress<'a>(
     })
     .map_err(|error| invalid(format!("Could not load Sundial's donor catalog: {error}")))?;
     let installed_donors = catalog.weapon_donors();
-    // Four lookups per weapon used to walk the whole donor list. Indexing once turns the pass
-    // from quadratic in the installed weapon count into a map lookup.
+    // Each weapon makes four donor lookups. Indexing the donors once keeps the pass from
+    // growing with the square of the installed weapon count.
     let donors_by_hash = installed_donors
         .iter()
         .map(|donor| (donor.hash, donor))
@@ -937,7 +937,7 @@ pub(crate) fn validate_catalog_with_progress<'a>(
     // Requiring the active-only choice set here was stricter than the shipped data, so the
     // guard checks that the installed catalog knows the index at all.
     let installed_sandbox_perks =
-        catalog.referenced_sandbox_perk_indices(crate::package_profile::is_stock_item_definition);
+        catalog.referenced_sandbox_perk_indices(crate::package::profile::is_stock_item_definition);
     let installed_trait_indices = catalog
         .weapon_trait_choices()
         .into_iter()
@@ -1267,7 +1267,7 @@ pub(super) fn validate_authored_payloads(
     let authored_version = weapon_version_array(definition)?;
     let display_source = if spec.text.inventory_hint.is_some() {
         read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET)?
-            == crate::package_profile::localization_table() as u32
+            == crate::package::profile::localization_table() as u32
             && read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET + 4)?
                 == spec.identity.inventory_hint_hash
     } else {
@@ -1293,14 +1293,14 @@ pub(super) fn validate_authored_payloads(
         (
             "name",
             read_u32(strings, ITEM_NAME_REFERENCE_OFFSET)?
-                == crate::package_profile::localization_table() as u32
+                == crate::package::profile::localization_table() as u32
                 && read_u32(strings, ITEM_NAME_REFERENCE_OFFSET + 4)? == spec.identity.name_hash,
         ),
         (
             "type",
             spec.text.type_name.as_ref().is_none_or(|_| {
                 read_u32(strings, ITEM_TYPE_REFERENCE_OFFSET).ok()
-                    == Some(crate::package_profile::localization_table() as u32)
+                    == Some(crate::package::profile::localization_table() as u32)
                     && read_u32(strings, ITEM_TYPE_REFERENCE_OFFSET + 4).ok()
                         == Some(spec.identity.type_hash)
             }),
@@ -1308,7 +1308,7 @@ pub(super) fn validate_authored_payloads(
         (
             "flavor",
             read_u32(strings, ITEM_DESCRIPTION_REFERENCE_OFFSET)?
-                == crate::package_profile::localization_table() as u32
+                == crate::package::profile::localization_table() as u32
                 && read_u32(strings, ITEM_DESCRIPTION_REFERENCE_OFFSET + 4)?
                     == spec.identity.flavor_hash,
         ),

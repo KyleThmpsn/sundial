@@ -13,6 +13,7 @@ pub use compose::{
 };
 pub mod barrel;
 pub mod owner;
+pub mod reload;
 mod rewire;
 mod splice;
 pub mod spread;
@@ -56,6 +57,32 @@ pub const WEAPON_MAGAZINE_COMPONENT_KEY: u32 = 0xB1AA_A2CB;
 pub const WEAPON_RELOAD_COMPONENT_KEY: u32 = 0xB9CA_A3BC;
 pub const WEAPON_TRIGGER_CHARGE_COMPONENT_KEY: u32 = 0x7E4A_5223;
 pub const WEAPON_STAT_TRANSLATOR_COMPONENT_KEY: u32 = 0x2F98_1564;
+/// The investment stat definition index each Weapon Stats input reads. The investment constants
+/// blob lists one per input, with an extra entry after input 5. The stock routes place Reload Speed
+/// at input 9, Handling at 14, Aim Assistance at 17 and Recoil Direction at 18, so its entries from
+/// the seventh on belong one input earlier. Inputs 2 and 12 read none, and neither does any input
+/// past 18.
+pub const WEAPON_STAT_INPUT_DEFINITIONS: [Option<u16>; 19] = [
+    Some(14),
+    Some(24),
+    None,
+    Some(32),
+    Some(17),
+    Some(22),
+    Some(20),
+    Some(16),
+    Some(21),
+    Some(27),
+    Some(18),
+    Some(15),
+    None,
+    Some(25),
+    Some(26),
+    Some(26),
+    Some(26),
+    Some(30),
+    Some(31),
+];
 
 const FILE_SIZE_OFFSET: usize = 0x00;
 const ENTITY_COMPONENTS_DESCRIPTOR: usize = 0x10;

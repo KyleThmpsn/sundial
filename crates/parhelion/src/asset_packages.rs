@@ -1,10 +1,10 @@
 //! Allocate complete artwork chains and symbolic resource graphs into owned packages.
 use crate::{
     AuthoringResult, NewTagReferenceOverride, NewTagSpec,
-    appended_tags::MAX_PACKAGE_ENTRY_COUNT,
     error::{invalid, validation},
-    format::{BLOCK_SIZE, MAX_BLOCK_COUNT},
-    package_profile::window,
+    package::appended_tags::MAX_PACKAGE_ENTRY_COUNT,
+    package::format::{BLOCK_SIZE, MAX_BLOCK_COUNT},
+    package::profile::window,
 };
 mod graph;
 pub(crate) mod stream;
@@ -273,7 +273,7 @@ impl AssetPackages {
             }
             bounds.push(length);
         }
-        if !crate::package_profile::host().is_standalone() {
+        if !crate::package::profile::host().is_standalone() {
             let layout = self.layout()?;
             return choose(layout.count, layout.last, bounds);
         }
@@ -429,7 +429,7 @@ impl AssetPackages {
 mod tests {
     use super::*;
     use crate::NewTagStorageMode;
-    use crate::package_profile::PARHELION_ASSET_PACKAGE_ID;
+    use crate::package::profile::PARHELION_ASSET_PACKAGE_ID;
     use tiger_pkg::TagHash;
 
     fn tag(size: usize) -> NewTagSpec {

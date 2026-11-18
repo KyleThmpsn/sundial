@@ -6,7 +6,7 @@ use super::rig::{
 use crate::{
     AuthoringResult,
     error::invalid,
-    item::WeaponRuntimeResourcePatch,
+    item::RuntimeResourcePatch,
     tag_payload::{array_at, read_u32},
 };
 use serde::Deserialize;
@@ -150,7 +150,8 @@ pub(crate) fn imported(graph: &serde_json::Value) -> AuthoringResult<Vec<Input>>
 
 /// E83C40 returns a routing operand's literal instead of sampling when it is not Float32 MAX.
 /// Requested writers retain other consumers of their shared curves. A paired full-magazine
-/// refill candidate preserves a native literal quantum, including per-shell reloads. Native
+/// refill candidate preserves a native literal quantum, including per-shell reloads. A checked
+/// conversion to magazine reload instead writes the full candidate to that same writer. Native
 /// component modifiers still operate on these base values. Investment bonuses do not resample
 /// the imported baseline, and donor trigger/state selection remains a separate contract. A Charge
 /// input that no route writes takes its value as the Charge definition's own literal instead.
@@ -159,7 +160,8 @@ pub(crate) fn patches(
     entity: &[u8],
     group: u32,
     values: &[Input],
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    full_magazine_reload: bool,
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     if values.is_empty() {
         return Ok(Vec::new());
     }
@@ -205,7 +207,7 @@ pub(crate) fn patches(
                 found.push(at);
             }
         }
-        if fixed_refill(&owner, &found, value, values)? {
+        if !full_magazine_reload && fixed_refill(&owner, &found, value, values)? {
             continue;
         }
         for &at in &found {
@@ -239,7 +241,7 @@ pub(crate) fn patches(
     let mut patches = unique
         .into_iter()
         .map(|(cell, bytes)| {
-            Ok(WeaponRuntimeResourcePatch {
+            Ok(RuntimeResourcePatch {
                 binding_hash: WEAPON_STAT_TRANSLATOR_COMPONENT_KEY,
                 resource_index: 0,
                 offset: u32::try_from(

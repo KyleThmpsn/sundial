@@ -1,7 +1,7 @@
 //! Backend-only modern subclass research: capture, validate selection, plan, then publish evidence.
 //!
 //! This route is independent of weapon discovery and automatic donor matching. It emits neither
-//! recipes nor asset graphs. Roles and the element are explicit intent until their source
+//! recipes nor asset graphs. Roles and the damage type are explicit intent until their source
 //! consumers are resolved. All native selection, ability and private ownership contracts remain
 //! visible in the plan, including when a source perk controller can already be decoded.
 

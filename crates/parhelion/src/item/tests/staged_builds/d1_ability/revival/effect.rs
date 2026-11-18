@@ -315,5 +315,5 @@ pub(super) fn readback(
         owners.len()
     );
     json!({"graph":tag,"source":source_tag,"owners":evidence,"replication":replication_tag,
-        "sha256":sha(&graph.0)})
+        "sha256":sha256_hex(&graph.0)})
 }

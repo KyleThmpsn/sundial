@@ -61,9 +61,9 @@ pub(crate) trait NativeAccountDocument {
     fn profile_capabilities() -> ProfileCapabilities
     where
         Self: Sized;
-    fn character_capabilities() -> CharacterCapabilities
-    where
-        Self: Sized;
+    /// Character rules, read from the document because a database's schema sets its inventory
+    /// capacity.
+    fn character_capabilities(&self) -> CharacterCapabilities;
     fn settings_capabilities() -> AccountSettingsCapabilities
     where
         Self: Sized;
@@ -119,8 +119,8 @@ impl<T: NativeAccountDocument> NativeAccountDocument for Box<T> {
     fn profile_capabilities() -> ProfileCapabilities {
         T::profile_capabilities()
     }
-    fn character_capabilities() -> CharacterCapabilities {
-        T::character_capabilities()
+    fn character_capabilities(&self) -> CharacterCapabilities {
+        (**self).character_capabilities()
     }
     fn settings_capabilities() -> AccountSettingsCapabilities {
         T::settings_capabilities()

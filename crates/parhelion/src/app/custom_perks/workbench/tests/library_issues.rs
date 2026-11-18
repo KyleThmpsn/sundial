@@ -70,7 +70,7 @@ fn a_real_library_marks_exactly_the_perks_with_problems() {
     )
     .expect("catalog");
     let choices =
-        catalog.weapon_sandbox_perk_choices_from(crate::package_profile::is_stock_item_definition);
+        catalog.weapon_sandbox_perk_choices_from(crate::package::profile::is_stock_item_definition);
     let mut app = crate::app::PackageAuthoringApp {
         sandbox_perk_choices: choices,
         catalog: Some(catalog),

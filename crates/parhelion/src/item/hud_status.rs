@@ -9,7 +9,7 @@
 //! patches change their owners.
 use super::*;
 use crate::{
-    NewTagReference, NewTagReferenceOverride, appended_tags::AppendedTagAllocator,
+    NewTagReference, NewTagReferenceOverride, package::appended_tags::AppendedTagAllocator,
     tag_payload::read_u16,
 };
 use sundial::package_authoring::sandbox_perk::program::{
@@ -40,8 +40,8 @@ struct Stock {
 }
 
 fn stock(manager: &PackageManager) -> AuthoringResult<Stock> {
-    if TABLE.pkg_id() != crate::package_profile::HUD_STATUS_TABLE_PACKAGE_ID
-        || NAMES.pkg_id() != crate::package_profile::HUD_STATUS_NAME_PACKAGE_ID
+    if TABLE.pkg_id() != crate::package::profile::HUD_STATUS_TABLE_PACKAGE_ID
+        || NAMES.pkg_id() != crate::package::profile::HUD_STATUS_NAME_PACKAGE_ID
         || manager
             .get_entry(TABLE)
             .is_none_or(|entry| entry.reference != TABLE_CLASS)
@@ -52,7 +52,7 @@ fn stock(manager: &PackageManager) -> AuthoringResult<Stock> {
         return Err(invalid("The HUD status table or names moved"));
     }
     let table = read_tag(manager, TABLE, "HUD status table")?;
-    let rows = crate::hud_icon::assets::table_rows(&table)?;
+    let rows = crate::icon::hud::assets::table_rows(&table)?;
     let names = read_tag(manager, NAMES, "HUD status names")?;
     let (count, _, hashes, _) = array_at(&names, 8)?;
     let name_hashes = (0..count)
@@ -246,13 +246,13 @@ fn asset_patches(
 pub(super) fn value_copy_patches(
     manager: &PackageManager,
     asset: &Asset,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     if asset.hud_status.is_none() {
         return Ok(Vec::new());
     }
     Ok(asset_patches(manager, &stock(manager)?, asset)?
         .into_iter()
-        .map(|patch| WeaponRuntimeResourcePatch {
+        .map(|patch| RuntimeResourcePatch {
             binding_hash: patch.binding_hash,
             resource_index: patch.resource_index,
             offset: patch.offset,
@@ -658,7 +658,7 @@ pub(super) fn replacements<'a>(
         .collect::<Vec<_>>();
     let mut replacements = Vec::new();
     if !rows.is_empty() {
-        let table = crate::hud_icon::assets::insert_rows(stock.table, stock.rows, rows)?;
+        let table = crate::icon::hud::assets::insert_rows(stock.table, stock.rows, rows)?;
         replacements.push(ReplacementSpec {
             tag: TABLE,
             payload: synchronize_payload_size(table)?,
@@ -671,10 +671,10 @@ pub(super) fn replacements<'a>(
     let mut locales = BTreeSet::new();
     for offset in (LOCALIZATION_DATA_TAG_START..LOCALIZATION_DATA_TAG_END).step_by(4) {
         let tag = TagHash(read_u32(&stock.names, offset)?);
-        if tag.pkg_id() != crate::package_profile::HUD_STATUS_NAME_DATA_PACKAGE_ID {
+        if tag.pkg_id() != crate::package::profile::HUD_STATUS_NAME_DATA_PACKAGE_ID {
             return Err(invalid(format!(
                 "HUD status names locale {tag} moved out of package {:04x}",
-                crate::package_profile::HUD_STATUS_NAME_DATA_PACKAGE_ID
+                crate::package::profile::HUD_STATUS_NAME_DATA_PACKAGE_ID
             )));
         }
         if !locales.insert(tag) {

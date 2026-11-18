@@ -3,7 +3,7 @@ use super::*;
 use crate::app::saving::sources::{
     WorkspaceSaveError, WorkspaceSaveReceipt, save_changed_sources_with_json,
 };
-use crate::persistence::sqlite_account::snapshot;
+use crate::persistence::sunrise_account::snapshot;
 
 // Use the same coordinator and real writers with an injected closed game for disposable files.
 fn save_changed_sources(
@@ -34,7 +34,7 @@ fn save_changed_sources(
 
 #[test]
 fn sqlite_smoke_mixed_save_conflict_rollback_retry_and_reload() {
-    for case in crate::persistence::sqlite_account::tests::versions::CASES {
+    for case in crate::persistence::sunrise_account::tests::versions::CASES {
         mixed_save(case);
     }
 }
@@ -43,9 +43,17 @@ fn mixed_save(case: &str) {
     let directory = TestDirectory::new("sqlite smoke 玩家");
     let settings = settings_path(&directory);
     let database = directory.0.join("data/investment.sqlite3");
-    crate::persistence::sqlite_account::tests::versions::fixture(&database, case);
+    crate::persistence::sunrise_account::tests::versions::fixture(&database, case);
     let db = Connection::open(&database).unwrap();
-    db.execute_batch("PRAGMA journal_mode=WAL; INSERT INTO character_stacks VALUES(0,0,0,1,0); ALTER TABLE profile_items ADD COLUMN future TEXT NOT NULL DEFAULT 'first'; INSERT INTO profile_items VALUES(1,5764607523034234882,11,9,3,0,'second');").unwrap();
+    // The fixtures from schema 7 on already hold a stack, and their stacks carry a placement.
+    let placed = crate::persistence::sunrise_account::tests::versions::version(case) >= 7;
+    db.execute_batch(if placed {
+        "INSERT INTO character_stacks VALUES(0,1,0,1,0,0)"
+    } else {
+        "INSERT INTO character_stacks VALUES(0,0,0,1,0)"
+    })
+    .unwrap();
+    db.execute_batch("PRAGMA journal_mode=WAL; ALTER TABLE profile_items ADD COLUMN future TEXT NOT NULL DEFAULT 'first'; INSERT INTO profile_items VALUES(1,5764607523034234882,11,9,3,0,'second');").unwrap();
     db.execute("INSERT INTO unlocks VALUES(-1,0,46,0,1)", [])
         .unwrap();
     let json: serde_json::Value = serde_json::from_str(include_str!(
@@ -55,7 +63,7 @@ fn mixed_save(case: &str) {
     let encoded = serde_json::to_vec(&json).unwrap();
     fs::write(&settings, &encoded).unwrap();
     let persisted = WorkspaceDocument::load(json, &settings, false);
-    assert_eq!(persisted.source_kind(), AccountSourceKind::Sqlite);
+    assert_eq!(persisted.source_kind(), AccountSourceKind::Sunrise);
     assert_eq!(
         persisted.progression_view(0)["state"]["unlocks"]["account_flag_runs"],
         json!([])
@@ -105,7 +113,7 @@ fn mixed_save(case: &str) {
     );
     assert_eq!(reopened.json(), edited.json());
     assert_saved_domains(&db, &reopened);
-    crate::persistence::sqlite_account::tests::versions::preserved(&db, case);
+    crate::persistence::sunrise_account::tests::versions::preserved(&db, case);
     let before_repeat = snapshot::read(&database).unwrap();
     let mut repeat = reopened.clone();
     save_changed_sources(&mut repeat, &reopened, &settings, false, true).unwrap();

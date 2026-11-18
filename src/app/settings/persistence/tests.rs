@@ -77,7 +77,7 @@ fn settings_schemas_save_export_keys_and_require_the_multiplayer_opt_in() {
         };
         let encoded = serde_json::to_vec(&original).unwrap();
         fs::write(&path, &encoded).unwrap();
-        crate::persistence::sqlite_account::tests::versions::fixture(
+        crate::persistence::sunrise_account::tests::versions::fixture(
             &directory.0.join("data/investment.sqlite3"),
             if schema == 19 { "v5-fresh" } else { "v3-fresh" },
         );

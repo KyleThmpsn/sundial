@@ -1,6 +1,8 @@
 //! A private launch sound follows an accepted native projectile spawn, and the vehicle's native
-//! barrel fires at the source weapon's cadence and cone.
-use super::super::secondary::Bundle;
+//! barrel fires at the source weapon's cadence and cone. Secondary fire on a carrier without a
+//! weapon child is in `secondary`.
+pub(super) mod secondary;
+use super::super::bundle::Bundle;
 use super::*;
 use crate::halo_reach::{audio, cache::Cache};
 use std::collections::BTreeSet;

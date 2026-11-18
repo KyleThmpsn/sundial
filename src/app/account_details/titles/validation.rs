@@ -1,7 +1,7 @@
 use super::Titles;
 use crate::{
     app::account_workspace::WorkspaceDocument, catalog::Catalog, investment::titles::Title,
-    persistence::sqlite_account::SqliteAccountDocument,
+    persistence::sunrise_account::SunriseAccountDocument,
 };
 
 impl Titles {
@@ -42,7 +42,7 @@ impl Titles {
     }
 }
 
-fn selected_titles(document: &SqliteAccountDocument) -> Vec<u64> {
+fn selected_titles(document: &SunriseAccountDocument) -> Vec<u64> {
     document.runtime()["characters"]
         .as_array()
         .into_iter()
@@ -52,8 +52,8 @@ fn selected_titles(document: &SqliteAccountDocument) -> Vec<u64> {
 }
 
 fn validate_claims(
-    candidate: &SqliteAccountDocument,
-    persisted: &SqliteAccountDocument,
+    candidate: &SunriseAccountDocument,
+    persisted: &SunriseAccountDocument,
     after: &[u64],
     before: &[u64],
     titles: &[Title],

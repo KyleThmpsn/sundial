@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::driver::painted_text as text;
 
-fn field(kind: WeaponRuntimeValueKind, value: WeaponRuntimeValue) -> WeaponRuntimeField {
+fn field(kind: RuntimeValueKind, value: RuntimeValue) -> RuntimeField {
     crate::test_support::runtime_field("Runtime Field", kind, value)
 }
 
@@ -46,19 +46,19 @@ fn passive_render_preserves_all_ieee_float_bits_and_saved_overrides() {
     ];
     for bits in patterns {
         for value in [
-            WeaponRuntimeValue::Float32Bits(bits),
-            WeaponRuntimeValue::Vector4Float32Bits([bits, 0x3F80_0000, bits, 0x8000_0000]),
+            RuntimeValue::Float32Bits(bits),
+            RuntimeValue::Vector4Float32Bits([bits, 0x3F80_0000, bits, 0x8000_0000]),
         ] {
             let kind = match value {
-                WeaponRuntimeValue::Float32Bits(_) => WeaponRuntimeValueKind::Float32,
-                _ => WeaponRuntimeValueKind::Vector4Float32,
+                RuntimeValue::Float32Bits(_) => RuntimeValueKind::Float32,
+                _ => RuntimeValueKind::Vector4Float32,
             };
             let field = field(kind, value);
             for customized in [false, true] {
                 let ctx = egui::Context::default();
                 let mut drafts = BTreeMap::new();
                 let mut overrides = if customized {
-                    vec![WeaponRuntimeValueOverride {
+                    vec![RuntimeValueOverride {
                         locator: field.locator.clone(),
                         value: field.value.clone(),
                     }]
@@ -90,10 +90,7 @@ fn double_precision_fields_preserve_exact_bits_on_passive_render() {
         0x7FF0_0000_0000_0000,
         0x7FF8_0000_0000_1234,
     ] {
-        let field = field(
-            WeaponRuntimeValueKind::Float64,
-            WeaponRuntimeValue::Float64Bits(bits),
-        );
+        let field = field(RuntimeValueKind::Float64, RuntimeValue::Float64Bits(bits));
         let ctx = egui::Context::default();
         let mut drafts = BTreeMap::new();
         let mut saved = Vec::new();
@@ -114,33 +111,33 @@ fn double_precision_fields_preserve_exact_bits_on_passive_render() {
 fn integer_64_bit_display_is_exact_at_precision_boundaries() {
     for (kind, current) in [
         (
-            WeaponRuntimeValueKind::SignedInteger { bits: 64 },
-            WeaponRuntimeValue::Signed(i64::MIN),
+            RuntimeValueKind::SignedInteger { bits: 64 },
+            RuntimeValue::Signed(i64::MIN),
         ),
         (
-            WeaponRuntimeValueKind::SignedInteger { bits: 64 },
-            WeaponRuntimeValue::Signed(i64::MAX),
+            RuntimeValueKind::SignedInteger { bits: 64 },
+            RuntimeValue::Signed(i64::MAX),
         ),
         (
-            WeaponRuntimeValueKind::SignedInteger { bits: 64 },
-            WeaponRuntimeValue::Signed(-9_007_199_254_740_993),
+            RuntimeValueKind::SignedInteger { bits: 64 },
+            RuntimeValue::Signed(-9_007_199_254_740_993),
         ),
         (
-            WeaponRuntimeValueKind::UnsignedInteger { bits: 64 },
-            WeaponRuntimeValue::Unsigned(9_007_199_254_740_993),
+            RuntimeValueKind::UnsignedInteger { bits: 64 },
+            RuntimeValue::Unsigned(9_007_199_254_740_993),
         ),
         (
-            WeaponRuntimeValueKind::Enum { bits: 64 },
-            WeaponRuntimeValue::Unsigned(u64::MAX),
+            RuntimeValueKind::Enum { bits: 64 },
+            RuntimeValue::Unsigned(u64::MAX),
         ),
         (
-            WeaponRuntimeValueKind::BitFlags { bits: 64 },
-            WeaponRuntimeValue::Unsigned(u64::MAX - 1),
+            RuntimeValueKind::BitFlags { bits: 64 },
+            RuntimeValue::Unsigned(u64::MAX - 1),
         ),
     ] {
         let expected = match current {
-            WeaponRuntimeValue::Signed(value) => value.to_string(),
-            WeaponRuntimeValue::Unsigned(value) => value.to_string(),
+            RuntimeValue::Signed(value) => value.to_string(),
+            RuntimeValue::Unsigned(value) => value.to_string(),
             _ => unreachable!(),
         };
         let field = field(kind, current);
@@ -162,24 +159,24 @@ fn integer_64_bit_display_is_exact_at_precision_boundaries() {
 fn integer_64_bit_typed_edits_do_not_pass_through_f64() {
     for (kind, expected, entry) in [
         (
-            WeaponRuntimeValueKind::SignedInteger { bits: 64 },
-            WeaponRuntimeValue::Signed(i64::MIN),
+            RuntimeValueKind::SignedInteger { bits: 64 },
+            RuntimeValue::Signed(i64::MIN),
             "-9223372036854775808",
         ),
         (
-            WeaponRuntimeValueKind::UnsignedInteger { bits: 64 },
-            WeaponRuntimeValue::Unsigned(9_007_199_254_740_993),
+            RuntimeValueKind::UnsignedInteger { bits: 64 },
+            RuntimeValue::Unsigned(9_007_199_254_740_993),
             "9007199254740993",
         ),
         (
-            WeaponRuntimeValueKind::BitFlags { bits: 64 },
-            WeaponRuntimeValue::Unsigned(u64::MAX),
+            RuntimeValueKind::BitFlags { bits: 64 },
+            RuntimeValue::Unsigned(u64::MAX),
             "18446744073709551615",
         ),
     ] {
         let current = match expected {
-            WeaponRuntimeValue::Signed(_) => WeaponRuntimeValue::Signed(0),
-            _ => WeaponRuntimeValue::Unsigned(0),
+            RuntimeValue::Signed(_) => RuntimeValue::Signed(0),
+            _ => RuntimeValue::Unsigned(0),
         };
         let field = field(kind, current);
         let ctx = egui::Context::default();

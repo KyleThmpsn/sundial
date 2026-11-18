@@ -9,12 +9,15 @@ pub(super) struct Plan {
     pub source_badges: BTreeMap<sundial::package_authoring::mod_content::Importer, TagHash>,
     pub weapon_tag_count: usize,
     pub weapon_runtime_start: usize,
-    pub watermark: crate::watermark::WatermarkPlan,
+    pub watermark: crate::icon::watermark::WatermarkPlan,
     pub badge: TagHash,
     pub packages: crate::asset_packages::AssetPackages,
     pub hud_table: Option<ReplacementSpec>,
     pub subclass_hud_table: Option<ReplacementSpec>,
     pub subclass_ui: Vec<ReplacementSpec>,
+    /// The character screen tables whose artifact slot opens the gear tooltip, present when the
+    /// build holds an imported artifact.
+    pub artifact_ui: Vec<ReplacementSpec>,
     /// The HUD artwork that stays loaded in every world: the HUD icons, the HUD status images and
     /// each private container a HUD row draws. Other private icon art loads with its own
     /// companion when a screen shows it, as stock icon art does.
@@ -130,13 +133,13 @@ pub(super) fn plan(
             })
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
-    let watermark_plan = crate::watermark::build_presented_watermark_plan(
+    let watermark_plan = crate::icon::watermark::build_presented_watermark_plan(
         manager,
-        crate::package_profile::host().id,
-        crate::package_profile::host().first,
+        crate::package::profile::host().id,
+        crate::package::profile::host().first,
         weapon_tag_ordinal_base,
         &icon_requests,
-        crate::watermark::Presentation {
+        crate::icon::watermark::Presentation {
             branding,
             artwork: &resolved
                 .iter()
@@ -171,15 +174,15 @@ pub(super) fn plan(
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
     // An importer's badge wears its source's mark when the source's files can be read.
-    let default_badge = match crate::package_profile::member() {
+    let default_badge = match crate::package::profile::member() {
         Some(importer) => {
             crate::badge::mark(importer).map_or_else(|| branding.badge(), |art| Ok(Some(art)))?
         }
         None => branding.badge()?,
     };
-    let mut badge_icon_plan = crate::badge_icon::build_icon_plan(
+    let mut badge_icon_plan = crate::icon::badge::build_icon_plan(
         manager,
-        crate::package_profile::window().first(),
+        crate::package::profile::window().first(),
         0,
         0,
         default_badge.as_ref(),
@@ -198,9 +201,9 @@ pub(super) fn plan(
     }
     let mut custom_badges = BTreeMap::new();
     for (name, badge) in badges {
-        let plan = crate::badge_icon::build_icon_plan_with_branding(
+        let plan = crate::icon::badge::build_icon_plan_with_branding(
             manager,
-            crate::package_profile::window().first(),
+            crate::package::profile::window().first(),
             0,
             badge_icon_plan.new_tags.len(),
             badge.icon.as_ref().or(default_badge.as_ref()),
@@ -224,9 +227,9 @@ pub(super) fn plan(
     let mut source_badges = BTreeMap::new();
     for importer in sources {
         let artwork = crate::badge::mark(importer);
-        let plan = crate::badge_icon::build_icon_plan_with_branding(
+        let plan = crate::icon::badge::build_icon_plan_with_branding(
             manager,
-            crate::package_profile::window().first(),
+            crate::package::profile::window().first(),
             0,
             badge_icon_plan.new_tags.len(),
             artwork.as_ref().or(default_badge.as_ref()),
@@ -246,7 +249,7 @@ pub(super) fn plan(
         let mut plan = picture.donor.plan(
             &chain,
             picture.pixels.clone(),
-            crate::package_profile::window().first(),
+            crate::package::profile::window().first(),
             0,
             badge_icon_plan.new_tags.len(),
         )?;
@@ -268,7 +271,7 @@ pub(super) fn plan(
         badge_icon_plan.reference_overrides,
     )?;
     let hud_starts = lengths(&packages);
-    let hud_table = crate::hud_icon::assets::build(
+    let hud_table = crate::icon::hud::assets::build(
         manager,
         resolved.iter().filter_map(|donor| {
             donor
@@ -337,21 +340,36 @@ pub(super) fn plan(
         groups.insert(container, (appended_since(&packages, &before), stock));
         AuthoringResult::Ok(container)
     };
-    let mut private_icon = |icon: &crate::perk::Icon, source_container: TagHash| {
+    let mut private_icon = |icon: &crate::perk::Icon, source_container: TagHash, alone: bool| {
         private_container(&mut |destination, nodes, references| {
-            crate::icon_edit::package_icons::author(
-                manager,
-                icon,
-                source_container,
-                destination,
-                nodes,
-                references,
-            )
+            if alone {
+                crate::icon::edit::package_icons::author_alone(
+                    manager,
+                    icon,
+                    source_container,
+                    destination,
+                    nodes,
+                    references,
+                )
+            } else {
+                crate::icon::edit::package_icons::author(
+                    manager,
+                    icon,
+                    source_container,
+                    destination,
+                    nodes,
+                    references,
+                )
+            }
         })
     };
     for plug in custom_plugs.iter_mut().chain(mod_plugs.iter_mut()) {
         if let Some(icon) = &plug.icon {
-            plug.authored_icon_container = Some(private_icon(icon, plug.source_icon_container)?);
+            plug.authored_icon_container = Some(private_icon(
+                icon,
+                plug.source_icon_container,
+                plug.standalone,
+            )?);
         }
     }
     // An authored subclass ability or node with artwork of its own shows it the same way.
@@ -430,7 +448,7 @@ pub(super) fn plan(
                         .and_then(|entity| entity.hud_icon.as_ref())
                         .map(|icon| {
                             private_container(&mut |destination, nodes, references| {
-                                crate::icon_edit::package_icons::author_exact(
+                                crate::icon::edit::package_icons::author_exact(
                                     manager,
                                     &icon.artwork,
                                     icon.source_container,
@@ -487,7 +505,7 @@ pub(super) fn plan(
                 })
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
-    let weapon_runtime_tag_start = crate::package_profile::host()
+    let weapon_runtime_tag_start = crate::package::profile::host()
         .first
         .checked_add(weapon_tag_ordinal_base)
         .and_then(|count| count.checked_add(watermark_plan.new_tags.len()))
@@ -567,6 +585,14 @@ pub(super) fn plan(
                     })
             }) {
             crate::subclass::ui::build(manager)?
+        } else {
+            Vec::new()
+        },
+        artifact_ui: if resolved
+            .iter()
+            .any(|donor| super::super::gear::artifact::imported_artifact(&donor.weapon))
+        {
+            super::super::gear::artifact::screens(manager)?
         } else {
             Vec::new()
         },

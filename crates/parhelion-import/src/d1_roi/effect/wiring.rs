@@ -95,7 +95,7 @@ impl Roles<'_> {
             (
                 Family::Channel,
                 0x80800668,
-                Family::Status | Family::Receiver | Family::Duration,
+                Family::Status | Family::Receiver | Family::Duration | Family::Volume,
                 0x8080053B,
             ) => self.getter(used, row, consumer, provider, channel)?,
             _ => anyhow::bail!(
@@ -185,10 +185,31 @@ impl Roles<'_> {
             .status
             .as_ref()
             .context("Status row without a status")?;
+        // The status's one channel input is its lifetime input or the input its count stores.
+        let input = status_fields
+            .lifetime_input
+            .or(status_fields.count_input.map(|(_, row)| row));
         ensure!(
-            Some(row.consumer.offset) == status_fields.lifetime_input.map(|at| at as u64),
-            "Source status channel input is not its lifetime input"
+            Some(row.consumer.offset) == input.map(|at| at as u64),
+            "Source status channel input is neither its lifetime nor its count input"
         );
+        // A replacement status brings its request from the stock graph that registers it, and
+        // the translated bank publishes at its definition `+60` as every bank does.
+        if self
+            .template
+            .owners
+            .get(&Family::Status)
+            .is_none_or(|owner| consumer.template_tag != owner.1)
+        {
+            let request = stock_request(consumer, 0x80809789)?;
+            let (_, bank) = pair(&provider.payload)?;
+            return Ok(links::Connection {
+                consumer: endpoint(consumer.id, 0x80809789, request)?,
+                provider: endpoint(provider.id, 0x808097C2, bank + 0x60)?,
+                channel,
+                flags: 0,
+            });
+        }
         let (index, request, bank, native_channel) = self
             .template
             .row((Family::Status, 0x80809789), (Family::Channel, 0x808097C2))?;
@@ -334,6 +355,8 @@ impl Roles<'_> {
         };
         let getter = if provider_family == Family::Receiver {
             self.receiver_getter(row, provider)?
+        } else if provider_family == Family::Volume {
+            self.volume_getter(row, provider)?
         } else {
             let (_, _, getter, _) = template_row.with_context(|| {
                 format!(
@@ -398,6 +421,25 @@ impl Roles<'_> {
             + 0x10)
     }
 
+    /// A condition volume publishes named getters, each a 32-byte object with its name at
+    /// `+18`. The source helper's getter (definition `+410` in `80A88C9B`) and the native
+    /// helper's at definition `+1D0` (stock volumes `80FEEBE9`, `81A6998C` and `81A69934`) carry
+    /// the same name, `B05189A2`. The Timer's getter has another name in both. The source row
+    /// must name the getter whose name the native helper getter holds.
+    fn volume_getter(&self, row: &connections::Connection, provider: &Component) -> Result<usize> {
+        let (_, _, source_volume, _) = self.owner(
+            provider.ordinal,
+            "Volume getter row without its source volume",
+        )?;
+        let name = source_volume.u32(usize::try_from(row.provider.offset)? + 0x18)?;
+        let getter = pair(&provider.payload)?.1 + 0x1D0;
+        ensure!(
+            name != 0x811C9DC5 && provider.payload.u32(getter + 0x18)? == name,
+            "Source volume getter {name:08X} has no native getter of that name"
+        );
+        Ok(getter)
+    }
+
     /// Native Duration hosts publish their getter in the empty-state object at definition
     /// `+1D0`, `30` bytes in, as template host `80BC32A1` does at `+428` and `80FD758F` at
     /// `+3A8`. A replacement host's getter is there too. The template's own owner keeps the
@@ -411,6 +453,19 @@ impl Roles<'_> {
             .is_some_and(|owner| provider.template_tag == owner.1)
         {
             Ok(getter)
+        } else if provider_family == Family::Status {
+            // Every status is definition `80804205`, and its getter is an inline object at the
+            // same place in each: `+3E0` in the rows of `80FF06FD`, `81A69987`, `80C1934A`,
+            // `80BB734A` and `81A69936`. A replacement status publishes there too.
+            let (_, definition) = pair(&self.template.owners[&provider_family].2)?;
+            let place = getter
+                .checked_sub(definition)
+                .context("Template status getter precedes its definition")?;
+            ensure!(
+                provider.payload.u32(pair(&provider.payload)?.1 - 4)? == 0x80804205,
+                "Replacement status has another definition class"
+            );
+            Ok(pair(&provider.payload)?.1 + place)
         } else {
             let (_, definition) = pair(&self.template.owners[&provider_family].2)?;
             ensure!(
@@ -508,6 +563,25 @@ pub(super) fn template_rows(
     Ok(())
 }
 
+/// The one request of `class` that the stock graph registering `component`'s template connects,
+/// as an offset in the owner payload.
+fn stock_request(component: &Component, class: u32) -> Result<usize> {
+    let graph = links::Graph::read(&component.entity, false)?;
+    let found = graph
+        .connections
+        .iter()
+        .filter_map(|row| row.consumer.object)
+        .filter(|object| object.owner == component.template_tag && object.class == class)
+        .collect::<Vec<_>>();
+    let [object] = found.as_slice() else {
+        anyhow::bail!(
+            "Stock graph of the replacement {} owner has no single {class:08X} request",
+            component.family.name()
+        );
+    };
+    Ok(usize::try_from(object.offset)?)
+}
+
 fn present(components: &[Component], family: Family) -> bool {
     components
         .iter()
@@ -531,7 +605,7 @@ pub(super) fn stock_rows(
     rows: &mut Vec<links::Connection>,
 ) -> Result<()> {
     for component in components.iter().filter(|c| {
-        matches!(c.family, Family::Duration | Family::Status)
+        matches!(c.family, Family::Duration | Family::Status | Family::Volume)
             && template
                 .owners
                 .get(&c.family)
@@ -545,10 +619,21 @@ pub(super) fn stock_rows(
             if consumer.owner != component.template_tag {
                 continue;
             }
-            ensure!(
-                row.provider.object.is_none(),
-                "Replacement Duration host has a live row in its stock graph"
-            );
+            // A live stock row is a request a source row must already have connected.
+            if row.provider.object.is_some() {
+                ensure!(
+                    rows.iter().any(|written| {
+                        written.consumer.object.is_some_and(|object| {
+                            object.owner == component.id
+                                && object.class == consumer.class
+                                && object.offset == consumer.offset
+                        })
+                    }),
+                    "Replacement {} owner has a live stock row without a source counterpart",
+                    component.family.name()
+                );
+                continue;
+            }
             rows.push(links::Connection {
                 consumer: endpoint(
                     component.id,

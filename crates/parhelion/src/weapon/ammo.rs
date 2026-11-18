@@ -8,7 +8,7 @@ use tiger_pkg::TagHash;
 
 use crate::AuthoringResult;
 use crate::error::invalid;
-use crate::item::{WeaponAmmoType, WeaponRuntimeResourcePatch};
+use crate::item::{RuntimeResourcePatch, WeaponAmmoType};
 
 pub(crate) const CONTENT_BINDING: u32 = 0x5F0D_D954;
 pub(crate) const CONTENT_INSTANCE: u32 = 0x8080_3ACB;
@@ -96,7 +96,7 @@ pub(crate) fn patches(
     manager: &PackageManager,
     entity: &[u8],
     ammo: WeaponAmmoType,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let bindings = weapon_component_bindings(entity, CONTENT_BINDING).map_err(invalid)?;
     let [binding] = bindings.as_slice() else {
         return Err(invalid(
@@ -129,7 +129,7 @@ pub(crate) fn patches(
                 .ok_or_else(|| {
                     invalid("Native ammo field cannot be addressed from its component")
                 })?;
-            Ok(WeaponRuntimeResourcePatch {
+            Ok(RuntimeResourcePatch {
                 binding_hash: CONTENT_BINDING,
                 resource_index: 0,
                 offset: relative,

@@ -450,7 +450,7 @@ pub(super) fn apply(
     let started = std::time::Instant::now();
     // Native runtime cache replay can append whole packages without reserving new groups.
     // Claim that complete native prefix before any importer or map chooses its package IDs.
-    if crate::package_profile::host().is_standalone() {
+    if crate::package::profile::host().is_standalone() {
         for package in &emission.asset_packages.packages {
             crate::mod_family::build::native(package.id);
         }
@@ -624,9 +624,9 @@ fn host(
                 .map_err(|error| invalid(error.to_string()))?,
         };
         let mut table = Table::parse(&original)?;
-        // A row for a bucket and key an earlier member already added stays that member's.
+        // Every member selecting a hosted key must agree on the complete scene and style row.
         for row in rows {
-            table.insert(row.clone())?;
+            table.insert_hosted(row.clone())?;
         }
         replacements.insert(TABLE.0, table.serialize()?);
     }
@@ -660,7 +660,7 @@ fn share(
     use crate::weapon::crosshair::{TABLE, Table as Crosshair};
     if let Some(table) = replacements.get(&TABLE.0) {
         produced(Table::Crosshair, [TABLE.0]);
-        if crate::package_profile::member().is_some() {
+        if crate::package::profile::member().is_some() {
             let stock = Crosshair::parse(
                 &manager
                     .read_tag(TABLE)
@@ -679,7 +679,7 @@ fn share(
         }
     }
     if hosts(Table::Character) {
-        for (tag, table) in produced_by(crate::package_profile::member()) {
+        for (tag, table) in produced_by(crate::package::profile::member()) {
             if table == Table::Character {
                 replacements.remove(&tag);
             }
@@ -992,6 +992,19 @@ fn apply_one(
             "Import this Reach weapon again. Its donor's moving parts lost their procedural bones",
         ));
     }
+    if graph["kind"] == "artifact" {
+        let spec = spec.ok_or_else(|| invalid("Imported artifact recipe missing"))?;
+        if spec.kind != ItemKind::Artifact
+            || graph["native_item"].as_u64() != Some(u64::from(spec.donor_item_hash))
+        {
+            return Err(invalid(
+                "Imported artifact requires its matching native equipment template",
+            ));
+        }
+        graph["item_hash"] = spec.identity.item_hash.into();
+        gear::collections(emission, &graph, Some(spec))?;
+        return Ok(Vec::new());
+    }
     if graph["kind"] == "shader" {
         shader::bind(
             &mut graph,
@@ -1032,7 +1045,7 @@ fn apply_one(
         .collect::<Vec<_>>();
     let branding = shared.branding;
     let shader = graph["kind"] == "shader";
-    let origin = crate::package_profile::host()
+    let origin = crate::package::profile::host()
         .is_standalone()
         .then(|| crate::mod_family::build::graph_origin(&graph, spec))
         .flatten();

@@ -82,7 +82,7 @@ fn studio_fixture_of(studio: Studio) -> Fixture {
         .unwrap()
         .join("bin/x64/oo2core_3_win64.dll");
     fs::remove_file(&decoder).unwrap();
-    let authored = crate::extend::build_extended_overlay(
+    let authored = crate::package::extend::build_extended_overlay(
         &fixture.target,
         0x058c,
         &[crate::ReplacementSpec {
@@ -725,7 +725,7 @@ fn overlay(fixture: &Fixture, payload: &[u8]) -> Vec<u8> {
         .unwrap()
         .join("bin/x64/oo2core_3_win64.dll");
     fs::remove_file(&decoder).unwrap();
-    let authored = crate::extend::build_extended_overlay(
+    let authored = crate::package::extend::build_extended_overlay(
         &fixture.target,
         0x058c,
         &[crate::ReplacementSpec {
@@ -747,7 +747,7 @@ fn stage_merge_data(fixture: &Fixture) -> serde_json::Value {
         .iter()
         .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
         .collect::<Vec<_>>();
-    let data = crate::merge_data::describe(&fixture.target, &files);
+    let data = crate::package::merge_data::describe(&fixture.target, &files);
     let report = serde_json::from_slice::<serde_json::Value>(&data.report).unwrap();
     assert_eq!(data.sidecars.len(), files.len(), "{report}");
     let listed = |name: &str| {
@@ -788,7 +788,7 @@ fn merge_fixture(theirs: &[u8]) -> (Fixture, serde_json::Value) {
     // Merge data reads stock content, so it is written before another mod changes the view.
     let report = stage_merge_data(&fixture);
     let patch = overlay(&fixture, theirs);
-    let data = crate::merge_data::describe(&fixture.target, &[(PATCH, patch.as_slice())]);
+    let data = crate::package::merge_data::describe(&fixture.target, &[(PATCH, patch.as_slice())]);
     let (_, sidecar) = data.sidecars.into_iter().next().unwrap_or_else(|| {
         panic!("{}", String::from_utf8_lossy(&data.report));
     });
@@ -844,11 +844,12 @@ fn edits_two_mods_make_to_different_words_of_one_entry_are_merged() {
     assert!(!mod_content::directory(&root).exists());
     assert_eq!(tree(&words), foreign);
     let install = install_staged_packages(&request(&fixture)).unwrap();
-    assert_eq!(
-        install.mod_overlaps,
-        [format!(
-            "Sunrise merges 1 entry that Parhelion and {WORDS} both change, in package 058C."
-        )]
+    let [overlap] = install.mod_overlaps.as_slice() else {
+        panic!("one overlap is reported: {:?}", install.mod_overlaps);
+    };
+    assert!(
+        overlap.contains(WORDS) && overlap.contains("058C"),
+        "{overlap}"
     );
     let own = mod_content::directory(&root);
     let installed = fs::read(own.join("patches").join(SIDECAR)).unwrap();

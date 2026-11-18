@@ -51,7 +51,18 @@ fn label_reference(
     Ok(())
 }
 
-fn label_list(p: &Payload, at: usize, output: &mut Vec<u8>, to: usize, path: usize) -> Result<()> {
+/// One list of a label filter, `operation` in Shadowkeep's order: match any, require all,
+/// exclude any, exclude all together. A modern atom Shadowkeep's registry lacks follows the rule
+/// of [`table`](crate::d2_mot::gameplay::perks::table): it is on no Shadowkeep object, so match
+/// any and exclude any drop it, require all can never hold and exclude all together always
+/// holds. Any other name is copied, and the node's readback refuses one Shadowkeep lacks.
+fn label_list(
+    p: &Payload,
+    (at, operation): (usize, usize),
+    output: &mut Vec<u8>,
+    to: usize,
+    path: usize,
+) -> Result<()> {
     let count = usize::try_from(p.u64(at)?)?;
     ensure!(count <= 256, "source label list exceeds limit");
     if count == 0 {
@@ -64,7 +75,33 @@ fn label_list(p: &Payload, at: usize, output: &mut Vec<u8>, to: usize, path: usi
         header >= 4 && p.u32(header - 4)? == 0x80809FB8 && p.u64(header + 8)? == 0x80809787,
         "source label array envelope differs"
     );
-    let rows = p.array(at, 32, Some(0x80809787))?;
+    let mut rows = Vec::new();
+    let mut dropped = None;
+    for row in p.array(at, 32, Some(0x80809787))? {
+        let name = p.u32(row)?;
+        if crate::d2_mot::gameplay::perks::table::modern_only_atom(p.u32(row + 16)?, name)? {
+            dropped = Some(name);
+        } else {
+            rows.push(row);
+        }
+    }
+    if let Some(name) = dropped {
+        ensure!(
+            operation != 1,
+            "the source label filter requires {name:08X}, which Shadowkeep lacks"
+        );
+        ensure!(
+            operation != 0 || !rows.is_empty(),
+            "the source label filter matches only labels Shadowkeep lacks"
+        );
+        if operation == 3 {
+            rows.clear();
+        }
+    }
+    if rows.is_empty() {
+        output[to..to + 16].fill(0);
+        return Ok(());
+    }
     append_array(output, to, 0x808094B3, &vec![0; rows.len() * 24], 24)?;
     let target =
         to + 8 + usize::try_from(i64::from_le_bytes(output[to + 8..to + 16].try_into()?))? + 16;
@@ -85,7 +122,13 @@ pub(super) fn labels(
     path: usize,
 ) -> Result<()> {
     for operation in 0..4 {
-        label_list(p, at + operation * 16, output, to + operation * 16, path)?;
+        label_list(
+            p,
+            (at + operation * 16, operation),
+            output,
+            to + operation * 16,
+            path,
+        )?;
     }
     label_reference(p, at + 64, output, to + 64, path)
 }

@@ -11,6 +11,12 @@ pub(super) fn damage(
     to: usize,
     native: Option<&mut Reader>,
 ) -> Result<()> {
+    types(p, at, graph, to)?;
+    label::ability(source, p, at, dictionary, graph, to + 0x20, native)
+}
+
+/// The damage-type lists and their compiled masks, without the label lists beside them.
+pub(super) fn types(p: &Payload, at: usize, graph: &mut Graph, to: usize) -> Result<()> {
     graph.blocks[0].bytes[to + 0x78] = 0xFF;
     for operation in 0..2 {
         let rows = p.array(at + operation * 16, 1, Some(0x80804F9B))?;
@@ -47,5 +53,5 @@ pub(super) fn damage(
             graph.blocks[0].links.insert(to + 8 + operation * 16, index);
         }
     }
-    label::ability(source, p, at, dictionary, graph, to + 0x20, native)
+    Ok(())
 }

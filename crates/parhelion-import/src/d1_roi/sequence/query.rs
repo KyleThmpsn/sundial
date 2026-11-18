@@ -8,8 +8,17 @@
 //! | --- | --- | --- |
 //! | Locator for `3B7020` / `D534BC` | `+20` | `+40` |
 //! | Geometry | `8080250A` at `+28`, radius `+A8`, bound `8080246A` scale `+80` or `8080248B` | Sphere `808092B1` at `+48`, bound `808092C3` scale `+60` or `808092C4` |
+//! | Cone geometry | `808022E0` at `+28`, values `+A8..+B3`, bound `8080264C` at `+C0` | Cone `808092AB` at `+48`, bound `808092BE` at `+20`, baked hull at `+28` |
 //! | Broadphase block passed with the geometry to `5AD6E0` / `B94700` | `+30..+5F` | `+70..+9F` |
 //! | Relationship exclusion `+61`, scale `+64` and label filter `+68` | Source filters | Predicate `+50` |
+//!
+//! The damage block may hold a response list at source `+220`, native `+1D8`: array `80802769`
+//! of typed objects, native `80804B0D`. Object `80802830` names a graph at `+08`, native
+//! `80804B09`. Object `8080268E` holds a raw one-input program at `+08` and the words one and
+//! zero after it, native `80804B08`. Rise of Iron Phoenix Uppercut sequence `80A7E41B` and its
+//! native port `81A6B5EF` hold the same two rows, equal in every byte but the classes and the
+//! graph, `80A6A447` there and `80BC8718` here. A damage profile holds the same list at source
+//! root `+108` and native root `+B8`, as 118 stock profiles do.
 //!
 //! Rise of Iron completes an empty query by clearing its instance word. Native completes only
 //! when byte `+4D0` is set, and every stock query sets that byte together with flag bit `10`.
@@ -37,6 +46,9 @@ use crate::{
 
 use super::program::Program;
 
+pub mod cone;
+pub use cone::Cone;
+
 struct Action {
     gate: Option<Program>,
     effect: Effect,
@@ -53,7 +65,96 @@ enum Effect {
     Attach { graph: u32, mask: u8 },
 }
 
-/// A query sphere's bound.
+/// A row of a response list.
+enum Response {
+    Graph(u32),
+    Program(Program),
+}
+
+/// The response list of a query's damage block or of a damage profile.
+pub struct Responses(Vec<Response>);
+
+impl Responses {
+    pub fn read(source: &Source, owner: &Payload, field: usize) -> Result<Self> {
+        let mut responses = Vec::new();
+        for row in owner.array(field, 8, Some(0x80802769))? {
+            let object = owner.pointer(row)?;
+            responses.push(match owner.u32(object - 4)? {
+                0x80802830 => {
+                    let graph = owner.u32(object + 8)?;
+                    ensure!(
+                        owner.u64(object)? == 0
+                            && owner.u32(object + 12)? == 0
+                            && source.reference(graph)? == 0x80800734,
+                        "Source response does not name only an entity graph"
+                    );
+                    Response::Graph(graph)
+                }
+                0x8080268E => {
+                    ensure!(
+                        owner.u64(object)? == 0
+                            && owner.u64(object + 0x38)? == 1
+                            && owner.u64(object + 0x40)? == 0,
+                        "Source response program has other words around it"
+                    );
+                    Response::Program(
+                        Program::read(owner, object + 8, false, 1)?
+                            .context("Source response program is absent")?,
+                    )
+                }
+                class => anyhow::bail!("Source response has class {class:08X}"),
+            });
+        }
+        Ok(Self(responses))
+    }
+
+    pub fn graphs(&self) -> impl Iterator<Item = u32> + '_ {
+        self.0.iter().filter_map(|response| match response {
+            Response::Graph(graph) => Some(*graph),
+            Response::Program(_) => None,
+        })
+    }
+
+    /// Writes the list at the native array descriptor `field`. Each graph row's resource word
+    /// is left unresolved and returned with its source graph for the caller to bind.
+    pub fn write(&self, output: &mut Payload, field: usize) -> Result<Vec<(usize, u32)>> {
+        let mut graphs = Vec::new();
+        if self.0.is_empty() {
+            return Ok(graphs);
+        }
+        let rows = vec![0; self.0.len() * 8];
+        append(&mut output.0, field, 0x80804B0D, &rows, 8)?;
+        let rows = output.array(field, 8, Some(0x80804B0D))?;
+        for (row, response) in rows.into_iter().zip(&self.0) {
+            match response {
+                Response::Graph(graph) => {
+                    let node = native::object(output, 0x80804B09, 16)?;
+                    native::relative(output, row, node)?;
+                    put(&mut output.0, node + 8, &u32::MAX.to_le_bytes())?;
+                    graphs.push((node + 8, *graph));
+                }
+                Response::Program(program) => {
+                    let node = native::object(output, 0x80804B08, 0x48)?;
+                    native::relative(output, row, node)?;
+                    Program::write(Some(program), output, node + 8, false)?;
+                    put(&mut output.0, node + 0x38, &1u64.to_le_bytes())?;
+                }
+            }
+        }
+        Ok(graphs)
+    }
+}
+
+/// A query's geometry.
+#[derive(Clone, Copy)]
+enum Shape {
+    Sphere(f32),
+    /// Native Phoenix Uppercut sequence `81A6B5EF` holds near 1, far 3.5 and 17 degrees in both
+    /// of its queries, the values of the Rise of Iron sequence `80A7E41B` it ports.
+    Cone(Cone),
+}
+
+/// A query shape's bound.
 #[derive(Clone, Copy)]
 enum Bound {
     /// None, as 1,003 of the 2,094 stock native queries have.
@@ -63,7 +164,7 @@ enum Bound {
     /// `8080248B`, three method rows and its other fields at their defaults, written as
     /// `808092C4` with its own defaults. Rise of Iron graph `80A6A699` and its native counterpart
     /// `80C0EE13`, paired by kept spawns in automatic rifle trees, hold these bounds on the same
-    /// radius-2 sphere.
+    /// radius-2 sphere. A cone's `8080264C` and `808092BE` have the same two layouts.
     Default,
 }
 
@@ -71,7 +172,7 @@ pub struct Query {
     source_offset: usize,
     flags: u32,
     locator: u8,
-    radius: f32,
+    shape: Shape,
     bound_shape: Bound,
     block: [u8; 48],
     budgets: [u8; 12],
@@ -83,6 +184,7 @@ pub struct Query {
     name: [u8; 16],
     shaping: Option<Program>,
     feedback: Option<u32>,
+    responses: Responses,
     damage_word: [u8; 8],
     damage: Vec<Option<Program>>,
     tail: [u8; 8],
@@ -113,55 +215,69 @@ impl Query {
             (locator as usize) < declared && owner.u32(at + 0x24)? == 0,
             "Source query locator is undeclared"
         );
-        // Geometry: the radius-only shape and its scaled bound.
+        // Geometry: a sphere or a cone, each with its own bound classes at its own offset.
         let shape = owner.pointer(at + 0x28)?;
-        ensure!(
-            owner.u32(shape - 4)? == 0x8080250A,
-            "Source query geometry is not the qualified sphere"
-        );
-        let radius = owner.f32(shape + 0xA8)?;
-        ensure!(
-            radius.is_finite() && radius > 0.0,
-            "Source query radius is invalid"
-        );
-        let bound_shape = if owner.u64(shape + 0xB0)? == 0 {
+        let (shape, bound, scaled, default) = match owner.u32(shape - 4)? {
+            0x8080250A => {
+                let radius = owner.f32(shape + 0xA8)?;
+                ensure!(
+                    radius.is_finite() && radius > 0.0,
+                    "Source query radius is invalid"
+                );
+                (Shape::Sphere(radius), shape + 0xB0, 0x8080246A, 0x8080248B)
+            }
+            0x808022E0 => {
+                ensure!(
+                    zero(owner, shape + 0xB4, shape + 0xC0)?,
+                    "Source query cone has values beyond its distances and angle"
+                );
+                let cone = Cone::read(
+                    owner.f32(shape + 0xA8)?,
+                    owner.f32(shape + 0xAC)?,
+                    owner.f32(shape + 0xB0)?,
+                )?;
+                // No scaled cone bound is qualified.
+                (Shape::Cone(cone), shape + 0xC0, 0, 0x8080264C)
+            }
+            _ => anyhow::bail!("Source query geometry is not a qualified sphere or cone"),
+        };
+        let bound_shape = if owner.u64(bound)? == 0 {
             Bound::Absent
         } else {
-            let bound = owner.pointer(shape + 0xB0)?;
-            match owner.u32(bound - 4)? {
-                0x8080246A => {
-                    let scale = owner.f32(bound + 0x80)?;
-                    ensure!(
-                        scale.is_finite() && scale > 0.0,
-                        "Source query bound scale is invalid"
-                    );
-                    Bound::Scaled(scale)
-                }
+            let bound = owner.pointer(bound)?;
+            let class = owner.u32(bound - 4)?;
+            if class == scaled {
+                let scale = owner.f32(bound + 0x80)?;
+                ensure!(
+                    scale.is_finite() && scale > 0.0,
+                    "Source query bound scale is invalid"
+                );
+                Bound::Scaled(scale)
+            } else if class == default {
                 // Method rows of 32 bytes at `+00`, `+40` and `+60` name the owner and the bound.
                 // The fields between the first two rows and the word at `+80` hold the defaults.
-                0x8080248B => {
-                    let owner_tag = owner.u32(owner.pointer(16)?)?;
-                    for (method, row) in [(0u32, 0x00), (1, 0x40), (2, 0x60)] {
-                        ensure!(
-                            owner.u32(bound + row)? == 0x8080248B
-                                && owner.u32(bound + row + 4)? == method
-                                && owner.u32(bound + row + 8)? == owner_tag
-                                && owner.u64(bound + row + 16)? == bound as u64
-                                && owner.u32(bound + row + 24)? == 0x8080248B,
-                            "Source query bound method row differs"
-                        );
-                    }
-                    let fields = (0..8)
-                        .map(|word| owner.u32(bound + 0x20 + word * 4))
-                        .collect::<Result<Vec<_>>>()?;
+                let owner_tag = owner.u32(owner.pointer(16)?)?;
+                for (method, row) in [(0u32, 0x00), (1, 0x40), (2, 0x60)] {
                     ensure!(
-                        fields == [u32::MAX, u32::MAX, u32::MAX, 0, 0, 0, u32::MAX, 0]
-                            && owner.u32(bound + 0x80)? == 0,
-                        "Source query bound fields are not the defaults"
+                        owner.u32(bound + row)? == class
+                            && owner.u32(bound + row + 4)? == method
+                            && owner.u32(bound + row + 8)? == owner_tag
+                            && owner.u64(bound + row + 16)? == bound as u64
+                            && owner.u32(bound + row + 24)? == class,
+                        "Source query bound method row differs"
                     );
-                    Bound::Default
                 }
-                _ => anyhow::bail!("Source query bound class differs"),
+                let fields = (0..8)
+                    .map(|word| owner.u32(bound + 0x20 + word * 4))
+                    .collect::<Result<Vec<_>>>()?;
+                ensure!(
+                    fields == [u32::MAX, u32::MAX, u32::MAX, 0, 0, 0, u32::MAX, 0]
+                        && owner.u32(bound + 0x80)? == 0,
+                    "Source query bound fields are not the defaults"
+                );
+                Bound::Default
+            } else {
+                anyhow::bail!("Source query bound class differs")
             }
         };
         // The relationship mask carries to the native damage action. Its scale bit and the
@@ -187,10 +303,12 @@ impl Query {
             zero(owner, at + 0x1A8, at + 0x1C0)?
                 && owner.u64(at + 0x210)? == 0
                 && owner.u32(at + 0x218)? == u32::MAX
-                && zero(owner, at + 0x21C, at + 0x238)?
+                && owner.u32(at + 0x21C)? == 0
+                && zero(owner, at + 0x230, at + 0x238)?
                 && zero(owner, at + 0x23C, at + 0x290)?,
             "Source query has auxiliary, presentation or named damage references"
         );
+        let responses = Responses::read(source, owner, at + 0x220)?;
         let mut actions = Vec::new();
         for row in owner.array(at + 0x1C0, 0x58, Some(0x8080238E))? {
             ensure!(
@@ -273,7 +391,7 @@ impl Query {
             source_offset: at,
             flags: owner.u32(at + 8)?,
             locator: u8::try_from(locator)?,
-            radius,
+            shape,
             bound_shape,
             block: owner.bytes::<48>(at + 0x30)?,
             budgets: owner.bytes::<12>(at + 0xEC)?,
@@ -287,6 +405,7 @@ impl Query {
             name: owner.bytes::<16>(at + 0x1D0)?,
             shaping: Program::read(owner, at + 0x1E0, false, 1)?,
             feedback,
+            responses,
             damage_word: owner.bytes::<8>(at + 0x290)?,
             damage,
             tail: owner.bytes::<8>(at + 0x518)?,
@@ -317,7 +436,7 @@ impl Query {
             })
     }
 
-    /// Graphs the attachment actions create on candidates.
+    /// Graphs the attachment actions create on candidates and the response list names.
     pub fn graphs(&self) -> impl Iterator<Item = u32> + '_ {
         self.actions
             .iter()
@@ -325,22 +444,31 @@ impl Query {
                 Effect::Attach { graph, .. } => Some(graph),
                 Effect::Damage { .. } => None,
             })
+            .chain(self.responses.graphs())
     }
 
     pub fn feedback(&self) -> Option<u32> {
         self.feedback
     }
 
-    /// Fill a freshly allocated native query. Profile owners, attached private graphs and the
-    /// feedback resource stay unresolved until the containing graph allocates their private
-    /// translations. An attached graph in `stock_graphs` is named directly.
+    /// The cone whose baked hull the native shape names.
+    pub fn cone(&self) -> Option<Cone> {
+        match self.shape {
+            Shape::Cone(cone) => Some(cone),
+            Shape::Sphere(_) => None,
+        }
+    }
+
+    /// Fill a freshly allocated native query. Profile owners, attached private graphs, the
+    /// feedback resource and a cone's hull stay unresolved until the containing graph allocates
+    /// their private translations. An attached graph in `stock_graphs` is named directly.
     pub fn write(
         &self,
         target: &mut Payload,
         event: usize,
         profiles: &BTreeMap<u32, String>,
         (graphs, stock_graphs): (&BTreeMap<u32, String>, &BTreeMap<u32, u32>),
-        feedback: Option<&str>,
+        (feedback, hull): (Option<&str>, Option<&str>),
         (locators, inputs): (&BTreeMap<u8, u8>, &BTreeMap<u32, u32>),
     ) -> Result<Vec<ResourcePatch>> {
         target.bytes::<0x520>(event)?;
@@ -359,8 +487,9 @@ impl Query {
             "Native query event pair, kind or body differs"
         );
         ensure!(
-            feedback.is_some() == self.feedback.is_some(),
-            "Query feedback binding differs"
+            feedback.is_some() == self.feedback.is_some()
+                && hull.is_some() == self.cone().is_some(),
+            "Query feedback or cone hull binding differs"
         );
         let mut output = target.clone();
         let mut patches = Vec::new();
@@ -375,13 +504,38 @@ impl Query {
             event + 0x40,
             &u32::from(locator).to_le_bytes(),
         )?;
-        // Native sphere and an optional bound. The bound's four method rows name this owner and
-        // object.
+        // The native shape and an optional bound, whose method rows name this owner and object.
         let owner = output.u32(output.pointer(16)?)?;
-        let sphere = native::object(&mut output, 0x808092B1, 16)?;
-        put(&mut output.0, sphere, &2u32.to_le_bytes())?;
-        put(&mut output.0, sphere + 4, &self.radius.to_le_bytes())?;
-        native::relative(&mut output, event + 0x48, sphere)?;
+        let (shape, bound_field, scaled, default) = match self.shape {
+            Shape::Sphere(radius) => {
+                let sphere = native::object(&mut output, 0x808092B1, 16)?;
+                put(&mut output.0, sphere, &2u32.to_le_bytes())?;
+                put(&mut output.0, sphere + 4, &radius.to_le_bytes())?;
+                (sphere, sphere + 8, 0x808092C3, 0x808092C4)
+            }
+            // Kind 4 with the three values. The sixteen bytes after them are zero in 133 of the
+            // 154 stock cones. Word `+2C` names a second resource in packages the client does
+            // not ship, so it stays empty.
+            Shape::Cone(cone) => {
+                let shape = native::object(&mut output, 0x808092AB, 0x30)?;
+                put(&mut output.0, shape, &4u32.to_le_bytes())?;
+                for (index, value) in [cone.near, cone.far, cone.angle].into_iter().enumerate() {
+                    put(&mut output.0, shape + 4 + index * 4, &value.to_le_bytes())?;
+                }
+                put(&mut output.0, shape + 0x28, &[0xFF; 8])?;
+                let symbol = hull.context("Query cone hull has no private translation")?;
+                dependency::symbol(symbol)?;
+                patches.push(ResourcePatch {
+                    offset: shape + 0x28,
+                    symbol: symbol.into(),
+                    source: 0,
+                    source_class: 0x808022E0,
+                    native_class: cone::CLASS,
+                });
+                (shape, shape + 0x20, 0, 0x808092BE)
+            }
+        };
+        native::relative(&mut output, event + 0x48, shape)?;
         // Each method row names this owner and the bound object.
         let rows = |output: &mut Payload, bound: usize, class: u32, rows: &[usize]| -> Result<()> {
             for (method, &row) in rows.iter().enumerate() {
@@ -401,17 +555,19 @@ impl Query {
         match self.bound_shape {
             Bound::Absent => {}
             Bound::Scaled(scale) => {
-                let bound = native::object(&mut output, 0x808092C3, 104)?;
-                native::relative(&mut output, sphere + 8, bound)?;
-                rows(&mut output, bound, 0x808092C3, &[0, 24, 48, 72])?;
+                ensure!(scaled != 0, "Query cone has no scaled bound");
+                let bound = native::object(&mut output, scaled, 104)?;
+                native::relative(&mut output, bound_field, bound)?;
+                rows(&mut output, bound, scaled, &[0, 24, 48, 72])?;
                 put(&mut output.0, bound + 0x60, &scale.to_le_bytes())?;
             }
             // Rows at `+00`, `+30` and `+48`, and between the first two the defaults stock
-            // `80C0EE13` holds: four `FFFFFFFF` words and eight zero bytes.
+            // `80C0EE13` holds: four `FFFFFFFF` words and eight zero bytes. Stock cone bounds,
+            // as in `80BC2B91`, hold the same.
             Bound::Default => {
-                let bound = native::object(&mut output, 0x808092C4, 96)?;
-                native::relative(&mut output, sphere + 8, bound)?;
-                rows(&mut output, bound, 0x808092C4, &[0, 0x30, 0x48])?;
+                let bound = native::object(&mut output, default, 96)?;
+                native::relative(&mut output, bound_field, bound)?;
+                rows(&mut output, bound, default, &[0, 0x30, 0x48])?;
                 put(&mut output.0, bound + 0x18, &[0xFF; 16])?;
                 put(&mut output.0, bound + 0x28, &[0; 8])?;
             }
@@ -514,6 +670,23 @@ impl Query {
                 source_class: 0x80802637,
                 native_class: 0x80803EB0,
             });
+        }
+        for (offset, graph) in self.responses.write(&mut output, event + 0x1D8)? {
+            if let Some(&stock) = stock_graphs.get(&graph) {
+                put(&mut output.0, offset, &stock.to_le_bytes())?;
+            } else {
+                let symbol = graphs
+                    .get(&graph)
+                    .context("Query response graph has no private translation")?;
+                dependency::symbol(symbol)?;
+                patches.push(ResourcePatch {
+                    offset,
+                    symbol: symbol.clone(),
+                    source: graph,
+                    source_class: 0x80800734,
+                    native_class: 0x80809C0F,
+                });
+            }
         }
         put(&mut output.0, event + 0x248, &self.damage_word)?;
         for (i, program) in self.damage.iter().enumerate() {

@@ -1,5 +1,6 @@
 //! Native supplemental layer tables (`808034EB`): clip storage sizes, appended direct-phase
 //! layers and donor layers kept off complete source actions.
+use crate::tiger::sequence::relative;
 use crate::{
     presentation::{append, put},
     tiger::{payload::Payload, reader::Reader},
@@ -7,11 +8,64 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Both layer families: the table field, the layer, choice and option classes and the option
+/// stride.
+const FAMILIES: [(usize, u32, u32, u32, usize); 2] = [
+    (8, 0x80803724, 0x8080372E, 0x80803730, 64),
+    (24, 0x80803721, 0x80803729, 0x8080372B, 72),
+];
+
+/// Every layer of both families, with its name and the bank clip ordinals its options weigh.
+pub fn layer_clips(table: &Payload) -> Result<Vec<(u32, Vec<usize>)>> {
+    let mut layers = Vec::new();
+    for (field, layer_class, choice_class, option_class, stride) in FAMILIES {
+        for layer in table.array(field, 24, Some(layer_class))? {
+            let mut clips = Vec::new();
+            for choice in table.array(layer, 16, Some(choice_class))? {
+                for option in table.array(choice, stride, Some(option_class))? {
+                    for weight in table.array(option, 12, Some(0x80803737))? {
+                        clips.push(usize::try_from(table.u32(weight)?)?);
+                    }
+                }
+            }
+            layers.push((table.u32(layer + 16)?, clips));
+        }
+    }
+    Ok(layers)
+}
+
+/// The controls a supplemental layer clip drives: those an additive clip offsets by at least the
+/// `SAME_POSE` tolerance, and every control an absolute or replacement clip stores a channel
+/// for, since such a clip sets the pose whether or not it differs from rest.
+pub fn driven(clip: &Payload) -> Result<BTreeSet<usize>> {
+    let mut slots = BTreeSet::new();
+    if clip.u8(0x181)? == 1 {
+        moved(clip, &mut slots)?;
+        return Ok(slots);
+    }
+    // No stored pose holds these values, so a slot that keeps them has no channel.
+    let unset = [2., 2., 2., 2., 1e9, 1e9, 1e9, 1e9];
+    let defaults = vec![unset; usize::from(clip.u16(0x140)?)];
+    for (slot, pose) in super::clip::sample(clip, &defaults, 0)?.iter().enumerate() {
+        if *pose != unset {
+            slots.insert(slot);
+        }
+    }
+    Ok(slots)
+}
+
+/// A copy of `table` whose dispatch sends every descriptor to no route, so no supplemental layer
+/// plays. The native dispatch stores `FFFF` for a descriptor without supplemental layers.
+pub fn undispatched(table: &Payload) -> Result<Payload> {
+    let mut out = table.clone();
+    for at in table.array(40, 2, Some(0x80800006))? {
+        put(&mut out.0, at, &u16::MAX.to_le_bytes())?;
+    }
+    Ok(out)
+}
+
 pub fn clip_sizes(payload: &mut Payload, sizes: &[u32]) -> Result<()> {
-    for (field, layer_class, choice_class, option_class, stride) in [
-        (8, 0x80803724, 0x8080372E, 0x80803730, 64),
-        (24, 0x80803721, 0x80803729, 0x8080372B, 72),
-    ] {
+    for (field, layer_class, choice_class, option_class, stride) in FAMILIES {
         for layer in payload.array(field, 24, Some(layer_class))? {
             for choice in payload.array(layer, 16, Some(choice_class))? {
                 for option in payload.array(choice, stride, Some(option_class))? {
@@ -44,14 +98,6 @@ fn rows(p: &Payload, fields: &[usize], stride: usize) -> Vec<u8> {
         .iter()
         .flat_map(|&at| p.0[at..at + stride].iter().copied())
         .collect()
-}
-
-fn relative(p: &mut Payload, field: usize, target: usize) -> Result<()> {
-    put(
-        &mut p.0,
-        field,
-        &(target as i64 - field as i64).to_le_bytes(),
-    )
 }
 
 /// Appends a first-family layer that plays `phase` on every route, after every existing layer.
@@ -314,6 +360,7 @@ fn coupled_layers(
     native: &mut Reader,
     table: &Payload,
     bank: &Payload,
+    candidates: &[u32],
 ) -> Result<BTreeMap<usize, (u32, BTreeSet<usize>)>> {
     let clips = bank.array(8, 4, Some(0x80808f48))?;
     let mut coupled = BTreeMap::new();
@@ -324,7 +371,7 @@ fn coupled_layers(
         .enumerate()
     {
         let name = table.u32(at + 16)?;
-        if !ACTION_COUPLED.contains(&name) {
+        if !candidates.contains(&name) {
             continue;
         }
         ensure!(seen.insert(name), "Repeated action-coupled pose layer");
@@ -433,6 +480,19 @@ pub fn omit_action_coupled(
     bank: &Payload,
     descriptors: &BTreeMap<usize, Option<Translated>>,
 ) -> Result<(Payload, BTreeSet<u32>, BTreeSet<u32>, usize)> {
+    omit_coupled(native, table, bank, descriptors, &ACTION_COUPLED)
+}
+
+/// Apply the same private-route and composition checks as [`omit_action_coupled`] to selected
+/// donor layers. Sources whose sprint loop is only a held pose can retain the donor's sprint
+/// layer while removing the firing and settle offsets authored against other action clips.
+pub fn omit_coupled(
+    native: &mut Reader,
+    table: &Payload,
+    bank: &Payload,
+    descriptors: &BTreeMap<usize, Option<Translated>>,
+    candidates: &[u32],
+) -> Result<(Payload, BTreeSet<u32>, BTreeSet<u32>, usize)> {
     let aliases = table.array(40, 2, Some(0x80800006))?;
     ensure!(
         descriptors
@@ -440,7 +500,7 @@ pub fn omit_action_coupled(
             .all(|&descriptor| descriptor < aliases.len()),
         "Source action dispatch is outside its table"
     );
-    let coupled = coupled_layers(native, table, bank)?;
+    let coupled = coupled_layers(native, table, bank, candidates)?;
     let own = descriptors.values().flatten().any(|t| !t.own.is_empty());
     if descriptors.is_empty() || (coupled.is_empty() && !own) {
         return Ok((table.clone(), BTreeSet::new(), BTreeSet::new(), 0));

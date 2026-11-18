@@ -260,14 +260,14 @@ fn seed(root: &Path, backend: &str, valid: u32, broken: bool) -> PathBuf {
         )
         .unwrap();
         db.execute_batch(include_str!(
-            "../../../../../../src/persistence/sqlite_account/fixtures/investment_schema.sql"
+            "../../../../../../src/persistence/sunrise_account/fixtures/investment_schema.sql"
         ))
         .unwrap();
         db.execute_batch(include_str!(
-            "../../../../../../src/persistence/sqlite_account/fixtures/account_settings_schema.sql"
+            "../../../../../../src/persistence/sunrise_account/fixtures/account_settings_schema.sql"
         ))
         .unwrap();
-        db.execute_batch(include_str!("../../../../../../src/persistence/sqlite_account/fixtures/account_settings_defaults.sql")).unwrap();
+        db.execute_batch(include_str!("../../../../../../src/persistence/sunrise_account/fixtures/account_settings_defaults.sql")).unwrap();
         db.execute_batch("INSERT INTO account VALUES(1,1,1); INSERT INTO characters VALUES(0,2,0,0,0,40,1,0.0,0,0,65535,-1,4);").unwrap();
         for (location, position, soid, hash, policy, count) in [
             (0, 3, 101, hashes[0], 0, 0),

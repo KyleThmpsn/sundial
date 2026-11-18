@@ -6,7 +6,7 @@ pub(crate) mod preview;
 
 pub(crate) fn source_icon(
     recipe: &crate::WeaponRecipe,
-) -> Result<crate::icon_edit::ImportedIcon, String> {
+) -> Result<crate::icon::edit::ImportedIcon, String> {
     let graph = recipe
         .overrides
         .imported_graph
@@ -44,11 +44,11 @@ pub(crate) fn source_icon(
             .join("source/item-icon.png"),
         None => return Err("Source icon missing".into()),
     };
-    crate::icon_edit::ImportedIcon::from_bytes(&std::fs::read(path).map_err(|e| e.to_string())?)
+    crate::icon::edit::ImportedIcon::from_bytes(&std::fs::read(path).map_err(|e| e.to_string())?)
 }
 
 /// What a linked ornament's graph names: its private plug's item hash and the icon it shows.
-type Linked = Option<(u32, crate::icon_edit::ImportedIcon)>;
+type Linked = Option<(u32, crate::icon::edit::ImportedIcon)>;
 
 /// Every graph read for its linked ornament, by folder and pin. A pin names its content, so each
 /// graph is read once per session.
@@ -60,7 +60,7 @@ static LINKED: std::sync::Mutex<std::collections::BTreeMap<(std::path::PathBuf, 
 /// not read before are read on several threads.
 pub(crate) fn ornament_icons<'a>(
     attachments: impl IntoIterator<Item = &'a parhelion_import::GraphReference>,
-) -> std::collections::BTreeMap<u32, crate::icon_edit::ImportedIcon> {
+) -> std::collections::BTreeMap<u32, crate::icon::edit::ImportedIcon> {
     let keys = attachments
         .into_iter()
         .map(|graph| (graph.directory.clone(), graph.sha256.clone()))
@@ -128,7 +128,7 @@ fn linked(directory: &std::path::Path) -> Linked {
     } else {
         directory.join(icon)
     };
-    let image = crate::icon_edit::ImportedIcon::from_bytes(&std::fs::read(path).ok()?).ok()?;
+    let image = crate::icon::edit::ImportedIcon::from_bytes(&std::fs::read(path).ok()?).ok()?;
     Some((graph.item_hash?, image))
 }
 
@@ -136,6 +136,7 @@ pub(crate) const fn kind(kind: ItemKind) -> Option<&'static str> {
     match kind {
         ItemKind::Shader => Some("shader"),
         ItemKind::Armor => Some("armor"),
+        ItemKind::Artifact => Some("artifact"),
         ItemKind::GhostShell => Some("ghost_shell"),
         ItemKind::Ship => Some("ship"),
         ItemKind::Sparrow => Some("sparrow"),

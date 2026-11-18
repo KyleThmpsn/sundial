@@ -3,6 +3,7 @@ use super::*;
 use crate::tiger::markers::{self, Marker};
 use std::collections::BTreeMap;
 mod native;
+mod view;
 pub use native::restore_source_eye;
 pub(super) use native::sight_key;
 
@@ -306,10 +307,23 @@ pub(super) fn author(
     graph: &mut Graph,
     parts: &[Value],
     item: u32,
+    aperture: bool,
 ) -> Result<(Value, Value)> {
-    let sight = read(source, parts)?;
+    let mut sight = read(source, parts)?;
+    let source_angle = sight.angle;
+    // An open sight has no separate aperture/reticle projection to preserve. Use the weapon's
+    // declared ADS render angle for the native weapon camera, independently of scene zoom.
+    let view = if aperture {
+        None
+    } else {
+        view::read(source, parts)?
+    };
+    if let Some(view) = &view {
+        sight.angle = view.angle;
+    }
     let kept = native::build(native, template, graph, &sight, item)?;
-    let report = json!({"entity":sight.entity,"owner":sight.owner,"angle":sight.angle,
+    let report = json!({"entity":sight.entity,"owner":sight.owner,"angle":source_angle,
+        "native_render_angle":sight.angle,"weapon_view":view.map(|v|v.report),
         "points":sight.points.iter().map(|m|json!({"rotation":m.orientation,"position":m.position})).collect::<Vec<_>>(),
         "movement":"assembled_object_space","gameplay_verified":false});
     Ok((kept, report))

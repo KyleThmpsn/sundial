@@ -59,7 +59,7 @@ fn wire(entity: &[u8], owner: u32, at: usize, class: u32) -> Result<Destination,
 /// The connected producer is a member of the graph's declared parent arrays, rather than an
 /// unrelated reciprocal pair that happens to sit in the same owner.
 fn enclosed(
-    graph: &WeaponRuntimeGraph,
+    graph: &RuntimeGraph,
     data: &mut Data<'_>,
     at: usize,
     definition: u32,
@@ -101,7 +101,7 @@ fn enclosed(
 
 pub(super) fn join(
     manager: &PackageManager,
-    graph: &WeaponRuntimeGraph,
+    graph: &RuntimeGraph,
     entity: &[u8],
     owner: u32,
     declaration: usize,

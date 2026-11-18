@@ -10,7 +10,7 @@ pub(in crate::app) fn resolve_picked_perk(
     let Some(tag) = catalog.item_definition_tag(hash) else {
         return Ok(None);
     };
-    if crate::package_profile::is_stock_item_definition(tag) {
+    if crate::package::profile::is_stock_item_definition(tag) {
         return Ok(None);
     }
     // A shader is an authored item referenced by its own hash. Resolve its recipe before
@@ -193,7 +193,7 @@ pub(in crate::app) fn repair_socket_picks(
             let hash = hash.parse_u32().map_err(|error| error.to_string())?;
             if catalog
                 .item_definition_tag(hash)
-                .is_none_or(crate::package_profile::is_stock_item_definition)
+                .is_none_or(crate::package::profile::is_stock_item_definition)
             {
                 continue;
             }

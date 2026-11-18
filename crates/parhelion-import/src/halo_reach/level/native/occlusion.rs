@@ -9,6 +9,11 @@
 //! until [`NEAR_SPACING`] covers them and across the clusters after. Remaining usable player starts
 //! with a lightmapped floor receive their own samples without displacing this coverage. Their
 //! additional samples do not reweight the environment's brightness, color or interior classification.
+//! Neither do the outskirts' ([`add_outskirts`]): floors within [`OUTSKIRTS`] of those probes take
+//! probes [`OUTSKIRT_SPACING`] apart, and closer where a floor's baked light departs from its
+//! nearest probe's, since a player can walk out of the play space and a point outside every
+//! lighting cell takes the record's open-ground probe. A tunnel 93 m outside a Forge World
+//! variant's spawn points lit the player brighter than the open ground beside it.
 //! Nightfall's clusters span
 //! about 15 by 20 km of backdrop, and probes spread across them left its canyon 76 m from the
 //! nearest. A campaign mission keeps its player starts at its
@@ -28,12 +33,14 @@
 //! therefore takes that floor point's baked light ([`floor_light`]), sun visibility and interior
 //! darkness included. The ray mean stays for a probe with no lightmapped floor within
 //! [`HEADROOM`] below it. Both use the same calibration light: the open probes' typical floor
-//! light, or their typical ray mean when no floor is sampled. A probe stores 0.505 times the
-//! square root of its light divided by that calibration. Destiny's diffuse ambient response
-//! squares visibility. The atmosphere uses the same calibration, so its brightness times squared
-//! probe visibility recovers the sampled light at the converted radiance scale.
-//! Separate denominators would change a floor sample's energy by the ratio between the two
-//! references. Visibility clamps and the native normal-dependent response remain approximations.
+//! light, or their typical ray mean when no floor is sampled. A surface's visibility is 0.505
+//! times the square root of its light divided by that calibration, and a probe stores 0.8 of
+//! it, since an object's upward faces take twice their probe (`lighting::OBJECT_SHARE`).
+//! Destiny's diffuse ambient response squares visibility. The atmosphere uses the same
+//! calibration, so its brightness times the squared visibility of an upward face recovers the
+//! sampled light at the converted radiance scale. An object's sides take a quarter of that, as
+//! on a stock map. Separate denominators would change a floor sample's energy by the ratio
+//! between the two references. Visibility clamps remain approximations.
 //!
 //! A structure cluster whose probes see open sky in fewer than [`INTERIOR_OPEN`] of their rays and
 //! whose floors hold less than [`INTERIOR_LIGHT`] of the open probes' floor light is an interior
@@ -69,6 +76,20 @@ const SPAWN_SHARE: usize = 4;
 /// structure clusters, in meters. A Forge World variant's clusters span the whole 27 km world,
 /// where probes spread by distance alone would leave the variant's arena almost none.
 const NEAR_SPACING: f32 = 6.;
+/// How far from the play space's probes the floors a player can walk out to take probes, in
+/// meters.
+const OUTSKIRTS: f32 = 192.;
+/// The spacing those floors fill to, in meters, and the most probes they take.
+const OUTSKIRT_SPACING: f32 = 24.;
+const OUTSKIRT_LIMIT: usize = 1024;
+/// The difference between a floor's visibility and its nearest probe's that earns the floor a
+/// probe of its own, the spacing such probes keep, in meters, and the most of them. A tunnel or
+/// an overhang narrower than [`OUTSKIRT_SPACING`] otherwise takes the light of the ground above.
+const CONTRAST: f32 = 0.1;
+const CONTRAST_SPACING: f32 = 8.;
+const CONTRAST_LIMIT: usize = 512;
+/// The rank, in tenths, of the outskirt floors' light that stands for open ground there.
+const CONTRAST_OPEN_RANK: usize = 9;
 /// The grid cell size squad spawn points mark nearby floor in, in meters.
 const NEAR_CELL: f32 = 8.;
 /// How far a ray looks for a face, in meters.
@@ -709,6 +730,14 @@ pub(super) fn probes(
     let calibration_count = chosen.len();
     let (spawn_samples, spawn_excluded) =
         add_spawn_samples(&scene, atlas, standing, usable, &mut chosen)?;
+    let (outskirt_probes, contrast_probes) = add_outskirts(
+        &scene,
+        atlas,
+        &candidates,
+        &mut chosen,
+        &usable,
+        &mut rejected,
+    )?;
     let placing_seconds = placing.elapsed().as_secs_f64();
     let placed = chosen.len();
     // Fewer usable points than the donor's probes repeat the first ones.
@@ -777,7 +806,7 @@ pub(super) fn probes(
         .zip(&views)
         .zip(&floors)
         .map(|((point, view), &floor)| {
-            let visibility = lighting::visibility(floor.unwrap_or(view.light), calibration);
+            let visibility = lighting::object_visibility(floor.unwrap_or(view.light), calibration);
             [
                 point[0] + offset[0],
                 point[1] + offset[1],
@@ -843,6 +872,8 @@ pub(super) fn probes(
         "spawn_seeds": seeded,
         "additional_spawn_samples": spawn_samples,
         "excluded_spawn_samples": spawn_excluded,
+        "outskirt_probes": outskirt_probes,
+        "contrast_probes": contrast_probes,
         "calibration_probes": calibration_count,
         "near_spawns": near_spawns,
         "candidates": candidates.len(),
@@ -1034,6 +1065,115 @@ fn spread(
             }
         }
     }
+}
+
+/// Adds probes on the `candidates` within [`OUTSKIRTS`] of the probes `chosen` holds, and returns
+/// how many its two passes added. The first spreads probes [`OUTSKIRT_SPACING`] apart, which
+/// also fills what the coverage budget left of the play space. The second takes floors whose
+/// lightmap visibility departs from their nearest probe's by [`CONTRAST`] or more, the greatest
+/// departure first, [`CONTRAST_SPACING`] apart. It compares visibilities against the outskirt
+/// floors' own open light, since the calibration follows from the coverage probes' views, and
+/// skips a floor or a nearest probe without a lightmap sample.
+fn add_outskirts(
+    scene: &Scene<'_>,
+    atlas: Option<&Atlas>,
+    candidates: &[[f32; 3]],
+    chosen: &mut Vec<[f32; 3]>,
+    usable: &dyn Fn([f32; 3]) -> bool,
+    rejected: &mut usize,
+) -> anyhow::Result<(usize, usize)> {
+    ensure!(
+        chosen.len() + OUTSKIRT_LIMIT + CONTRAST_LIMIT + 2 < usize::from(u16::MAX),
+        "The map's lighting samples exceed the native probe index range"
+    );
+    let squared = |a: [f32; 3], b: [f32; 3]| {
+        let d = sub(a, b);
+        dot(d, d)
+    };
+    let ring = candidates
+        .iter()
+        .copied()
+        .filter(|&point| {
+            chosen
+                .iter()
+                .any(|&probe| squared(point, probe) <= OUTSKIRTS * OUTSKIRTS)
+        })
+        .collect::<Vec<_>>();
+    let covered = chosen.len();
+    spread(
+        chosen,
+        &ring,
+        covered + OUTSKIRT_LIMIT,
+        OUTSKIRT_SPACING,
+        usable,
+        rejected,
+    );
+    let coverage = chosen.len() - covered;
+    let Some(atlas) = atlas else {
+        return Ok((coverage, 0));
+    };
+    let lights = |points: &[[f32; 3]]| {
+        crate::cancellation::parallel_map(points, |&point| {
+            floor_light(scene, atlas, point).map(luminance)
+        })
+    };
+    let ring_lights = lights(&ring[..])?;
+    let mut lit = ring_lights.iter().flatten().copied().collect::<Vec<_>>();
+    if lit.is_empty() {
+        return Ok((coverage, 0));
+    }
+    let rank = (lit.len() - 1) * CONTRAST_OPEN_RANK / 10;
+    let open = *lit.select_nth_unstable_by(rank, |a, b| a.total_cmp(b)).1;
+    let value = |light: Option<f32>| light.map(|light| lighting::visibility(light, open));
+    let ring_values = ring_lights.into_iter().map(value).collect::<Vec<_>>();
+    let chosen_values = lights(&chosen[..])?
+        .into_iter()
+        .map(value)
+        .collect::<Vec<_>>();
+    // Each ring floor's nearest probe: its squared distance and its visibility.
+    let mut nearest = ring
+        .iter()
+        .map(|&point| {
+            chosen
+                .iter()
+                .zip(&chosen_values)
+                .map(|(&probe, &value)| (squared(point, probe), value))
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .unwrap_or((f32::INFINITY, None))
+        })
+        .collect::<Vec<_>>();
+    let mut tried = vec![false; ring.len()];
+    let filled = chosen.len();
+    while chosen.len() < filled + CONTRAST_LIMIT {
+        let departing = ring_values
+            .iter()
+            .zip(&nearest)
+            .enumerate()
+            .filter(|(index, _)| !tried[*index])
+            .filter_map(|(index, (value, (distance, probe)))| {
+                let departure = ((*value)? - (*probe)?).abs();
+                (*distance >= CONTRAST_SPACING * CONTRAST_SPACING && departure >= CONTRAST)
+                    .then_some((index, departure))
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)));
+        let Some((index, _)) = departing else {
+            break;
+        };
+        tried[index] = true;
+        let point = ring[index];
+        if !usable(point) {
+            *rejected += 1;
+            continue;
+        }
+        chosen.push(point);
+        for (slot, &floor) in nearest.iter_mut().zip(&ring) {
+            let distance = squared(floor, point);
+            if distance < slot.0 {
+                *slot = (distance, ring_values[index]);
+            }
+        }
+    }
+    Ok((coverage, chosen.len() - filled))
 }
 
 fn add_spawn_samples(

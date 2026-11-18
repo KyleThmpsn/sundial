@@ -586,8 +586,16 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
                 {
                     return Err(invalid("Imported runtime marker owner is ambiguous"));
                 }
-                parhelion_import::tiger::markers::validate(&rig.converted)
-                    .map_err(|error| invalid(format!("Imported runtime markers: {error:#}")))?;
+                let equipment = animation
+                    .rigs
+                    .iter()
+                    .find(|r| r.kind == RigKind::Skeleton && !r.first_person)
+                    .ok_or_else(|| invalid("Imported markers require an equipment skeleton"))?;
+                parhelion_import::tiger::markers::validate_equipment(
+                    &rig.converted,
+                    &parhelion_import::tiger::payload::Payload(equipment.converted.clone()),
+                )
+                .map_err(|error| invalid(format!("Imported runtime markers: {error:#}")))?;
             }
         }
         stock(manager, &rig.original, RESOURCE_OWNER_CLASS, "rig owner")?;

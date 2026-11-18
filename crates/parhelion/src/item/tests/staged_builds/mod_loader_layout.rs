@@ -24,6 +24,7 @@ use crate::recipe::WeaponSocketColumnRecipe;
 use crate::workflow::FilteredPackageView;
 
 mod overflow;
+mod runtime_names;
 
 const BREACHLIGHT: u32 = 0x4CE3_CE93;
 const BOSS_SPEC: u32 = 0xA63B_627D;
@@ -35,7 +36,7 @@ type Staged = (String, u16, usize, Option<usize>);
 
 /// A temporary installation over the stock packages whose `steam_api64.dll` is `runtime`.
 fn installation(packages: &Path, runtime: Option<&Path>) -> FilteredPackageView {
-    let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
+    let ignored = crate::package::profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
@@ -73,21 +74,23 @@ fn build(
 
 /// Each staged package as its file reads, beside the stock generation it patches.
 fn layout(view: &FilteredPackageView, build: &crate::BuildReport) -> Vec<Staged> {
-    let header =
-        |path: &Path| crate::format::PackageLayout::parse(&fs::read(path).unwrap()).unwrap();
+    let header = |path: &Path| {
+        crate::package::format::PackageLayout::parse(&fs::read(path).unwrap()).unwrap()
+    };
     build
         .artifacts
         .iter()
         .map(|artifact| {
             let staged = header(&build.run_directory.join(&artifact.file_name));
-            let stock = crate::package_profile::canonical_package(staged.package_id).map(|stock| {
-                header(
-                    &view
-                        .path()
-                        .join(stock.stock_file_name(stock.stock_patch_id)),
-                )
-                .entry_count
-            });
+            let stock =
+                crate::package::profile::canonical_package(staged.package_id).map(|stock| {
+                    header(
+                        &view
+                            .path()
+                            .join(stock.stock_file_name(stock.stock_patch_id)),
+                    )
+                    .entry_count
+                });
             (
                 artifact.file_name.clone(),
                 staged.package_id,
@@ -175,8 +178,8 @@ fn mod_loader_build_moves_its_records_to_their_own_registered_package() {
     recipe.overrides.socket_plug_variants = vec![perk.at_socket(socket.index as u16, 0)];
 
     // Without a mod loader the records follow the stock host's entries, as they always have.
-    let host = crate::package_profile::HOST_PACKAGE_ID;
-    let stock_entries = crate::package_profile::HOST_EXPECTED_ENTRY_COUNT;
+    let host = crate::package::profile::HOST_PACKAGE_ID;
+    let stock_entries = crate::package::profile::HOST_EXPECTED_ENTRY_COUNT;
     let earlier_build = build(&earlier, &temporary.path().join("earlier"), recipe.clone());
     let earlier_layout = layout(&earlier, &earlier_build);
     assert!(
@@ -216,7 +219,7 @@ fn mod_loader_build_moves_its_records_to_their_own_registered_package() {
     let [(records_id, records_count)] = records[..] else {
         panic!("the build stages one package of investment records");
     };
-    assert!(crate::package_profile::is_authored_standalone_package_id(
+    assert!(crate::package::profile::is_authored_standalone_package_id(
         records_id
     ));
     assert_eq!(records_count, appended);

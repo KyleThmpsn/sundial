@@ -146,7 +146,7 @@ fn retarget(variant: &mut WeaponSocketPlugVariantRecipe, talent: &Talent) -> Res
     }
     if !found {
         if variant.sandbox_perks.len() >= crate::perk::SANDBOX_PERK_CAPACITY {
-            return Err("The damage talent has no room for its element effect.".into());
+            return Err("The damage talent has no room for its damage type effect.".into());
         }
         let carrier = crate::perk::EFFECT_CARRIERS
             .into_iter()
@@ -159,7 +159,7 @@ fn retarget(variant: &mut WeaponSocketPlugVariantRecipe, talent: &Talent) -> Res
             .ok_or("The damage talent has no unused effect carrier.")?;
         variant.sandbox_perks.push(effect(talent, carrier));
     }
-    // A signature trait can also set the element. It keeps its own text and art.
+    // A signature trait can also set the damage type. It keeps its own text and art.
     if variant
         .name
         .as_deref()
@@ -179,7 +179,7 @@ fn select_alternative(
     talent: &Talent,
 ) -> Result<(), String> {
     // Source alternatives remain alternatives. Pick the requested one as the default,
-    // copying the current default's other contributions when the source lacks that element.
+    // copying the current default's other contributions when the source lacks that damage type.
     let column = overrides
         .socket_columns
         .get(usize::from(slot))
@@ -272,6 +272,21 @@ fn update(overrides: &mut WeaponRecipeOverrides, source: &Source) -> Result<(), 
             continue;
         }
         retained = true;
+        // One talent that sets several damage types chooses among them by its own conditions, as
+        // Susanoo's Elemental Transfusion follows the wielder's subclass. It is not a set of
+        // alternatives and keeps every effect it has.
+        let members = members
+            .into_iter()
+            .filter(|&index| {
+                modes(&overrides.socket_plug_variants[index])
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    <= 1
+            })
+            .collect::<Vec<_>>();
+        if members.is_empty() {
+            continue;
+        }
         let distinct = members
             .iter()
             .flat_map(|&index| modes(&overrides.socket_plug_variants[index]))

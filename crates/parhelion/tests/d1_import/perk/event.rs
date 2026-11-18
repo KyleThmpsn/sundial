@@ -6,6 +6,7 @@ mod damage_taken;
 mod event_filter;
 mod filter;
 mod hit;
+mod incident;
 mod player;
 
 pub(super) fn counter_evidence(native: &Payload) -> CheckResult<Value> {
@@ -23,11 +24,50 @@ pub(super) fn incoming(
     assert_eq!(native.u32(n - 4)?, 0x80803E3C);
     assert_eq!(native.bytes::<4>(n)?, [33, 1, 0, 0]);
     assert_eq!(source.bytes::<12>(s + 4)?, native.bytes::<12>(n + 4)?);
-    filter::damage(reader, stock, source, s + 16, native, n + 16)?;
+    let mut second = false;
+    for operation in 0..4 {
+        second |= source.u64(s + 0xA0 + operation * 16)? != 0;
+    }
+    if second {
+        // The source's second label filter has no native slot of its own.
+        let evidence = filter::merged(stock, source, (s + 16, s + 0xA0), native, n + 16)?;
+        println!("Incoming damage label filter: {evidence}");
+    } else {
+        filter::damage(reader, stock, source, s + 16, native, n + 16)?;
+    }
     assert_eq!(native.u64(n + 0xA0)?, 0x80803E3C);
     assert_eq!(native.u32(n + 0xAC)?, 0x80803E3C);
     assert_eq!(native.u32(n + 0xB0)? as usize, n);
     Ok(())
+}
+
+/// A damage modifier's damage filter: damage types and ability labels.
+pub(super) fn damage_filter(
+    reader: &Source,
+    stock: &mut Reader,
+    source: &Payload,
+    s: usize,
+    native: &Payload,
+    n: usize,
+) -> CheckResult<()> {
+    filter::damage(reader, stock, source, s, native, n)
+}
+
+/// The Shadowkeep labels one source label becomes in a perk filter operation, or `None` when
+/// the registry has nothing for it. A label the registry holds is itself. The major rank
+/// becomes `elite` in any list. In an exclude-any list, `player_dot` becomes the
+/// damage-over-time labels and the rank above major becomes `miniboss`, `boss` and `megaboss`.
+fn adapted(name: u32, operation: usize, held: &dyn Fn(u32) -> bool) -> Option<Vec<u32>> {
+    if held(name) {
+        return Some(vec![name]);
+    }
+    let names: &[u32] = match (name, operation) {
+        (0xA4FB017C, _) => &[0x574459CE],
+        (0x8AA6EBC8, 2) => &[0x9A3D2CCB, 0x5CFE4C22, 0x04F136E0],
+        (0x59EE13FA, 2) => &[0x5417D662, 0x543B0EA1, 0x8E2155ED],
+        _ => return None,
+    };
+    names.iter().all(|&name| held(name)).then(|| names.to_vec())
 }
 
 pub(super) fn check(
@@ -184,13 +224,24 @@ pub(super) fn check(
         }
         20 => return player::check(reader, stock, source, s, native, n),
         12 => {
+            assert_eq!(source.u32(s - 4)?, 0x808030D4);
+            if native.u32(n - 4)? == 0x80803DE7 {
+                // Shadowkeep has no event of the source incident's definition.
+                let evidence = incident::kill(reader, stock, source, s, native, n)?;
+                println!("Adapted kill incident: {evidence}");
+                return Ok(());
+            }
             assert_eq!(native.u32(n - 4)?, 0x80803DEA);
-            assert!(matches!(
-                (source.u32(s + 8)?, source.u32(s + 12)?),
-                (0x6CEC7A87, 0x18CCBF24) | (0xB3311944, 0xC7161F86)
-            ));
+            // Readback proves the event and context survive. Producer qualification
+            // and live delivery are separate from this serialized-field contract.
             assert_eq!(source.bytes::<7>(s)?, native.bytes::<7>(n)?);
-            assert_eq!(source.bytes::<8>(s + 8)?, native.bytes::<8>(n + 8)?);
+            assert_eq!(source.u32(s + 12)?, native.u32(n + 12)?);
+            let (from, to) = (source.u32(s + 8)?, native.u32(n + 8)?);
+            if from != to {
+                // Shadowkeep registers the source's incident under another name.
+                let evidence = incident::twin(reader, stock, from, to)?;
+                println!("Renamed game event: {evidence}");
+            }
             return Ok(());
         }
         26 => return accumulator::check(reader, stock, source, s, native, n),
@@ -251,8 +302,10 @@ pub(super) fn check(
             assert_eq!(native.bytes::<32>(n + 0x70)?, [0; 32]);
             // The producers use opposite flag polarity, so both selectors still
             // mean 1 = miss and 2 = hit when evaluated against real packets.
+            // Mode 3 retains the target-qualified hit selector. This readback
+            // does not establish equivalence of the two live target queries.
             let mode = match source.u8(s + 0xe4)? {
-                mode @ 0..=2 => mode,
+                mode @ 0..=3 => mode,
                 _ => return Err("Unqualified source event mode".into()),
             };
             assert_eq!(native.u8(n + 0x90)?, mode);
@@ -402,10 +455,10 @@ pub(super) fn labels(
             .into_iter()
             .map(|row| native.u32(row))
             .collect::<Result<Vec<_>>>()?;
-        let mut names = Vec::new();
+        let mut names: Vec<u32> = Vec::new();
         let mut original_mask = vec![0; 32];
-        let mut expected = vec![0; 40];
         let mut absent = false;
+        let held = |name: u32| native_dictionary.contains_key(&name);
         for name in declared {
             let bits = match original_dictionary.get(&name) {
                 Some(bits) => bits,
@@ -422,7 +475,7 @@ pub(super) fn labels(
             }
             // No Shadowkeep object carries a label its registry lacks. Match any and exclude any
             // lose that label, exclude all then always holds, and require all can never hold.
-            let Some(native_bits) = native_dictionary.get(&name) else {
+            let Some(replacements) = adapted(name, operation, &held) else {
                 assert_ne!(
                     operation, 1,
                     "A require-all filter with an absent label was kept"
@@ -430,14 +483,25 @@ pub(super) fn labels(
                 absent = true;
                 continue;
             };
-            names.push(name);
-            for (out, bits) in expected.iter_mut().zip(native_bits) {
-                *out |= bits;
+            if replacements == [name] {
+                names.push(name);
+            } else {
+                // A replacement the list already names is not repeated.
+                for name in replacements {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
             }
         }
         if absent && operation == 3 {
             names.clear();
-            expected = vec![0; 40];
+        }
+        let mut expected = vec![0; 40];
+        for name in &names {
+            for (out, bits) in expected.iter_mut().zip(&native_dictionary[name]) {
+                *out |= bits;
+            }
         }
         assert!(
             !(absent && operation == 0 && names.is_empty()),

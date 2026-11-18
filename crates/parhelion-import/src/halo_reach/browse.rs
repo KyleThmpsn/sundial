@@ -14,6 +14,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use sundial::package_authoring::fnv1;
 
 /// Bumped when the stored row changes, so an older listing is read again.
 const SCHEMA: u32 = 2;
@@ -77,12 +78,6 @@ fn words(text: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn fnv(text: &str) -> u32 {
-    text.bytes().fold(0x811C_9DC5, |h, b| {
-        h.wrapping_mul(0x0100_0193) ^ u32::from(b)
-    })
 }
 
 impl Entry {
@@ -396,7 +391,7 @@ pub fn browse(maps: &Path, mut progress: impl FnMut(usize, usize)) -> Result<Vec
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect();
         if leaves[&leaf] > 1 {
-            slug = format!("{slug}-{:08x}", fnv(&segments(&entry.path).join("\\")));
+            slug = format!("{slug}-{:08x}", fnv1(&segments(&entry.path).join("\\")));
         }
         ensure!(slugs.insert(slug.clone()), "Repeated Reach slug {slug}");
         entry.slug = slug;

@@ -1,8 +1,8 @@
 //! Moving-projectile properties traced through the Shadowkeep native consumer.
 //! These mappings describe code behavior. Gameplay validation is separate.
 use crate::runtime::{
-    WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeGraph, WeaponRuntimeResource,
-    WeaponRuntimeRoot, WeaponRuntimeRootKind, WeaponRuntimeValue, WeaponRuntimeValueOverride,
+    RuntimeField, RuntimeFieldLocator, RuntimeGraph, RuntimeResource, RuntimeRoot, RuntimeRootKind,
+    RuntimeValue, RuntimeValueOverride,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -137,19 +137,15 @@ impl Stored {
 
 #[derive(Clone, Debug)]
 struct Lane {
-    field: WeaponRuntimeField,
+    field: RuntimeField,
     offset: usize,
     aliases: Vec<(u32, u16)>,
 }
 
 impl Lane {
-    fn resolve(
-        root: &WeaponRuntimeRoot,
-        resource: &WeaponRuntimeResource,
-        offset: u32,
-    ) -> Option<Self> {
+    fn resolve(root: &RuntimeRoot, resource: &RuntimeResource, offset: u32) -> Option<Self> {
         let mut fields = root.fields.iter().filter(|field| {
-            field.source != crate::runtime::WeaponRuntimeFieldSource::NativeDeclaration
+            field.source != crate::runtime::RuntimeFieldSource::NativeDeclaration
                 && field.locator.value_offset <= offset
                 && field
                     .locator
@@ -158,7 +154,7 @@ impl Lane {
                     .is_some_and(|end| end >= offset + 4)
         });
         let field = fields.next()?.clone();
-        if fields.next().is_some() || !matches!(field.value, WeaponRuntimeValue::Bytes(_)) {
+        if fields.next().is_some() || !matches!(field.value, RuntimeValue::Bytes(_)) {
             return None;
         }
         let lane = Self {
@@ -170,7 +166,7 @@ impl Lane {
         Some(lane)
     }
 
-    fn matches(&self, locator: &WeaponRuntimeFieldLocator) -> bool {
+    fn matches(&self, locator: &RuntimeFieldLocator) -> bool {
         let native = &self.field.locator;
         if matches!((locator.graph_tag, native.graph_tag), (Some(a), Some(b)) if a != b) {
             return false;
@@ -190,7 +186,7 @@ impl Lane {
         normalized == *native
     }
 
-    fn bits(&self, draft: &[WeaponRuntimeValueOverride]) -> Result<u32, String> {
+    fn bits(&self, draft: &[RuntimeValueOverride]) -> Result<u32, String> {
         let mut entries = draft
             .iter()
             .filter(|entry| self.matches(&entry.locator) || self.matches_scalar(&entry.locator));
@@ -201,11 +197,11 @@ impl Lane {
         }
         if entry.is_some_and(|entry| self.matches_scalar(&entry.locator)) {
             return match value {
-                WeaponRuntimeValue::Float32Bits(bits) => Ok(*bits),
+                RuntimeValue::Float32Bits(bits) => Ok(*bits),
                 _ => Err("Projectile scalar has an incompatible value type.".into()),
             };
         }
-        let WeaponRuntimeValue::Bytes(bytes) = value else {
+        let RuntimeValue::Bytes(bytes) = value else {
             return Err("Projectile data has an incompatible value type.".into());
         };
         let bytes = bytes
@@ -214,7 +210,7 @@ impl Lane {
         Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
     }
 
-    fn matches_scalar(&self, locator: &WeaponRuntimeFieldLocator) -> bool {
+    fn matches_scalar(&self, locator: &RuntimeFieldLocator) -> bool {
         let source = &self.field.locator;
         if matches!((locator.graph_tag, source.graph_tag), (Some(a), Some(b)) if a != b) {
             return false;
@@ -248,16 +244,16 @@ impl Lane {
                 == u64::from(source.value_offset) + self.offset as u64
     }
 
-    fn write(&self, draft: &mut Vec<WeaponRuntimeValueOverride>, bits: u32) -> Result<(), String> {
+    fn write(&self, draft: &mut Vec<RuntimeValueOverride>, bits: u32) -> Result<(), String> {
         self.bits(draft)?;
         let existing = draft.iter().position(|entry| self.matches(&entry.locator));
         let mut entry = existing
             .map(|index| draft[index].clone())
-            .unwrap_or_else(|| WeaponRuntimeValueOverride {
+            .unwrap_or_else(|| RuntimeValueOverride {
                 locator: self.field.locator.clone(),
                 value: self.field.value.clone(),
             });
-        let WeaponRuntimeValue::Bytes(bytes) = &mut entry.value else {
+        let RuntimeValue::Bytes(bytes) = &mut entry.value else {
             unreachable!()
         };
         bytes[self.offset..self.offset + 4].copy_from_slice(&bits.to_le_bytes());
@@ -285,7 +281,7 @@ impl Parameter {
         f32::from_bits(self.definition.bits(&[]).expect("resolved native field"))
     }
 
-    pub fn contains(&self, locator: &WeaponRuntimeFieldLocator) -> bool {
+    pub fn contains(&self, locator: &RuntimeFieldLocator) -> bool {
         self.instance.matches(locator)
             || self.definition.matches(locator)
             || self.instance.matches_scalar(locator)
@@ -293,7 +289,7 @@ impl Parameter {
     }
 
     /// Identifies either paired native scalar by its resolved position in this owner.
-    pub fn targets_field(&self, owner: u32, field: &WeaponRuntimeField) -> bool {
+    pub fn targets_field(&self, owner: u32, field: &RuntimeField) -> bool {
         self.owner_tag == owner
             && field.locator.byte_size == 4
             && [&self.instance, &self.definition].into_iter().any(|lane| {
@@ -301,13 +297,13 @@ impl Parameter {
             })
     }
 
-    pub fn is_modified(&self, draft: &[WeaponRuntimeValueOverride]) -> bool {
+    pub fn is_modified(&self, draft: &[RuntimeValueOverride]) -> bool {
         [&self.instance, &self.definition]
             .into_iter()
             .any(|lane| lane.bits(draft) != lane.bits(&[]))
     }
 
-    pub fn value(&self, draft: &[WeaponRuntimeValueOverride]) -> Result<f32, String> {
+    pub fn value(&self, draft: &[RuntimeValueOverride]) -> Result<f32, String> {
         let bits = self.definition.bits(draft)?;
         let value = f32::from_bits(bits);
         self.kind.validate(value)?;
@@ -323,11 +319,7 @@ impl Parameter {
         Ok(value)
     }
 
-    pub fn set(
-        &self,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
-        value: f32,
-    ) -> Result<(), String> {
+    pub fn set(&self, draft: &mut Vec<RuntimeValueOverride>, value: f32) -> Result<(), String> {
         self.kind.validate(value)?;
         let mut next = draft.clone();
         for lane in [&self.instance, &self.definition] {
@@ -337,7 +329,7 @@ impl Parameter {
         Ok(())
     }
 
-    pub fn reset(&self, draft: &mut Vec<WeaponRuntimeValueOverride>) -> Result<(), String> {
+    pub fn reset(&self, draft: &mut Vec<RuntimeValueOverride>) -> Result<(), String> {
         let mut next = draft.clone();
         for lane in [&self.instance, &self.definition] {
             lane.write(&mut next, lane.bits(&[])?)?;
@@ -349,12 +341,12 @@ impl Parameter {
 
 /// The moving projectile's definition, when `resource` is one with paired roots of the native
 /// sizes.
-fn moving_projectile(resource: &WeaponRuntimeResource) -> Option<&WeaponRuntimeRoot> {
+fn moving_projectile(resource: &RuntimeResource) -> Option<&RuntimeRoot> {
     let definition = resource.definition.as_ref()?;
-    (resource.instance.kind == WeaponRuntimeRootKind::ComponentInstance
+    (resource.instance.kind == RuntimeRootKind::ComponentInstance
         && resource.instance.schema == 0x8080_3B73
         && resource.instance.byte_size == 0x1E0
-        && definition.kind == WeaponRuntimeRootKind::ComponentDefinition
+        && definition.kind == RuntimeRootKind::ComponentDefinition
         && definition.schema == 0x8080_388F
         && definition.byte_size == 0x5D0)
         .then_some(definition)
@@ -362,7 +354,7 @@ fn moving_projectile(resource: &WeaponRuntimeResource) -> Option<&WeaponRuntimeR
 
 /// Discover only the exact native moving-projectile schema and its paired roots.
 /// Callers select a private action's owned graph before invoking this adapter.
-pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<Parameter> {
+pub fn discover(graph: &RuntimeGraph) -> Vec<Parameter> {
     graph
         .resources
         .iter()
@@ -551,21 +543,21 @@ pub struct Curve {
     pub kind: CurveKind,
     pub owner_tag: u32,
     /// The definition's four settings, in [`CurveKind`] order.
-    settings: [WeaponRuntimeField; 4],
+    settings: [RuntimeField; 4],
     /// The instance's copy of each, in the same order.
     state: [Lane; 4],
     scale: Lane,
 }
 
 impl Curve {
-    fn setting(&self, kind: CurveKind, draft: &[WeaponRuntimeValueOverride]) -> f32 {
+    fn setting(&self, kind: CurveKind, draft: &[RuntimeValueOverride]) -> f32 {
         let field = &self.settings[kind.index()];
         let value = draft
             .iter()
             .find(|entry| entry.locator == field.locator)
             .map_or(&field.value, |entry| &entry.value);
         match value {
-            WeaponRuntimeValue::Float32Bits(bits) => f32::from_bits(*bits),
+            RuntimeValue::Float32Bits(bits) => f32::from_bits(*bits),
             _ => f32::NAN,
         }
     }
@@ -574,13 +566,13 @@ impl Curve {
         self.setting(self.kind, &[])
     }
 
-    pub fn is_modified(&self, draft: &[WeaponRuntimeValueOverride]) -> bool {
+    pub fn is_modified(&self, draft: &[RuntimeValueOverride]) -> bool {
         let state = &self.state[self.kind.index()];
         self.setting(self.kind, draft).to_bits() != self.original().to_bits()
             || state.bits(draft) != state.bits(&[])
     }
 
-    pub fn value(&self, draft: &[WeaponRuntimeValueOverride]) -> Result<f32, String> {
+    pub fn value(&self, draft: &[RuntimeValueOverride]) -> Result<f32, String> {
         let value = self.setting(self.kind, draft);
         self.kind.validate(value)?;
         if self.is_modified(draft) && self.state[self.kind.index()].bits(draft)? != value.to_bits()
@@ -593,27 +585,23 @@ impl Curve {
         Ok(value)
     }
 
-    pub fn set(
-        &self,
-        draft: &mut Vec<WeaponRuntimeValueOverride>,
-        value: f32,
-    ) -> Result<(), String> {
+    pub fn set(&self, draft: &mut Vec<RuntimeValueOverride>, value: f32) -> Result<(), String> {
         self.kind.validate(value)?;
         self.write(draft, value)
     }
 
-    pub fn reset(&self, draft: &mut Vec<WeaponRuntimeValueOverride>) -> Result<(), String> {
+    pub fn reset(&self, draft: &mut Vec<RuntimeValueOverride>) -> Result<(), String> {
         self.write(draft, self.original())
     }
 
-    fn write(&self, draft: &mut Vec<WeaponRuntimeValueOverride>, value: f32) -> Result<(), String> {
+    fn write(&self, draft: &mut Vec<RuntimeValueOverride>, value: f32) -> Result<(), String> {
         let mut next = draft.clone();
         let field = &self.settings[self.kind.index()];
         next.retain(|entry| entry.locator != field.locator);
         if value.to_bits() != self.original().to_bits() {
-            next.push(WeaponRuntimeValueOverride {
+            next.push(RuntimeValueOverride {
                 locator: field.locator.clone(),
-                value: WeaponRuntimeValue::Float32Bits(value.to_bits()),
+                value: RuntimeValue::Float32Bits(value.to_bits()),
             });
         }
         self.state[self.kind.index()].write(&mut next, value.to_bits())?;
@@ -638,14 +626,14 @@ impl Curve {
 }
 
 /// The definition's curve setting `kind`, a typed field of the member at +0xC8.
-fn curve_setting(definition: &WeaponRuntimeRoot, kind: CurveKind) -> Option<WeaponRuntimeField> {
+fn curve_setting(definition: &RuntimeRoot, kind: CurveKind) -> Option<RuntimeField> {
     let offset = 4 * kind.index() as u32;
     let mut fields = definition.fields.iter().filter(|field| {
-        field.source == crate::runtime::WeaponRuntimeFieldSource::NativeDeclaration
+        field.source == crate::runtime::RuntimeFieldSource::NativeDeclaration
             && field.locator.type_handle.get() == CURVE_SETTINGS
             && field.locator.value_offset == offset
             && field.locator.byte_size == 4
-            && matches!(field.value, WeaponRuntimeValue::Float32Bits(_))
+            && matches!(field.value, RuntimeValue::Float32Bits(_))
             && field.locator.path.iter().any(|step| {
                 step.type_handle.get() == CURVE_MEMBER && step.byte_offset == CURVE_MEMBER_OFFSET
             })
@@ -656,7 +644,7 @@ fn curve_setting(definition: &WeaponRuntimeRoot, kind: CurveKind) -> Option<Weap
 
 /// The speed and gravity curve settings of each moving projectile whose instance state already
 /// holds the definition's settings and the scale they derive. Any other shape offers none.
-pub fn curves(graph: &WeaponRuntimeGraph) -> Vec<Curve> {
+pub fn curves(graph: &RuntimeGraph) -> Vec<Curve> {
     let mut found = Vec::new();
     for resource in &graph.resources {
         let Some(definition) = moving_projectile(resource) else {
@@ -666,7 +654,7 @@ pub fn curves(graph: &WeaponRuntimeGraph) -> Vec<Curve> {
             .iter()
             .map(|kind| curve_setting(definition, *kind))
             .collect::<Option<Vec<_>>>()
-            .and_then(|settings| <[WeaponRuntimeField; 4]>::try_from(settings).ok())
+            .and_then(|settings| <[RuntimeField; 4]>::try_from(settings).ok())
         else {
             continue;
         };

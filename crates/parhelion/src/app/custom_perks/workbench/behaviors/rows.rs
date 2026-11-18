@@ -313,7 +313,10 @@ impl Category {
                 11 | 13..=16 => Self::Ammo,
                 // Named properties, the transmat effect and the named value adjustments
                 // all set what the weapon or item carries.
-                6 | 10 | 18 | 20 | 25 | 26 | 28 | 29 | 30 | 35 | 47 | 53 => Self::WeaponSettings,
+                // A weapon key is a name the weapon carries, which its sword owners read.
+                6 | 10 | 18 | 20 | 25 | 26 | 28 | 29 | 30 | 35 | 41 | 47 | 53 => {
+                    Self::WeaponSettings
+                }
                 // Damage the wearer takes and damage the wearer deals.
                 33 | 40 => Self::KillsAndDamage,
                 37 | 54 => Self::EventLabels,
@@ -321,7 +324,7 @@ impl Category {
                 // and the named target and value beside the states that read them.
                 43 => Self::GameEvents,
                 49 | 52 => Self::States,
-                32 | 41 | 42 => Self::TimersAndCounters,
+                32 | 42 => Self::TimersAndCounters,
                 48 => Self::Scripts,
                 _ => Self::Other,
             },

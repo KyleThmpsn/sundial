@@ -26,6 +26,12 @@ pub(crate) fn file_sha256(path: &Path) -> io::Result<String> {
     Ok(hex::encode(hash.finalize()))
 }
 
+/// Lowercase hexadecimal SHA-256 of `bytes`, the form receipts and verification artifacts record.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
 /// An advisory write lease for cooperating processes. Keep the lock file in place,
 /// since unlinking it would let another writer acquire a different file.
 pub fn try_lock_file(path: &Path) -> io::Result<File> {

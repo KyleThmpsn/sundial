@@ -2,7 +2,15 @@
 //! custom effects (type 19). Both versions store the same record, a plugin, its parameter block,
 //! bank media and RTPC rows, and version 113 ends it with an initial-property count.
 //!
-//! Two plugins convert, each where Shadowkeep's stock banks store the same parameter block.
+//! Three plugins convert, each where Shadowkeep's stock banks store the same parameter block.
+//!
+//! Audiokinetic effect `0x69`, whose 56-byte block is three 17-byte filter bands (type, gain,
+//! frequency, Q and an enable byte), an output level and one flag byte. Rise of Iron bank
+//! `80A8917C` defines custom effect `09B59831` with it, with no media and no RTPC rows. It is the
+//! most common effect in Shadowkeep's stock banks: 14,085 records in 59,384 banks hold the same
+//! plugin and block size, and their blocks decode as the same bands. 102 of them have no RTPC
+//! row. Its RTPC parameter numbers have no established correspondence between the versions, so
+//! a source row refuses the effect.
 //!
 //! The McDSP ML1 limiter. Rise of Iron weapon banks such as `80AA32A9` share one ML1 set,
 //! `278C8C34`, and Shadowkeep's stock banks hold 410 ML1 share sets and 19 custom ML1 effects. Both
@@ -29,6 +37,9 @@ const ML1_DISTANCE_PARAMETER: u32 = 42;
 /// Audiokinetic effect `0x7E` (company 0, effect type 3).
 const BANDS: u32 = 0x007e0003;
 const BANDS_PARAMETERS: u32 = 126;
+/// Audiokinetic effect `0x69` (company 0, effect type 3).
+const EQUALIZER: u32 = 0x00690003;
+const EQUALIZER_PARAMETERS: u32 = 56;
 
 pub(super) fn share_set(
     r: &mut Read<'_>,
@@ -62,7 +73,9 @@ fn record(
     let plugin = r.u32()?;
     let size = r.u32()?;
     ensure!(
-        (plugin, size) == (ML1, ML1_PARAMETERS) || (plugin, size) == (BANDS, BANDS_PARAMETERS),
+        (plugin, size) == (ML1, ML1_PARAMETERS)
+            || (plugin, size) == (BANDS, BANDS_PARAMETERS)
+            || (plugin, size) == (EQUALIZER, EQUALIZER_PARAMETERS),
         "unsupported early effect plugin {plugin:08X} with {size} parameter bytes"
     );
     w.u32(plugin);

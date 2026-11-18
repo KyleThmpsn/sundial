@@ -153,12 +153,13 @@ fn parhelion_holds_shared_rows_and_the_source_keeps_its_items() {
         let Some(importer) = mod_content::Importer::from_id(id) else {
             continue;
         };
+        // A source's badge takes its game's name, not its mod's.
+        let badge = crate::badge::source_text(importer).0;
         assert!(
             hashes
                 .iter()
-                .any(|hash| shown_under(&expected[hash], importer.name())),
-            "no item of {id} shows in the {} badge",
-            importer.name()
+                .any(|hash| shown_under(&expected[hash], badge)),
+            "no item of {id} shows in the {badge} badge"
         );
     }
 

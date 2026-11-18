@@ -16,6 +16,11 @@
 //! Before 2026-11-10 the first stock badge kept the first place then, and the importers' places
 //! still counted from the second.
 //!
+//! A badge with no entries is left out of the root. That is the main mod's own badge when every
+//! item it builds joins a source badge or a custom one. The first place then goes to the next
+//! badge the main mod holds, so the importers' places stay where their own mods write them. A
+//! source badge the main mod holds takes the earliest place no other member writes.
+//!
 //! A member folder removed by hand leaves its place showing the stock badge the main mod kept
 //! there, which the main mod's list also shows, until the next build.
 use super::*;
@@ -42,7 +47,9 @@ enum Row {
 
 /// Lays out the Badges root's children for the member now compiling, once it has added every
 /// badge it holds.
-pub(crate) fn arrange(nodes: &mut Vec<u8>) -> AuthoringResult<()> {
+///
+/// `listed` is whether the build's own badge has entries. Without any it stays out of the root.
+pub(crate) fn arrange(nodes: &mut Vec<u8>, listed: bool) -> AuthoringResult<()> {
     let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
     let descriptor = node_rows
         + BADGES_ROOT_NODE_INDEX * PRESENTATION_NODE_ROW_SIZE
@@ -64,8 +71,8 @@ pub(crate) fn arrange(nodes: &mut Vec<u8>) -> AuthoringResult<()> {
     // A main mod that only hosts its importers' rows adds no badge, yet still keeps their places
     // and lists the stock badges their badges write over. Without it each importer's badge took
     // a stock badge's place and that stock badge was gone from the list.
-    let hosting = crate::package_profile::member().is_none()
-        && crate::package_profile::host().is_standalone()
+    let hosting = crate::package::profile::member().is_none()
+        && crate::package::profile::host().is_standalone()
         && PLACES
             .iter()
             .any(|importer| crate::mod_family::build::has_badge(*importer));
@@ -77,7 +84,7 @@ pub(crate) fn arrange(nodes: &mut Vec<u8>) -> AuthoringResult<()> {
     if own.is_some_and(|own| own != STOCK_PRESENTATION_NODE_COUNT) {
         return Err(invalid("The build's own badge isn't its first added node"));
     }
-    let layout = layout(nodes, node_rows, count, own, custom)?;
+    let layout = layout(nodes, node_rows, count, own, listed, custom)?;
 
     let row_at = |position: usize| rows + position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE;
     let stock_row = |position: usize| {
@@ -152,6 +159,7 @@ fn layout(
     node_rows: usize,
     count: usize,
     own: Option<usize>,
+    listed: bool,
     custom: &[usize],
 ) -> AuthoringResult<Vec<Row>> {
     // In one mod for every source, and in the main mod for an importer that builds with it, the
@@ -172,9 +180,10 @@ fn layout(
         .filter(|badge| !sources.iter().any(|(_, source)| source == badge))
         .collect::<Vec<_>>();
     let source_badges = sources.iter().map(|&(_, badge)| badge);
-    let layout = match crate::package_profile::member() {
+    let layout = match crate::package::profile::member() {
         // Without mod folders the main mod holds every badge and lists them together.
-        None if !crate::package_profile::host().is_standalone() => own
+        None if !crate::package::profile::host().is_standalone() => own
+            .filter(|_| listed)
             .into_iter()
             .chain(source_badges)
             .chain(custom)
@@ -182,19 +191,27 @@ fn layout(
             .chain((0..count).map(Row::Stock))
             .collect::<Vec<_>>(),
         None => {
-            let mut next = custom
-                .iter()
-                .map(|&badge| Row::Badge(badge))
+            // A main mod with any badge takes the first place, which the importers' places
+            // follow (`mod_family::build::main_has_badge`).
+            let leads = own.is_some() && (listed || !sources.is_empty() || !custom.is_empty());
+            let mut next = source_badges
+                .chain(custom.iter().copied())
+                .map(Row::Badge)
                 .chain((0..count).map(Row::Stock))
                 .collect::<VecDeque<_>>();
-            // Project Sunrise first, when the main mod has a badge, then each importer's place.
-            let mut layout = own.map(Row::Badge).into_iter().collect::<Vec<_>>();
+            // Project Sunrise first when it has entries, or else the next badge of this mod.
+            let mut layout = Vec::new();
+            if leads {
+                layout.extend(match own {
+                    Some(own) if listed => Some(Row::Badge(own)),
+                    _ => next.pop_front(),
+                });
+            }
             for importer in PLACES {
-                // An importer that builds with the main mod has its badge here, in the place its
-                // own mod would write. No other member writes that place.
-                if let Some(&(_, badge)) = sources.iter().find(|(source, _)| *source == importer) {
-                    layout.push(Row::Badge(badge));
-                } else if crate::mod_family::build::has_badge(importer) {
+                // An importer in its own mod writes its place, so this mod keeps the stock row
+                // there. Every other place takes this mod's next badge.
+                let here = sources.iter().any(|(source, _)| *source == importer);
+                if !here && crate::mod_family::build::has_badge(importer) {
                     layout.push(Row::Stock(layout.len()));
                 } else if let Some(row) = next.pop_front() {
                     layout.push(row);
@@ -212,7 +229,9 @@ fn layout(
                 .ok_or_else(|| invalid("The importer has no place in the Badges root"))?
                 + usize::from(crate::mod_family::build::main_has_badge());
             let mut layout = (0..count).map(Row::Stock).collect::<Vec<_>>();
-            layout[place] = Row::Badge(own);
+            if listed {
+                layout[place] = Row::Badge(own);
+            }
             layout.extend(source_badges.chain(custom).map(Row::Badge));
             layout
         }

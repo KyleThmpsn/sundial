@@ -41,10 +41,10 @@ pub struct Selection {
     pub role: Role,
 }
 
-/// Intended element. Source damage providers still need to be resolved before translation.
+/// Intended damage type. Source damage providers still need to be resolved before translation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Element {
+pub enum DamageType {
     Kinetic,
     Arc,
     Solar,
@@ -53,7 +53,7 @@ pub enum Element {
     Strand,
 }
 
-impl Element {
+impl DamageType {
     pub(crate) fn native(self) -> Option<Self> {
         match self {
             Self::Strand => Some(Self::Kinetic),

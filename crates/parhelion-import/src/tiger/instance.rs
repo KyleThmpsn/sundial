@@ -4,6 +4,7 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
 mod flight;
+mod health;
 
 fn put(bytes: &mut [u8], offset: usize, value: &[u8]) -> Result<()> {
     bytes
@@ -56,6 +57,15 @@ pub fn upgrade_owner(owner: &[u8], patches: &[Value]) -> Result<Option<UpgradedO
             (flight::restore_input_envelopes(&mut payload)? != 0).then_some(UpgradedOwner {
                 payload: payload.0,
                 patches: patches.to_vec(),
+            }),
+        );
+    }
+    if class == health::INSTANCE {
+        let mut patches = patches.to_vec();
+        return Ok(
+            health::realign_pool(&mut payload, &mut patches)?.then_some(UpgradedOwner {
+                payload: payload.0,
+                patches,
             }),
         );
     }

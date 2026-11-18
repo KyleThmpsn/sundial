@@ -8,7 +8,7 @@ use sundial_account::{
     ProfileItem,
 };
 
-use crate::persistence::sqlite_account::SqliteAccountDocument;
+use crate::persistence::sunrise_account::SunriseAccountDocument;
 
 pub(super) fn account_members_except_settings(
     account: Option<&Map<String, Value>>,
@@ -22,8 +22,8 @@ pub(super) fn account_members_except_settings(
 }
 
 pub(super) fn sqlite_change_summaries(
-    before: &SqliteAccountDocument,
-    after: &SqliteAccountDocument,
+    before: &SunriseAccountDocument,
+    after: &SunriseAccountDocument,
     limit: usize,
 ) -> Vec<String> {
     let mut changes = Vec::new();
@@ -105,8 +105,8 @@ fn summarize_native_value(
 }
 
 fn summarize_profile_items(
-    before: &SqliteAccountDocument,
-    after: &SqliteAccountDocument,
+    before: &SunriseAccountDocument,
+    after: &SunriseAccountDocument,
     limit: usize,
     changes: &mut Vec<String>,
 ) {
@@ -185,8 +185,8 @@ fn summarize_profile_item(
 }
 
 fn summarize_dismantle_rewards(
-    before: &SqliteAccountDocument,
-    after: &SqliteAccountDocument,
+    before: &SunriseAccountDocument,
+    after: &SunriseAccountDocument,
     limit: usize,
     changes: &mut Vec<String>,
 ) {
@@ -246,8 +246,8 @@ fn dismantle_reward_label(reward: &DismantleReward) -> String {
 }
 
 fn summarize_characters(
-    before: &SqliteAccountDocument,
-    after: &SqliteAccountDocument,
+    before: &SunriseAccountDocument,
+    after: &SunriseAccountDocument,
     limit: usize,
     changes: &mut Vec<String>,
 ) {

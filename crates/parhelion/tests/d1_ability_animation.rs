@@ -11,21 +11,17 @@ use parhelion_import::{
     },
 };
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     path::PathBuf,
 };
+use sundial::storage::sha256_hex;
 
 fn configured(key: &str) -> Result<PathBuf> {
     env::var_os(key)
         .map(PathBuf::from)
         .with_context(|| format!("Set {key}"))
-}
-
-fn sha(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 fn word(value: &Value, key: &str) -> Result<u32> {
@@ -223,7 +219,7 @@ fn source_actions_link_privately_and_preserve_stock_routes() -> Result<()> {
             let descriptor = descriptors[usize::try_from(states.u32(row)?)?];
             let clip = bank.u32(clips[usize::from(bank.u16(descriptor + 24)?)])?;
             let payload = reload(clip, 0x80808F49)?;
-            observed.push(json!({"source_action":action.name,"private_action":private,"source_clip":source_choice.clip,"clip":clip,"sha256":sha(&payload.0)}));
+            observed.push(json!({"source_action":action.name,"private_action":private,"source_clip":source_choice.clip,"clip":clip,"sha256":sha256_hex(&payload.0)}));
         }
     }
     // A stale consumer must fail without changing either caller-owned input.

@@ -20,12 +20,12 @@ pub(crate) const fn is_weapon_bucket(bucket_hash: u64) -> bool {
 const ITEM_DAMAGE_PERK_CLASS: u32 = 0x8080_77BC;
 #[cfg(test)]
 const ITEM_DAMAGE_PERK_ROW_SIZE: usize = 24;
-// The Fundamentals plug carries one row per element. Hard Light's plug uses 462 for the Arc
+// The Fundamentals plug carries one row per damage type. Hard Light's plug uses 462 for the Arc
 // leg and Borealis's uses 461; both compile to the same action, so either satisfies it.
 #[cfg(test)]
-const VARIABLE_ELEMENT_PERK_INDICES: [u16; 3] = [462, 463, 464];
+const VARIABLE_DAMAGE_PERK_INDICES: [u16; 3] = [462, 463, 464];
 #[cfg(test)]
-const BOREALIS_VARIABLE_ELEMENT_PERK_INDICES: [u16; 3] = [461, 463, 464];
+const BOREALIS_VARIABLE_DAMAGE_PERK_INDICES: [u16; 3] = [461, 463, 464];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,7 +133,7 @@ impl DescriptorProfile {
 
 fn descriptor_profile(item: &[u8]) -> DescriptorProfile {
     use crate::investment::weapon::{
-        BaseDamage, DamageFamily, Element, base_sandbox_perks, classify_base_damage,
+        BaseDamage, DamageFamily, ElementalDamage, base_sandbox_perks, classify_base_damage,
     };
     let Ok(perks) = base_sandbox_perks(item) else {
         return DescriptorProfile::Unknown;
@@ -142,15 +142,15 @@ fn descriptor_profile(item: &[u8]) -> DescriptorProfile {
         return DescriptorProfile::Empty;
     }
     match classify_base_damage(&perks) {
-        BaseDamage::Fixed(family, element) => {
-            let element = match element {
-                Element::Arc => ItemDamageType::Arc,
-                Element::Solar => ItemDamageType::Solar,
-                Element::Void => ItemDamageType::Void,
+        BaseDamage::Fixed(family, damage_type) => {
+            let damage_type = match damage_type {
+                ElementalDamage::Arc => ItemDamageType::Arc,
+                ElementalDamage::Solar => ItemDamageType::Solar,
+                ElementalDamage::Void => ItemDamageType::Void,
             };
             match family {
-                DamageFamily::Legacy => DescriptorProfile::LegacyFixed(element),
-                DamageFamily::Modern => DescriptorProfile::ModernFixed(element),
+                DamageFamily::Legacy => DescriptorProfile::LegacyFixed(damage_type),
+                DamageFamily::Modern => DescriptorProfile::ModernFixed(damage_type),
             }
         }
         BaseDamage::Variable => DescriptorProfile::Variable,

@@ -1041,7 +1041,12 @@ fn native_parameter(
                 class: 0x808037F3,
                 bytes,
                 arrays: Vec::new(),
-                spawns: Vec::new(),
+                spawns: action
+                    .resource
+                    .filter(|&tag| !matches!(tag, 0 | u32::MAX))
+                    .map(|tag| (8, tag))
+                    .into_iter()
+                    .collect(),
             }
         }
         10 if action.known => edit::Act::New {

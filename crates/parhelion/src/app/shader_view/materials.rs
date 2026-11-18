@@ -5,8 +5,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use super::*;
 use crate::dye::write_vectors;
-use crate::icon_edit::ImportedIcon;
-use crate::shader_icon::{Finish, IconSurface, IconTexture, Iridescence as RampIridescence};
+use crate::icon::edit::ImportedIcon;
+use crate::icon::shader::{Finish, IconSurface, IconTexture, Iridescence as RampIridescence};
 use sundial::package_authoring::{
     DyeFinish, DyeSurfaceMaterial, DyeTexture, dye_surfaces, load_dye_materials, load_dye_textures,
 };
@@ -349,7 +349,7 @@ impl DyeMaterials {
         {
             return Some(handle.clone());
         }
-        let image = crate::shader_icon::swatch(&drawing.surface(self), pixels);
+        let image = crate::icon::shader::swatch(&drawing.surface(self), pixels);
         let image = egui::ColorImage::from_rgba_unmultiplied(
             [image.width() as usize, image.height() as usize],
             image.as_raw(),

@@ -31,7 +31,7 @@ pub(super) fn runtime_registry_section(registry: Registry<'_>, include_fields: b
         })
     };
     let owner_roots = || graph.owners.iter().flat_map(|owner| &owner.roots);
-    let count_fields = |roots: &mut dyn Iterator<Item = &WeaponRuntimeRoot>| {
+    let count_fields = |roots: &mut dyn Iterator<Item = &RuntimeRoot>| {
         roots.map(|root| root.fields.len()).sum::<usize>()
     };
     let _ = writeln!(
@@ -129,7 +129,7 @@ pub(super) fn runtime_registry_section(registry: Registry<'_>, include_fields: b
 }
 
 /// How many readable field values the registry would add, for the control that turns them on.
-pub(super) fn runtime_registry_field_count(graph: &WeaponRuntimeGraph) -> usize {
+pub(super) fn runtime_registry_field_count(graph: &RuntimeGraph) -> usize {
     graph
         .resources
         .iter()
@@ -139,7 +139,7 @@ pub(super) fn runtime_registry_field_count(graph: &WeaponRuntimeGraph) -> usize 
         .sum()
 }
 
-pub(super) fn root_summary(root: &WeaponRuntimeRoot) -> String {
+pub(super) fn root_summary(root: &RuntimeRoot) -> String {
     // A root's own schema is often not the class its binding selects, so naming it here adds
     // what the binding line cannot: an instance and its definition are different components.
     let schema = match sundial::package_authoring::runtime::native_type_name(root.schema) {
@@ -165,7 +165,7 @@ pub(super) fn root_summary(root: &WeaponRuntimeRoot) -> String {
 /// locator's own label, so it matches a runtime value override recorded in the recipe, and is
 /// left off when it only repeats the name. Long opaque values are cut so the columns hold;
 /// the binary patch editor is the place to read a whole block byte for byte.
-pub(super) fn registry_field(entry: &WeaponRuntimeField) -> String {
+pub(super) fn registry_field(entry: &RuntimeField) -> String {
     let name = if entry.name_inferred {
         format!("{} (inferred)", entry.name)
     } else {
@@ -201,20 +201,19 @@ pub(super) fn column(text: &str, width: usize) -> String {
     format!("{kept}…")
 }
 
-pub(super) fn registry_value(kind: &WeaponRuntimeValueKind, value: &WeaponRuntimeValue) -> String {
+pub(super) fn registry_value(kind: &RuntimeValueKind, value: &RuntimeValue) -> String {
     match value {
-        WeaponRuntimeValue::Boolean(value) => value.to_string(),
-        WeaponRuntimeValue::Signed(value) => value.to_string(),
-        WeaponRuntimeValue::Unsigned(value) => match kind {
-            WeaponRuntimeValueKind::HexIdentifier { bits }
-            | WeaponRuntimeValueKind::BitFlags { bits } => {
+        RuntimeValue::Boolean(value) => value.to_string(),
+        RuntimeValue::Signed(value) => value.to_string(),
+        RuntimeValue::Unsigned(value) => match kind {
+            RuntimeValueKind::HexIdentifier { bits } | RuntimeValueKind::BitFlags { bits } => {
                 format!("0x{value:0>width$X}", width = (*bits as usize).div_ceil(4))
             }
             _ => value.to_string(),
         },
-        WeaponRuntimeValue::Float32Bits(bits) => f32::from_bits(*bits).to_string(),
-        WeaponRuntimeValue::Float64Bits(bits) => f64::from_bits(*bits).to_string(),
-        WeaponRuntimeValue::Vector4Float32Bits(bits) => format!(
+        RuntimeValue::Float32Bits(bits) => f32::from_bits(*bits).to_string(),
+        RuntimeValue::Float64Bits(bits) => f64::from_bits(*bits).to_string(),
+        RuntimeValue::Vector4Float32Bits(bits) => format!(
             "[{}]",
             bits.iter()
                 .map(|bits| f32::from_bits(*bits).to_string())
@@ -222,35 +221,35 @@ pub(super) fn registry_value(kind: &WeaponRuntimeValueKind, value: &WeaponRuntim
                 .join(" ")
         ),
         // A long opaque block is identified, not reproduced; the bytes are in the packages.
-        WeaponRuntimeValue::Bytes(bytes) if bytes.len() > 6 => format!(
+        RuntimeValue::Bytes(bytes) if bytes.len() > 6 => format!(
             "{} +{} bytes",
             crate::app::runtime_fields::format_runtime_bytes(&bytes[..6]),
             bytes.len() - 6
         ),
-        WeaponRuntimeValue::Bytes(bytes) => crate::app::runtime_fields::format_runtime_bytes(bytes),
+        RuntimeValue::Bytes(bytes) => crate::app::runtime_fields::format_runtime_bytes(bytes),
     }
 }
 
-pub(super) fn value_kind_label(kind: &WeaponRuntimeValueKind) -> String {
+pub(super) fn value_kind_label(kind: &RuntimeValueKind) -> String {
     match kind {
-        WeaponRuntimeValueKind::Boolean => "bool".to_owned(),
-        WeaponRuntimeValueKind::SignedInteger { bits } => format!("i{bits}"),
-        WeaponRuntimeValueKind::UnsignedInteger { bits } => format!("u{bits}"),
-        WeaponRuntimeValueKind::Enum { bits } => format!("enum{bits}"),
-        WeaponRuntimeValueKind::BitFlags { bits } => format!("flags{bits}"),
-        WeaponRuntimeValueKind::HexIdentifier { bits } => format!("hex{bits}"),
-        WeaponRuntimeValueKind::Float32 => "f32".to_owned(),
-        WeaponRuntimeValueKind::Float64 => "f64".to_owned(),
-        WeaponRuntimeValueKind::Vector4Float32 => "vec4".to_owned(),
-        WeaponRuntimeValueKind::FixedBytes { size } => format!("bytes{size}"),
+        RuntimeValueKind::Boolean => "bool".to_owned(),
+        RuntimeValueKind::SignedInteger { bits } => format!("i{bits}"),
+        RuntimeValueKind::UnsignedInteger { bits } => format!("u{bits}"),
+        RuntimeValueKind::Enum { bits } => format!("enum{bits}"),
+        RuntimeValueKind::BitFlags { bits } => format!("flags{bits}"),
+        RuntimeValueKind::HexIdentifier { bits } => format!("hex{bits}"),
+        RuntimeValueKind::Float32 => "f32".to_owned(),
+        RuntimeValueKind::Float64 => "f64".to_owned(),
+        RuntimeValueKind::Vector4Float32 => "vec4".to_owned(),
+        RuntimeValueKind::FixedBytes { size } => format!("bytes{size}"),
     }
 }
 
-pub(super) fn field_source_label(source: WeaponRuntimeFieldSource) -> &'static str {
+pub(super) fn field_source_label(source: RuntimeFieldSource) -> &'static str {
     match source {
-        WeaponRuntimeFieldSource::GeneratedSchema => "generated",
-        WeaponRuntimeFieldSource::NativeMember => "native member",
-        WeaponRuntimeFieldSource::OpaqueNativeType => "opaque type",
-        WeaponRuntimeFieldSource::NativeDeclaration => "native decl",
+        RuntimeFieldSource::GeneratedSchema => "generated",
+        RuntimeFieldSource::NativeMember => "native member",
+        RuntimeFieldSource::OpaqueNativeType => "opaque type",
+        RuntimeFieldSource::NativeDeclaration => "native decl",
     }
 }

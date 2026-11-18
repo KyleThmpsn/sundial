@@ -10,7 +10,7 @@ pub(in crate::item) fn bank_value_patches(
     manager: &PackageManager,
     source: TagHash,
     values: &[crate::subclass::BankValue],
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let entity = read_tag(manager, source, "ability entity")?;
     let bank = sundial::package_authoring::ability_modifier::entity_bank(&entity)
         .map_err(invalid)?
@@ -61,7 +61,7 @@ pub(in crate::item) fn bank_glyph_patches(
     source: TagHash,
     keys: &[u32],
     glyph: u32,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let entity = read_tag(manager, source, "ability entity")?;
     let Some(bank) =
         sundial::package_authoring::ability_modifier::entity_bank(&entity).map_err(invalid)?
@@ -86,7 +86,7 @@ pub(in crate::item) fn attached_glyph_patches(
     manager: &PackageManager,
     source: TagHash,
     glyphs: &[(u32, u32)],
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let entity = read_tag(manager, source, "attached ability")?;
     let Some(bank) =
         sundial::package_authoring::ability_modifier::entity_bank(&entity).map_err(invalid)?
@@ -150,7 +150,7 @@ impl BankPlaces {
         &self,
         (row, at): (u16, usize),
         bytes: Vec<u8>,
-    ) -> AuthoringResult<WeaponRuntimeResourcePatch> {
+    ) -> AuthoringResult<RuntimeResourcePatch> {
         let context = |error: String| invalid(format!("Ability bank 0x{:08X}: {error}", self.bank));
         let &(binding, index, start) = self
             .places
@@ -165,7 +165,7 @@ impl BankPlaces {
             })?;
         let offset = u32::try_from(at - start as usize)
             .map_err(|_| context("the row lies too far from the bound resource".into()))?;
-        Ok(WeaponRuntimeResourcePatch {
+        Ok(RuntimeResourcePatch {
             binding_hash: binding,
             resource_index: u16::try_from(index)
                 .map_err(|_| context("the bound resource index is too large".into()))?,

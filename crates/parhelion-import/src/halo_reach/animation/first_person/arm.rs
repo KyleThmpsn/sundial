@@ -1,5 +1,6 @@
 //! Source elbow placement with the native arm's segment lengths and IK convention.
 use super::{hash, palm, source::Source};
+use crate::math::cross;
 use crate::{
     halo_reach::rig::normalize,
     tiger::{
@@ -33,14 +34,6 @@ fn subtract(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 
 fn length(v: [f32; 3]) -> f32 {
     v.iter().map(|v| v * v).sum::<f32>().sqrt()
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Native upper and lower arm lengths at the baseline's upper-arm scale.

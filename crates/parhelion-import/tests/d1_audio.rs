@@ -8,13 +8,13 @@ use parhelion_import::{
     },
 };
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
     time::Instant,
 };
+use sundial::storage::sha256_hex;
 
 fn configured(key: &str) -> Result<PathBuf> {
     env::var_os(key)
@@ -24,10 +24,6 @@ fn configured(key: &str) -> Result<PathBuf> {
 
 fn number(value: &Value) -> Result<u32> {
     Ok(u32::try_from(value.as_u64().context("Integer identity")?)?)
-}
-
-fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 fn node_file(root: &Path, node: &Value) -> Result<PathBuf> {
@@ -69,7 +65,7 @@ fn source_cues_preserve_private_profiles_after_preparation_and_reload() -> Resul
     let packages = configured("D1_SOURCE_PACKAGES")?;
     let native = configured("SUNDIAL_STOCK_PACKAGES")?;
     let revision = env::var("SUNDIAL_TEST_REVISION")?;
-    let test_binary_sha256 = digest(&fs::read(env::current_exe()?)?);
+    let test_binary_sha256 = sha256_hex(&fs::read(env::current_exe()?)?);
     let source = Source::open(&packages, |_, _| {})?;
     let source_stamp = package_stamp(&packages)?;
     let native_stamp = package_stamp(&native)?;
@@ -112,7 +108,7 @@ fn source_cues_preserve_private_profiles_after_preparation_and_reload() -> Resul
             );
             let bytes = fs::read(node_file(&folder, node)?)?;
             ensure!(!bytes.is_empty(), "Empty required audio payload");
-            files.push(json!({"file":node["file"],"sha256":digest(&bytes)}));
+            files.push(json!({"file":node["file"],"sha256":sha256_hex(&bytes)}));
         }
         let mut profiles = Vec::new();
         let mut changed = false;
@@ -200,9 +196,9 @@ fn source_cues_preserve_private_profiles_after_preparation_and_reload() -> Resul
                     );
                 }
             }
-            profiles.push(json!({"cue":cue,"source_cue_sha256":digest(&original.0),"source_profile":profile_tag,
-                "source_profile_sha256":digest(&profile.0),"emitted_profile_sha256":digest(&actual.0),
-                "native_witness":template,"native_witness_sha256":digest(&witness.0),
+            profiles.push(json!({"cue":cue,"source_cue_sha256":sha256_hex(&original.0),"source_profile":profile_tag,
+                "source_profile_sha256":sha256_hex(&profile.0),"emitted_profile_sha256":sha256_hex(&actual.0),
+                "native_witness":template,"native_witness_sha256":sha256_hex(&witness.0),
                 "source_limit_bits":actual.u32(12)?,"native_limit_bits":witness.u32(12)?,"translated":differs}));
         }
         ensure!(
@@ -212,7 +208,7 @@ fn source_cues_preserve_private_profiles_after_preparation_and_reload() -> Resul
                 == changed,
             "Required profile translation path was not exercised"
         );
-        artifacts.push(json!({"case":case,"graph_sha256":digest(&graph_bytes),"profiles":profiles,"files":files}));
+        artifacts.push(json!({"case":case,"graph_sha256":sha256_hex(&graph_bytes),"profiles":profiles,"files":files}));
     }
     ensure!(
         exact > 0 && translated > 0,
@@ -236,7 +232,7 @@ fn source_cues_preserve_private_profiles_after_preparation_and_reload() -> Resul
             "revision":revision,"test_binary_sha256":test_binary_sha256,
             "converter_revision":parhelion_import::CONVERTER_REVISION,
             "source":source.report(),"native_build":"86657.20.08.23.1800.d2_rc___release",
-            "source_stamp":source_stamp,"native_stamp":native_stamp,"plan_sha256":digest(&plan_bytes),
+            "source_stamp":source_stamp,"native_stamp":native_stamp,"plan_sha256":sha256_hex(&plan_bytes),
             "artifacts":artifacts,"exact_profiles":exact,"translated_profiles":translated,
             "seconds":began.elapsed().as_secs_f64(),
             "limits":"Complete audio preparation and persisted profile readback. No native package link, loader or gameplay execution."

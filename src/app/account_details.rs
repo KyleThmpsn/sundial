@@ -133,7 +133,7 @@ impl SundialApp {
 
     pub(super) fn finish_native_inventory_edit(
         &mut self,
-        result: Result<(), crate::persistence::sqlite_account::SqliteAccountError>,
+        result: Result<(), crate::persistence::sunrise_account::SunriseAccountError>,
     ) {
         match result {
             Ok(()) => {

@@ -138,7 +138,7 @@ fn configured_staged_run_reopens_with_complete_stock_shaped_icon_graphs() {
     );
 
     for definition in definitions {
-        crate::watermark::validate_icon_definition_graph(&manager, definition)
+        crate::icon::watermark::validate_icon_definition_graph(&manager, definition)
             .unwrap_or_else(|error| panic!("authored icon {definition} is invalid: {error}"));
     }
 }

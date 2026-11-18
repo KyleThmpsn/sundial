@@ -21,10 +21,10 @@ impl<'a> Reporter<'a> {
         queued: Instant,
     ) -> Self {
         let now = Instant::now();
-        let file = crate::package_profile::authored_package(id)
+        let file = crate::package::profile::authored_package(id)
             .expect("planned package")
             .file_name;
-        crate::block_codec::Timings::take();
+        crate::package::block_codec::Timings::take();
         let mut result = Self {
             send,
             index,
@@ -79,8 +79,8 @@ impl<'a> Reporter<'a> {
             },
             !failed,
         );
-        let timings = crate::block_codec::Timings::take();
-        let file = crate::package_profile::authored_package(self.id)
+        let timings = crate::package::block_codec::Timings::take();
+        let file = crate::package::profile::authored_package(self.id)
             .expect("planned package")
             .file_name;
         let _ = self.send.send(Event::Activity {

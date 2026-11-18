@@ -314,6 +314,8 @@ impl Plan {
             let supported = if let Some(definition) = armor_definition.as_deref() {
                 super::armor::classes(definition, weapon.overrides.armor_class)
                     .map_err(|error| weapon.in_recipe(error))?
+            } else if weapon.kind == ItemKind::Artifact {
+                super::gear::artifact::classes(weapon)
             } else {
                 crate::collection::Classes::ALL
             };
@@ -363,8 +365,11 @@ impl Plan {
             &mut gear_destinations,
             &mut gear_bases,
         ));
+        // The Collections build adds a badge only for items with an entry, so an item without
+        // one, such as a subclass, reserves no badge nodes ahead of the pages.
         let badges = weapons
             .iter()
+            .filter(|weapon| weapon.has_collections())
             .filter_map(|w| w.overrides.badge.as_ref().map(|b| b.name.as_str()))
             .collect::<BTreeSet<_>>();
         let budget = NodeBudget::new(weapons.iter().zip(&weapon_destinations).map(
@@ -393,6 +398,7 @@ impl Plan {
         // in the order the Collections build appends them.
         let source_badges = weapons
             .iter()
+            .filter(|weapon| weapon.has_collections())
             .filter_map(crate::badge::source_badge)
             .collect::<BTreeSet<_>>();
         let mut next =
@@ -568,6 +574,7 @@ fn gear_page(
     });
     let donor = match own {
         Some(donor) => donor,
+        None if page.kind() == ItemKind::Artifact => super::gear::artifact::collectible(sources)?,
         None => {
             let strings = read_tag(
                 &sources.manager,

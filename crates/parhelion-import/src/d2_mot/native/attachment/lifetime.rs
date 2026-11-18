@@ -57,8 +57,9 @@ pub(super) fn timer_retention(closure: &closure::Closure) -> Result<BTreeMap<u32
                 .context("cleanup timer owner is absent")?;
             let d = p.pointer(24)?;
             match p.u32(d - 4)? {
-                // Context, network, named parameters, numeric bank and sequence.
-                0x80803F64 | 0x80808EDD | 0x80808757 | 0x80809597 | 0x80808179 => {}
+                // Context, network, named parameters, numeric bank, sequence and stat
+                // modifiers, which hold no lifetime of their own.
+                0x80803F64 | 0x80808EDD | 0x80808757 | 0x80809597 | 0x80808179 | 0x80802D2B => {}
                 0x8080B11F if timer.is_none() => {
                     let duration = d + 0x298;
                     let value = literal(p, duration + 0x118)?;
@@ -300,6 +301,28 @@ pub(super) fn stable(
     Ok(())
 }
 
+/// The initial vector of the declaration named `name` when `component` is a source channel bank
+/// that declares it.
+fn bank_initial(component: &Payload, name: u32) -> Result<Option<[u8; 16]>> {
+    let (Ok(instance), Ok(definition)) = (component.pointer(16), component.pointer(24)) else {
+        return Ok(None);
+    };
+    if definition < 4 || component.u32(definition - 4)? != 0x80809597 {
+        return Ok(None);
+    }
+    let rows = component.array(definition + 0x148, 112, Some(0x808095A9))?;
+    let vectors = component.array(instance + 0x50, 16, Some(0x80800090))?;
+    for (index, row) in rows.into_iter().enumerate() {
+        if component.u32(row)? == name {
+            let vector = *vectors
+                .get(index)
+                .context("channel bank declaration has no initial vector")?;
+            return Ok(Some(component.bytes::<16>(vector)?));
+        }
+    }
+    Ok(None)
+}
+
 pub(super) fn parameters(closure: &closure::Closure) -> Result<BTreeMap<u32, Payload>> {
     let mut output = BTreeMap::new();
     let written = written_parameters(closure)?;
@@ -321,6 +344,21 @@ pub(super) fn parameters(closure: &closure::Closure) -> Result<BTreeMap<u32, Pay
             })
             .copied()
             .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            // With no parameter component, a creation value reaches a channel bank declaration
+            // of its name, or nothing. A value equal to that declaration's initial vector
+            // changes nothing, so the entity needs no specialization.
+            for (&name, value) in values {
+                for owner in &graph.components {
+                    ensure!(
+                        bank_initial(&closure.owners[owner], name)?
+                            .is_none_or(|initial| initial == *value),
+                        "creation parameter {name:08X} changes a channel bank's initial value"
+                    );
+                }
+            }
+            continue;
+        }
         ensure!(
             candidates.len() == 1,
             "creation parameters need one private parameter component"

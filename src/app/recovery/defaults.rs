@@ -1,5 +1,5 @@
 use super::*;
-use crate::persistence::sqlite_account::ResetPlan;
+use crate::persistence::sunrise_account::ResetPlan;
 
 impl SundialApp {
     pub(in crate::app) fn request_sqlite_defaults_reset(&mut self) {

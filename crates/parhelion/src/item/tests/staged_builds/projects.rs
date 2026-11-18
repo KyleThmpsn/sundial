@@ -59,7 +59,7 @@ fn real_two_weapon_project_is_permutation_identical_when_configured() {
     )
     .expect("reversed two-weapon project should build");
     assert_eq!(forward.plan.weapons.len(), 2);
-    let expected_packages = crate::package_profile::authored_packages_for_file_names(
+    let expected_packages = crate::package::profile::authored_packages_for_file_names(
         forward
             .artifacts
             .iter()

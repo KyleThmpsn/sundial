@@ -23,7 +23,7 @@
 use std::collections::BTreeSet;
 
 use crate::tag_payload::{read_u32 as u32_at, read_u64 as u64_at};
-use crate::{AuthoringResult, error::invalid, item::WeaponRuntimeResourcePatch};
+use crate::{AuthoringResult, error::invalid, item::RuntimeResourcePatch};
 use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::entity::{WEAPON_BARREL_COMPONENT_KEY, weapon_component_bindings};
 use sundial::package_authoring::sandbox_perk::program::{
@@ -42,9 +42,9 @@ mod tests;
 
 use catalog::*;
 pub use catalog::{
-    CATALOG, ELEMENT_SWITCH, behavior, catalog_for_owner, catalog_for_type,
-    element_switch_for_owner, paired_record_source, requested_graphs, source_switches_element,
-    switches_element_for_type,
+    CATALOG, DAMAGE_TYPE_SWITCH, behavior, catalog_for_owner, catalog_for_type,
+    damage_type_switch_for_owner, paired_record_source, requested_graphs,
+    source_switches_damage_type, switches_damage_type_for_type,
 };
 pub use firing::BehaviorFiring;
 pub(crate) use firing::*;
@@ -87,7 +87,7 @@ const STANCE_OFFSET: usize = 0x14;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BehaviorEffect {
     /// Hold Reload cycles the damage type, when a trait socket carries The Fundamentals.
-    ElementSwitch,
+    DamageTypeSwitch,
     /// The record grafts cleanly but produced no observed effect on its own.
     NoObservedEffect,
     /// Not yet taken into a session.
@@ -165,8 +165,8 @@ pub struct Behavior {
 impl Behavior {
     /// Whether this record drives The Fundamentals.
     #[must_use]
-    pub const fn switches_element(&self) -> bool {
-        matches!(self.effect, BehaviorEffect::ElementSwitch)
+    pub const fn switches_damage_type(&self) -> bool {
+        matches!(self.effect, BehaviorEffect::DamageTypeSwitch)
     }
 
     /// The content owner a copied record belongs to, if this behavior carries one.
@@ -282,7 +282,7 @@ pub(crate) fn variant_patches(
     entity: &[u8],
     group: Option<u32>,
     variant: ContentVariant,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let content = content(manager, entity)?;
     let source = exact_block(&content, variant.key).ok_or_else(|| {
         invalid(
@@ -315,7 +315,7 @@ pub(crate) fn variant_patches(
         {
             continue;
         }
-        patches.push(WeaponRuntimeResourcePatch {
+        patches.push(RuntimeResourcePatch {
             binding_hash: BINDING,
             resource_index: 0,
             offset: slot_offset(block + offset, content.resource)?,
@@ -331,8 +331,8 @@ pub(crate) fn variant_patches(
 /// What a set of behavior grafts compiles into.
 #[derive(Debug, Default)]
 pub(crate) struct Grafted {
-    pub(crate) patches: Vec<WeaponRuntimeResourcePatch>,
-    pub(crate) appends: Vec<crate::item::WeaponRuntimeResourceAppend>,
+    pub(crate) patches: Vec<RuntimeResourcePatch>,
+    pub(crate) appends: Vec<crate::item::RuntimeResourceAppend>,
 }
 
 fn selected_block(content: &Content, group: Option<u32>) -> AuthoringResult<usize> {
@@ -406,8 +406,8 @@ pub(crate) fn patches(
     let mut graph_requested = false;
     let mut patches = Vec::with_capacity(behaviors.len() * 3);
     // One block holds one behavior record, so the same record must not be written twice. Two
-    // requests resolve to it whenever a weapon's graph is chosen and element switching is on,
-    // because the graph pairs with the very record the element-switch request finds. Writing it
+    // requests resolve to it whenever a weapon's graph is chosen and damage type switching is on,
+    // because the graph pairs with the very record the damage type switch request finds. Writing it
     // twice put two edits over the same bytes and the overlap guard failed the whole build.
     let mut applied_records = Vec::new();
     let mut label_sources = Vec::new();
@@ -433,7 +433,7 @@ pub(crate) fn patches(
             .or_else(|| {
                 entry
                     .is_none()
-                    .then(element_switch_source)
+                    .then(damage_type_switch_source)
                     .flatten()
                     .map(|(owner_tag, content_group)| (owner_tag, content_group, true))
             });
@@ -472,7 +472,7 @@ pub(crate) fn patches(
                         0,
                     ));
                 }
-                appends.push(crate::item::WeaponRuntimeResourceAppend {
+                appends.push(crate::item::RuntimeResourceAppend {
                     binding_hash: BINDING,
                     resource_index: 0,
                     bytes: record.bytes,
@@ -480,6 +480,8 @@ pub(crate) fn patches(
                     arrays: Vec::new(),
                     pointers: Vec::new(),
                     references: Vec::new(),
+                    retained_pointers: Vec::new(),
+                    retained_bytes: Vec::new(),
                 });
             } else {
                 let graft = resolve(&content, group, include_behavior)?;
@@ -488,7 +490,7 @@ pub(crate) fn patches(
                     targets.push((triple + SLOT_STRIDE * 2, behavior_target, 0));
                 }
                 for (slot, target, count) in targets {
-                    patches.push(WeaponRuntimeResourcePatch {
+                    patches.push(RuntimeResourcePatch {
                         binding_hash: BINDING,
                         resource_index: 0,
                         offset: slot_offset(slot, content.resource)?,
@@ -500,12 +502,14 @@ pub(crate) fn patches(
                 }
             }
         } else if entry.is_none() {
-            return Err(invalid("No element-switch record is available to graft."));
+            return Err(invalid(
+                "No damage type switch record is available to graft.",
+            ));
         }
 
         if let Some(tag) = entry.and_then(Behavior::graph_tag) {
             graph_requested = true;
-            patches.push(WeaponRuntimeResourcePatch {
+            patches.push(RuntimeResourcePatch {
                 binding_hash: BINDING,
                 resource_index: 0,
                 offset: slot_offset(block + GRAPH_OFFSET, content.resource)?,
@@ -543,7 +547,7 @@ pub(crate) fn patches(
     if let Some(stance) = groups.stance
         && u32_at(&content.owner, block + STANCE_OFFSET)? != stance
     {
-        patches.push(WeaponRuntimeResourcePatch {
+        patches.push(RuntimeResourcePatch {
             binding_hash: BINDING,
             resource_index: 0,
             offset: slot_offset(block + STANCE_OFFSET, content.resource)?,
@@ -574,8 +578,8 @@ pub(crate) fn patches(
 /// What putting a weapon's own behavior back, or a behavior donor's, writes.
 #[derive(Default)]
 struct Restored {
-    patches: Vec<WeaponRuntimeResourcePatch>,
-    appends: Vec<crate::item::WeaponRuntimeResourceAppend>,
+    patches: Vec<RuntimeResourcePatch>,
+    appends: Vec<crate::item::RuntimeResourceAppend>,
     /// Owners and blocks whose labels travel with the behavior.
     labels: Vec<(Vec<u8>, usize)>,
     /// The block in this owner whose type markers and type label the selected block takes.
@@ -617,8 +621,8 @@ fn content_patch(
     content: &Content,
     at: usize,
     bytes: Vec<u8>,
-) -> AuthoringResult<WeaponRuntimeResourcePatch> {
-    Ok(WeaponRuntimeResourcePatch {
+) -> AuthoringResult<RuntimeResourcePatch> {
+    Ok(RuntimeResourcePatch {
         binding_hash: BINDING,
         resource_index: 0,
         offset: slot_offset(at, content.resource)?,
@@ -643,8 +647,8 @@ fn foreign_patches(
     item_hash: u32,
     records: bool,
 ) -> AuthoringResult<Restored> {
-    use sundial::package_authoring::runtime::load_weapon_runtime_entity_for_item_with_manager;
-    let runtime = load_weapon_runtime_entity_for_item_with_manager(manager, item_hash)
+    use sundial::package_authoring::runtime::load_runtime_entity_for_item_with_manager;
+    let runtime = load_runtime_entity_for_item_with_manager(manager, item_hash)
         .map_err(|error| invalid(format!("Behavior donor: {error}")))?;
     let donor = self::content(manager, &runtime.payload)?;
     let group = runtime.weapon_content_group_hash;
@@ -682,17 +686,17 @@ fn foreign_records(
         bytes.extend_from_slice(&0_u64.to_le_bytes());
         bytes.extend_from_slice(&STATE_ARRAY_CLASS.to_le_bytes());
         bytes.extend_from_slice(&0_u32.to_le_bytes());
-        restored
-            .appends
-            .push(crate::item::WeaponRuntimeResourceAppend {
-                binding_hash: BINDING,
-                resource_index: 0,
-                bytes,
-                slots: vec![(slot_offset(state_slot, content.resource)?, 4, 0)],
-                arrays: Vec::new(),
-                pointers: Vec::new(),
-                references: Vec::new(),
-            });
+        restored.appends.push(crate::item::RuntimeResourceAppend {
+            binding_hash: BINDING,
+            resource_index: 0,
+            bytes,
+            slots: vec![(slot_offset(state_slot, content.resource)?, 4, 0)],
+            arrays: Vec::new(),
+            pointers: Vec::new(),
+            references: Vec::new(),
+            retained_pointers: Vec::new(),
+            retained_bytes: Vec::new(),
+        });
         restored
             .patches
             .push(content_patch(content, behavior_slot, vec![0; 16])?);
@@ -715,17 +719,17 @@ fn foreign_records(
             .patches
             .push(content_patch(content, behavior_slot, vec![0; 16])?),
     }
-    restored
-        .appends
-        .push(crate::item::WeaponRuntimeResourceAppend {
-            binding_hash: BINDING,
-            resource_index: 0,
-            bytes: record.bytes,
-            slots,
-            arrays: Vec::new(),
-            pointers: Vec::new(),
-            references: Vec::new(),
-        });
+    restored.appends.push(crate::item::RuntimeResourceAppend {
+        binding_hash: BINDING,
+        resource_index: 0,
+        bytes: record.bytes,
+        slots,
+        arrays: Vec::new(),
+        pointers: Vec::new(),
+        references: Vec::new(),
+        retained_pointers: Vec::new(),
+        retained_bytes: Vec::new(),
+    });
     Ok(())
 }
 
@@ -735,14 +739,14 @@ fn type_marker_patches(
     content: &Content,
     block: usize,
     source: usize,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let mut patches = Vec::new();
     for offset in TYPE_MARKER_OFFSETS {
         let key = u32_at(&content.owner, source + offset)?;
         if u32_at(&content.owner, block + offset)? == key {
             continue;
         }
-        patches.push(WeaponRuntimeResourcePatch {
+        patches.push(RuntimeResourcePatch {
             binding_hash: BINDING,
             resource_index: 0,
             offset: slot_offset(block + offset, content.resource)?,
@@ -893,13 +897,13 @@ pub(crate) fn fired_graph_patches(
     manager: &PackageManager,
     entity: &[u8],
     graph: u32,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let content = content(manager, entity)?;
     content
         .blocks
         .iter()
         .map(|&block| {
-            Ok(WeaponRuntimeResourcePatch {
+            Ok(RuntimeResourcePatch {
                 binding_hash: BINDING,
                 resource_index: 0,
                 offset: slot_offset(block + GRAPH_OFFSET, content.resource)?,
@@ -923,8 +927,8 @@ pub(crate) struct FiredSlot {
 
 impl FiredSlot {
     /// The patch that names `graph` in this slot.
-    pub(crate) fn naming(&self, graph: u32) -> WeaponRuntimeResourcePatch {
-        WeaponRuntimeResourcePatch {
+    pub(crate) fn naming(&self, graph: u32) -> RuntimeResourcePatch {
+        RuntimeResourcePatch {
             binding_hash: self.binding,
             resource_index: 0,
             offset: self.offset,
@@ -942,8 +946,8 @@ impl FiredSlot {
 pub(crate) fn fired_slots(
     manager: &PackageManager,
     entity: &[u8],
-    patches: &[WeaponRuntimeResourcePatch],
-    copied: &[WeaponRuntimeResourcePatch],
+    patches: &[RuntimeResourcePatch],
+    copied: &[RuntimeResourcePatch],
 ) -> AuthoringResult<Vec<FiredSlot>> {
     let slot = |binding: u32, offset: u32, stored: Option<u32>| {
         let patch = patches.iter().position(|patch| {
@@ -982,7 +986,7 @@ pub(crate) fn fired_slots(
 fn barrel_slots(
     manager: &PackageManager,
     entity: &[u8],
-    copied: &[WeaponRuntimeResourcePatch],
+    copied: &[RuntimeResourcePatch],
 ) -> Vec<(u32, Option<u32>)> {
     let Ok(barrels) = weapon_component_bindings(entity, WEAPON_BARREL_COMPONENT_KEY) else {
         return Vec::new();
@@ -1024,7 +1028,7 @@ pub(crate) fn fired_graph(
     manager: &PackageManager,
     entity: &[u8],
     group: u32,
-    copied: &[WeaponRuntimeResourcePatch],
+    copied: &[RuntimeResourcePatch],
 ) -> AuthoringResult<Option<u32>> {
     let content = content(manager, entity)?;
     if let Some(graph) = host_graph(&content, block_for_group(&content, group)?) {
@@ -1071,7 +1075,7 @@ fn own_patches(
     own: usize,
     records: bool,
     graph: bool,
-) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+) -> AuthoringResult<Vec<RuntimeResourcePatch>> {
     let mut patches = Vec::new();
     if records
         && let (Some(target), Some(source)) = (
@@ -1089,7 +1093,7 @@ fn own_patches(
             if content.owner.get(target + slot..target + slot + 16) == Some(bytes.as_slice()) {
                 continue;
             }
-            patches.push(WeaponRuntimeResourcePatch {
+            patches.push(RuntimeResourcePatch {
                 binding_hash: BINDING,
                 resource_index: 0,
                 offset: slot_offset(target + slot, content.resource)?,
@@ -1104,7 +1108,7 @@ fn own_patches(
     // naming none too. Left as it is, the other weapon's graph would fire in the Barrel's place.
     if graph && host_graph(content, own) != host_graph(content, block) {
         let slot = u32_at(&content.owner, own + GRAPH_OFFSET)?;
-        patches.push(WeaponRuntimeResourcePatch {
+        patches.push(RuntimeResourcePatch {
             binding_hash: BINDING,
             resource_index: 0,
             offset: slot_offset(block + GRAPH_OFFSET, content.resource)?,
@@ -1125,7 +1129,7 @@ fn own_patches(
         {
             continue;
         }
-        patches.push(WeaponRuntimeResourcePatch {
+        patches.push(RuntimeResourcePatch {
             binding_hash: BINDING,
             resource_index: 0,
             offset: slot_offset(block + offset, content.resource)?,

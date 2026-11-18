@@ -96,6 +96,10 @@ pub(super) struct State {
     phase: Phase,
     added: usize,
     failures: Vec<String>,
+    /// The answer to the Marathon animations question. Unanswered counts as on.
+    animations: Option<bool>,
+    /// Whether the answer is saved and the question stops.
+    remember: bool,
 }
 
 impl State {
@@ -160,6 +164,8 @@ impl State {
 
     pub fn dismiss(&mut self) {
         self.excluded.clear();
+        self.animations = None;
+        self.remember = false;
         for item in self.pending.drain(..) {
             self.seen
                 .entry(item.path)
@@ -226,6 +232,16 @@ impl PackageAuthoringApp {
             .as_ref()
             .is_none_or(|path| !path.is_dir())
         };
+        // Marathon recipes reimport with whatever the animations setting holds, so a setting that
+        // is off from before it defaulted on is asked about once, unless that was refused.
+        let ask_animations = !settings.marathon_animations
+            && !settings.marathon_animations_asked
+            && state
+                .pending
+                .iter()
+                .any(|item| item.source() == Some(Source::Marathon) && selected(state, item));
+        let mut include = state.animations.unwrap_or(true);
+        let mut remember = state.remember;
         let mut requests = Requests::default();
         let available =
             (ctx.content_rect().size() - egui::vec2(48.0, 48.0)).max(egui::vec2(280.0, 220.0));
@@ -261,6 +277,21 @@ impl PackageAuthoringApp {
                             group(ui, *source, items, state, &missing, &mut requests);
                         }
                     });
+                if ask_animations {
+                    ui.separator();
+                    ui.checkbox(&mut include, "Include Marathon Animations")
+                        .on_hover_text(
+                            "Reimported Marathon weapons play their own animations. Leave this off to keep the donor's animations.",
+                        );
+                    ui.label(
+                        egui::RichText::new(
+                            "Marathon Animations was off when these were imported. It is on by default now.",
+                        )
+                        .color(muted),
+                    );
+                    ui.checkbox(&mut remember, "Save This Choice and Don't Ask Again")
+                        .on_hover_text("Change it later with Marathon Animations in the importer.");
+                }
                 ui.separator();
                 actions(ui, state, &mut requests);
             });
@@ -271,6 +302,21 @@ impl PackageAuthoringApp {
             excluded,
             changes,
         } = requests;
+        if ask_animations {
+            let state = &mut self.importer.refresh;
+            state.animations = Some(include);
+            state.remember = remember;
+            if refresh {
+                // The reimport reads the setting, so the answer becomes the setting. Turning it
+                // on ends the question, and turning it off ends it only when saved.
+                let settings = &mut self.importer.settings;
+                settings.marathon_animations = include;
+                settings.marathon_animations_asked |= remember;
+                if let Err(error) = self.importer.save() {
+                    self.importer.notice = error;
+                }
+            }
+        }
         let state = &mut self.importer.refresh;
         if let Some(excluded) = excluded {
             state.excluded = excluded;

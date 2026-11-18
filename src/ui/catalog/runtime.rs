@@ -3,8 +3,7 @@
 use eframe::egui;
 
 use crate::runtime::{
-    WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimeOwner,
-    WeaponRuntimeResource, WeaponRuntimeRoot,
+    RuntimeField, RuntimeFieldSource, RuntimeGraph, RuntimeOwner, RuntimeResource, RuntimeRoot,
 };
 
 #[derive(Debug, Default)]
@@ -30,7 +29,7 @@ struct Matches {
 impl RuntimeViewOptions {
     /// Matching field indices for each root of `graph`, found again only when the filter or
     /// the graph changes.
-    fn matching(&mut self, graph: &WeaponRuntimeGraph, query: &str) -> &[Vec<usize>] {
+    fn matching(&mut self, graph: &RuntimeGraph, query: &str) -> &[Vec<usize>] {
         if self.filter.0 != query || self.filter.1 != self.show_opaque {
             self.filter = (query.to_owned(), self.show_opaque);
             self.matches.clear();
@@ -57,7 +56,7 @@ impl RuntimeViewOptions {
     }
 }
 
-pub fn draw_graph(ui: &mut egui::Ui, graph: &WeaponRuntimeGraph, options: &mut RuntimeViewOptions) {
+pub fn draw_graph(ui: &mut egui::Ui, graph: &RuntimeGraph, options: &mut RuntimeViewOptions) {
     ui.push_id(("runtime-graph", graph.entity_tag), |ui| {
         let opaque = graph.fields().filter(|field| is_opaque(field)).count();
         ui.horizontal_wrapped(|ui| {
@@ -201,7 +200,7 @@ pub fn draw_graph(ui: &mut egui::Ui, graph: &WeaponRuntimeGraph, options: &mut R
 }
 
 /// The binding that names a shared owner.
-fn owner_label<'a>(graph: &'a WeaponRuntimeGraph, owner: &WeaponRuntimeOwner) -> &'a str {
+fn owner_label<'a>(graph: &'a RuntimeGraph, owner: &RuntimeOwner) -> &'a str {
     graph
         .bindings
         .iter()
@@ -212,7 +211,7 @@ fn owner_label<'a>(graph: &'a WeaponRuntimeGraph, owner: &WeaponRuntimeOwner) ->
 }
 
 /// Matching field indices for every root of `graph`, in drawing order.
-fn graph_matches(graph: &WeaponRuntimeGraph, query: &str, show_opaque: bool) -> Vec<Vec<usize>> {
+fn graph_matches(graph: &RuntimeGraph, query: &str, show_opaque: bool) -> Vec<Vec<usize>> {
     let mut roots = Vec::new();
     for resource in &graph.resources {
         let group = resource_group(resource);
@@ -235,14 +234,14 @@ fn graph_matches(graph: &WeaponRuntimeGraph, query: &str, show_opaque: bool) -> 
 }
 
 /// The text a resource's fields also match on: its binding, owner and class.
-fn resource_group(resource: &WeaponRuntimeResource) -> String {
+fn resource_group(resource: &RuntimeResource) -> String {
     format!(
         "{} 0x{:08X} 0x{:08X} 0x{:08X}",
         resource.binding_label, resource.binding_hash, resource.owner_tag, resource.concrete_class
     )
 }
 
-fn draw_root(ui: &mut egui::Ui, root: &WeaponRuntimeRoot, fields: &[usize]) {
+fn draw_root(ui: &mut egui::Ui, root: &RuntimeRoot, fields: &[usize]) {
     let fields = fields
         .iter()
         .filter_map(|index| root.fields.get(*index))
@@ -314,7 +313,7 @@ fn draw_root(ui: &mut egui::Ui, root: &WeaponRuntimeRoot, fields: &[usize]) {
 
 /// Indices of the fields of `root` that the filter keeps.
 pub(crate) fn matching_indices(
-    root: &WeaponRuntimeRoot,
+    root: &RuntimeRoot,
     group: &str,
     query: &str,
     show_opaque: bool,
@@ -336,11 +335,11 @@ pub(crate) fn matching_indices(
         .collect()
 }
 
-fn is_opaque(field: &WeaponRuntimeField) -> bool {
-    field.source == WeaponRuntimeFieldSource::OpaqueNativeType
+fn is_opaque(field: &RuntimeField) -> bool {
+    field.source == RuntimeFieldSource::OpaqueNativeType
 }
 
-pub(crate) fn export_field(field: &WeaponRuntimeField) -> serde_json::Value {
+pub(crate) fn export_field(field: &RuntimeField) -> serde_json::Value {
     serde_json::json!({
         "locator": field.locator,
         "owner_offset": field.owner_offset,
@@ -350,10 +349,10 @@ pub(crate) fn export_field(field: &WeaponRuntimeField) -> serde_json::Value {
         "value": field.value,
         "display": exact_value_text(field),
         "source": match field.source {
-            WeaponRuntimeFieldSource::GeneratedSchema => "generated_schema",
-            WeaponRuntimeFieldSource::NativeMember => "native_member",
-            WeaponRuntimeFieldSource::OpaqueNativeType => "opaque_semantics_unknown",
-            WeaponRuntimeFieldSource::NativeDeclaration => "native_storage_declaration",
+            RuntimeFieldSource::GeneratedSchema => "generated_schema",
+            RuntimeFieldSource::NativeMember => "native_member",
+            RuntimeFieldSource::OpaqueNativeType => "opaque_semantics_unknown",
+            RuntimeFieldSource::NativeDeclaration => "native_storage_declaration",
         },
         "generated_kind": field.generated_kind,
     })

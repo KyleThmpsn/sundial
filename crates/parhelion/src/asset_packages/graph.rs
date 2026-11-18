@@ -24,7 +24,7 @@ pub(crate) struct GraphPlan {
 impl GraphPlan {
     pub(super) fn new(assets: &AssetPackages) -> AuthoringResult<Self> {
         let before = state(assets)?;
-        let managed = crate::package_profile::host().is_standalone();
+        let managed = crate::package::profile::host().is_standalone();
         let owned: Vec<_> = before
             .iter()
             .enumerate()
@@ -58,7 +58,7 @@ impl GraphPlan {
         if self.last.is_none_or(|(_, _, budget)| !budget.fits(added)) {
             let id = match self
                 .owner
-                .filter(|_| crate::package_profile::host().is_standalone())
+                .filter(|_| crate::package::profile::host().is_standalone())
             {
                 Some(owner) => {
                     crate::mod_family::build::allocate(owner, self.count).map_err(invalid)?
@@ -89,7 +89,7 @@ impl GraphPlan {
         }
         let part = self.parts.last_mut().expect("asset part selected");
         for index in entries {
-            self.tags[index] = crate::appended_tags::AppendedTagAllocator::new(*id, 0)
+            self.tags[index] = crate::package::appended_tags::AppendedTagAllocator::new(*id, 0)
                 .assigned_tag(budget.entries, "Asset graph", "resource")?;
             part.entries.push(index);
             budget.entries += 1;

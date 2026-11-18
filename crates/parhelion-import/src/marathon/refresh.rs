@@ -67,7 +67,7 @@ pub fn author_sights(
         .as_array()
         .context("Marathon assembly parts")?
         .clone();
-    let (rig, animation) = animate(
+    let (rig, mut animation) = animate(
         source,
         native,
         &parts,
@@ -143,12 +143,21 @@ pub fn author_sights(
             &mut presentation,
             &parts,
             hash(graph, "item_hash")?,
+            mesh.surfaces
+                .values()
+                .any(|surface| matches!(surface.stage, 15 | 17)),
         )?;
         graph["kept_parts"] = sight;
         graph["source_optics"] = report;
     }
     graph["nodes"] = json!(presentation.nodes);
     graph["source_motion"] = rig.report;
+    if let Some(equipment) = animation
+        .as_object_mut()
+        .and_then(|section| section.remove("equipment_animation"))
+    {
+        graph["equipment_animation"] = equipment;
+    }
     graph["animation"] = animation;
     graph["source_assembly"] = json!(parts);
     graph["materials"] = json!(reports);

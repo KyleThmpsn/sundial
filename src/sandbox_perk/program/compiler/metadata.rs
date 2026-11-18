@@ -82,7 +82,7 @@ fn condition_metadata(
     }
     mask |= contributions;
     // A counter stores the mask of its contributing conditions, as 141 of 142 stock counters
-    // do, and 1 when it has none, as the other does. New counters used to keep zero.
+    // do, and 1 when it has none, as the other does.
     if condition.kind == 26 {
         let stored = if condition.children.is_empty() {
             1

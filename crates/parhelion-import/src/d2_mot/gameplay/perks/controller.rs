@@ -12,6 +12,8 @@ pub struct Controller {
 
 /// The state-gated HUD report class. Other auxiliary classes stay source records.
 pub const STATE_AUXILIARY: u32 = 0x8080_B843;
+/// The feedback record: an entity created while the states it names are held.
+pub const FEEDBACK_AUXILIARY: u32 = 0x8080_B844;
 
 #[derive(Debug, Serialize)]
 pub struct Auxiliary {
@@ -222,6 +224,38 @@ pub fn read(p: &Payload) -> Result<Controller> {
             class >> 16 == 0x8080,
             "invalid controller auxiliary class at {at:X}"
         );
+        // The feedback record names its states as the report does, then a flag word, a debug
+        // string and the entity it creates, 64 bytes in all. One that does not read this way
+        // keeps only its prefix, like any other class, and its controller still translates.
+        let feedback = || -> Result<Auxiliary> {
+            let mut state_offsets = Vec::new();
+            let mut state_keys = Vec::new();
+            for reference in rows(p, at + 8, 8, 0x8080B848)? {
+                let state = pointed(p, reference)?;
+                ensure!(
+                    offsets.contains(&state),
+                    "controller auxiliary points outside its states at {reference:X}"
+                );
+                state_offsets.push(state);
+                state_keys.push(p.u32(state)?);
+            }
+            Ok(Auxiliary {
+                offset: at,
+                class,
+                key: None,
+                priority: None,
+                state_offsets,
+                state_keys,
+                source_record: hex::encode(p.bytes::<64>(at)?),
+                source_record_complete: true,
+            })
+        };
+        if class == FEEDBACK_AUXILIARY
+            && let Ok(record) = feedback()
+        {
+            auxiliary.push(record);
+            continue;
+        }
         if class != STATE_AUXILIARY {
             // An auxiliary of another class keeps its class and its common eight-byte prefix.
             // Its size and references are not established, so nothing else is read from it.

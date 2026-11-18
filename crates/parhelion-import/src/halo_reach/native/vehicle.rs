@@ -4,11 +4,13 @@ mod aim;
 mod assembly;
 mod attachment;
 mod body;
+mod bundle;
 mod camera;
 mod collision;
 mod contact;
 mod curve;
 mod damage;
+mod driver;
 mod effects;
 mod flight;
 mod fragment;
@@ -16,7 +18,6 @@ mod hover;
 mod motion;
 mod passenger;
 mod prompts;
-mod secondary;
 mod stationary;
 mod turret;
 mod wing;
@@ -139,6 +140,15 @@ pub(super) fn build(
         Vec::new()
     };
     let maneuvers = channels.len() == 5;
+    // A carrier with left and right maneuver states creates the driver's secondary projectile
+    // when either becomes active. The maneuver then fires rather than rolls, so the roll
+    // surfaces read no maneuver state.
+    let created = secondary.filter(|_| flies && maneuvers);
+    let surface_channels = if flies {
+        &channels[2..if created.is_some() { 3 } else { channels.len() }]
+    } else {
+        &channels[..]
+    };
     let (contacts, mut motion) = if !flies {
         (
             contact::build(
@@ -164,7 +174,7 @@ pub(super) fn build(
                 bones,
                 controls,
                 &body,
-                &channels[2..]
+                &surface_channels
                     .iter()
                     .map(|channel| channel.name)
                     .collect::<Vec<_>>(),
@@ -183,19 +193,44 @@ pub(super) fn build(
     };
     assembly.contacts(native, graph, physical, &contacts)?;
     if !contacts.inputs.is_empty() {
-        assembly.surface_inputs(physical, &contacts, &channels[2..])?;
+        assembly.surface_inputs(physical, &contacts, surface_channels)?;
     }
     let prompts = prompts::build(native, graph, &mut assembly, name, "Drive")?;
-    let camera =
-        camera::build(native, graph, &mut assembly, scene, bones).context("Vehicle camera")?;
+    // The effect flow creates the source secondary in place of the carrier's own maneuver shot,
+    // which the driver's secondary entity fires.
+    let driver::Driver {
+        camera,
+        carrier_shot,
+    } = driver::build(
+        native,
+        graph,
+        &mut assembly,
+        scene,
+        bones,
+        created.is_some(),
+    )
+    .context("Vehicle driver entity")?;
     assembly.motion_inputs(graph, &mut motion, &channels[..channels.len().min(2)])?;
     assembly.add_motion(motion.payload.clone());
-    let boost = if flies {
-        assembly.boost(native, graph, scene, bones, controls, cache, pages, &motion)?
+    let played = if flies {
+        assembly.effect_flow(
+            native,
+            graph,
+            scene,
+            bones,
+            controls,
+            cache,
+            pages,
+            &motion,
+            created.map(|section| assembly::Secondary {
+                section,
+                states: &channels[3..5],
+            }),
+        )?
     } else {
-        assembly::Trails::default()
+        assembly::Played::default()
     };
-    let effects = effects::build(native, graph, &mut assembly, &boost.events)?;
+    let effects = effects::build(native, graph, &mut assembly, &played.events)?;
     let wheel_animation = if !flies {
         Some(
             assembly
@@ -254,15 +289,36 @@ pub(super) fn build(
         cache,
         name,
         &riders(entry),
-        secondary,
+        // A secondary the effect flow creates needs no pod.
+        if created.is_some() { None } else { secondary },
     )
     .context("Vehicle mount")?;
+    let secondary_weapon = if played.secondary.is_object() {
+        let mut report = played.secondary.clone();
+        report["carrier_shot"] = carrier_shot;
+        report
+    } else {
+        secondary_weapon
+    };
     assembly.emit(native, graph, runtime, hover, Some(&motion))?;
     Ok(Some(json!({
         "root":ROOT,"source_kind":controls["kind"],"motion":motion.report,"carrier_weapon":carrier_weapon,"mount":mount,"secondary_weapon":secondary_weapon,
-        "contacts":contacts.report,"body":body.report,"collision":collision,"damage":damage,"lighting":lighting,"effects":effects,"boost_trails":boost.report,"prompts":prompts,"wheel_animation":wheel_animation,"rotor_animation":rotor_animation,"audio":audio,"fire_audio":fire_audio,"camera":camera,"driver_targets":driver_targets,"gameplay_verified":false,
+        "contacts":contacts.report,"body":body.report,"collision":collision,"damage":damage,"lighting":lighting,"effects":effects,"trails":played.trails,"prompts":prompts,"wheel_animation":wheel_animation,"rotor_animation":rotor_animation,"audio":audio,"fire_audio":fire_audio,"camera":camera,"driver_targets":driver_targets,"gameplay_verified":false,
         "limits":["The carrier supplies interaction and animation state selection. Full source effect translation is deferred."]
     })))
+}
+
+/// Whether the vehicle takes the translated flight route: its one source physics row is a flight
+/// kind.
+pub(super) fn flies(scene: &Scene) -> bool {
+    scene.object.gameplay["physics"]
+        .as_array()
+        .is_some_and(|rows| {
+            rows.len() == 1
+                && rows[0]["kind"]
+                    .as_str()
+                    .is_some_and(|kind| flight::KINDS.contains(&kind))
+        })
 }
 
 /// Whether the vehicle carries seated children on its unit: every route, except a stationary gun,
@@ -595,8 +651,9 @@ fn retained(
     let (gun, moved) =
         aim::retained(native, graph, &mut assembly, bones).context("Vehicle gun aim")?;
     let bones = moved.as_ref().unwrap_or(bones);
-    let camera =
-        camera::build(native, graph, &mut assembly, scene, bones).context("Vehicle camera")?;
+    let camera = driver::build(native, graph, &mut assembly, scene, bones, false)
+        .context("Vehicle camera")?
+        .camera;
     let name = entry.recipe["name"]
         .as_str()
         .context("Vehicle display name")?;

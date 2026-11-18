@@ -1,5 +1,6 @@
 //! Place the source view in the native weapon reference frame.
 use super::*;
+use crate::math::dot;
 use crate::{
     halo_reach::rig::METRES_PER_UNIT,
     tiger::animation::{control::Rig, pose::Pose},
@@ -12,10 +13,6 @@ pub enum Framing {
     Native,
     SourceCentered,
     SourceLowered,
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    (0..3).map(|i| a[i] * b[i]).sum()
 }
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {

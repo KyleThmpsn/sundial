@@ -63,6 +63,22 @@ pub(crate) fn plan(
     removed: &BTreeSet<u32>,
     replacement: &AuthoredSlotReplacement,
 ) -> Result<Vec<AuthoredItemMove>, String> {
+    plan_within(
+        characters,
+        removed,
+        replacement,
+        crate::account::contract::CHARACTER_INVENTORY_CAPACITY,
+    )
+}
+
+/// Plans the moves for an account whose characters hold at most `inventory_capacity` unequipped
+/// items, which a Sunrise account database's schema sets.
+pub(crate) fn plan_within(
+    characters: &[CharacterItems],
+    removed: &BTreeSet<u32>,
+    replacement: &AuthoredSlotReplacement,
+    inventory_capacity: usize,
+) -> Result<Vec<AuthoredItemMove>, String> {
     let changes = validate(replacement, removed)?;
     if changes.is_empty() {
         return Ok(vec![]);
@@ -78,7 +94,12 @@ pub(crate) fn plan(
                 .iter()
                 .any(|(_, hash)| changes.contains_key(hash))
         {
-            result.extend(plan_character(character, replacement, &changes)?);
+            result.extend(plan_character(
+                character,
+                replacement,
+                &changes,
+                inventory_capacity,
+            )?);
         }
     }
     Ok(result)
@@ -115,6 +136,7 @@ fn plan_character(
     character: &CharacterItems,
     replacement: &AuthoredSlotReplacement,
     changes: &BTreeMap<u32, &AuthoredSlotChange>,
+    inventory_capacity: usize,
 ) -> Result<Vec<AuthoredItemMove>, String> {
     let bucket = |hash: u32| {
         replacement.incoming_buckets.get(&hash).copied()
@@ -154,7 +176,7 @@ fn plan_character(
     }
     for (slot, hash, native) in candidates {
         let count = &mut counts[usize::from(native)];
-        let fits = inventory_count < crate::account::contract::CHARACTER_INVENTORY_CAPACITY
+        let fits = inventory_count < inventory_capacity
             && *count < replacement.weapon_capacities[usize::from(native)];
         let outcome = if fits {
             inventory_count += 1;

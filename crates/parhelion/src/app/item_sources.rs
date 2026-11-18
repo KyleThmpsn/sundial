@@ -41,7 +41,7 @@ impl ItemSources {
             };
         }
         // Earlier layouts install Parhelion's records beside the stock ones.
-        if !crate::package_profile::is_stock_item_definition(definition) {
+        if !crate::package::profile::is_stock_item_definition(definition) {
             return ItemSource::Built;
         }
         let Some(provenance) = provenance else {

@@ -162,7 +162,7 @@ fn v18_native_database_all_pages_preserve_data_across_sizes_and_themes() {
             std::fs::create_dir_all(database.parent().unwrap()).unwrap();
             let db = rusqlite::Connection::open(&database).unwrap();
             db.execute_batch("BEGIN").unwrap();
-            let resources = crate::persistence::sqlite_account::tests::default_resources();
+            let resources = crate::persistence::sunrise_account::tests::default_resources();
             for sql in [
                 &resources.schema,
                 &resources.settings_schema,
@@ -175,11 +175,11 @@ fn v18_native_database_all_pages_preserve_data_across_sizes_and_themes() {
             app.document = WorkspaceDocument::load(json, &app.settings_path, false);
             assert_eq!(
                 app.document.source_kind(),
-                account::AccountSourceKind::Sqlite
+                account::AccountSourceKind::Sunrise
             );
             app.persisted_document = app.document.clone();
             let original = app.document.clone();
-            let native = crate::persistence::sqlite_account::snapshot::read(&database).unwrap();
+            let native = crate::persistence::sunrise_account::snapshot::read(&database).unwrap();
             let ctx = egui::Context::default();
             ctx.set_visuals(if dark {
                 egui::Visuals::dark()
@@ -195,7 +195,7 @@ fn v18_native_database_all_pages_preserve_data_across_sizes_and_themes() {
                 }
             }
             assert_eq!(
-                crate::persistence::sqlite_account::snapshot::read(&database).unwrap(),
+                crate::persistence::sunrise_account::snapshot::read(&database).unwrap(),
                 native
             );
         }

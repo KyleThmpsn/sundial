@@ -1,11 +1,7 @@
 //! Configured package artifact oracle, authored before the linker boundary.
 use super::*;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-
-fn digest(data: &[u8]) -> String {
-    hex::encode(Sha256::digest(data))
-}
+use sundial::storage::sha256_hex;
 
 fn read_i64(data: &[u8], offset: usize) -> AuthoringResult<i64> {
     let bytes = data
@@ -52,7 +48,7 @@ fn state(assets: &crate::asset_packages::AssetPackages) -> Vec<PackageState> {
 fn private_materialization_package_readback() {
     let output = crate::test_support::artifact_dir("linking");
     assert!(!output.exists(), "linker output must be fresh");
-    use crate::package_profile::{Host, Window};
+    use crate::package::profile::{Host, Window};
     for (label, window, host) in [
         ("legacy", Window::FULL, Host::APPENDED),
         (
@@ -65,7 +61,7 @@ fn private_materialization_package_readback() {
             Host::standalone(Window::FULL.top),
         ),
     ] {
-        let _profile = crate::package_profile::hold(window, host);
+        let _profile = crate::package::profile::hold(window, host);
         materialization_readback(&output.join(label));
     }
 }
@@ -140,7 +136,7 @@ fn materialization_readback(output: &Path) {
         let mut companion_decl = Declaration::new(
             "companion",
             companion.0.0,
-            companion.1.len() + crate::format::BLOCK_SIZE,
+            companion.1.len() + crate::package::format::BLOCK_SIZE,
         );
         companion_decl.companion = Some(Companion::new("parent", fixture.parent_template));
         let mut declarations = vec![
@@ -312,8 +308,8 @@ fn materialization_readback(output: &Path) {
     let mut emitted = BTreeMap::new();
     let mut enrolled = false;
     for package in &assets.packages {
-        let profile = crate::package_profile::authored_package(package.id).unwrap();
-        let artifact = crate::extend::build_standalone_package_with_references(
+        let profile = crate::package::profile::authored_package(package.id).unwrap();
+        let artifact = crate::package::extend::build_standalone_package_with_references(
             &fixture.packages,
             package.id,
             profile.file_name,
@@ -323,7 +319,7 @@ fn materialization_readback(output: &Path) {
         .unwrap();
         let written = artifact.write_new(temporary.path()).unwrap();
         let bytes = fs::read(&written).unwrap();
-        let layout = crate::format::PackageLayout::parse(&bytes).unwrap();
+        let layout = crate::package::format::PackageLayout::parse(&bytes).unwrap();
         let enrollment = layout.shared_tag_enrollment_rows(&bytes).unwrap();
         enrolled |= enrollment.chunks_exact(8).any(|row| {
             read_u32(row, 0).unwrap() == linked.symbols["parent"].0
@@ -332,7 +328,7 @@ fn materialization_readback(output: &Path) {
         emitted.insert(
             profile.file_name.to_owned(),
             serde_json::json!({
-                "bytes":bytes.len(),"sha256":digest(&bytes),"entries":package.tags.len()
+                "bytes":bytes.len(),"sha256":sha256_hex(&bytes),"entries":package.tags.len()
             }),
         );
         reopened.insert(
@@ -355,7 +351,7 @@ fn materialization_readback(output: &Path) {
         readback.insert(
             symbol.clone(),
             serde_json::json!({
-                "tag": tag.0, "bytes": payload.len(), "sha256": digest(&payload)
+                "tag": tag.0, "bytes": payload.len(), "sha256": sha256_hex(&payload)
             }),
         );
     }
@@ -410,7 +406,7 @@ fn materialization_readback(output: &Path) {
         (
             symbol,
             serde_json::json!({
-                "tag": tag, "bytes": payload.len(), "sha256": digest(payload)
+                "tag": tag, "bytes": payload.len(), "sha256": sha256_hex(payload)
             }),
         )
     })

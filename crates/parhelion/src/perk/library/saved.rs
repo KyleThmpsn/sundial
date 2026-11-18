@@ -196,7 +196,7 @@ impl SavedPerks {
 #[derive(Default)]
 struct LinkedIcons(
     #[cfg_attr(not(feature = "d2-model-importer"), allow(dead_code))]
-    BTreeMap<u32, crate::icon_edit::ImportedIcon>,
+    BTreeMap<u32, crate::icon::edit::ImportedIcon>,
 );
 
 impl LinkedIcons {
@@ -222,14 +222,14 @@ impl LinkedIcons {
         namespace: &str,
         socket: u16,
         choice: u16,
-    ) -> Option<crate::icon_edit::ImportedIcon> {
+    ) -> Option<crate::icon::edit::ImportedIcon> {
         use parhelion_import::tiger::ornament::{fnv, roles};
         let roles = roles(namespace, usize::from(socket), usize::from(choice));
         self.0.get(&fnv(&format!("{roles}/private-plug"))).cloned()
     }
 
     #[cfg(not(feature = "d2-model-importer"))]
-    fn get(&self, _: &str, _: u16, _: u16) -> Option<crate::icon_edit::ImportedIcon> {
+    fn get(&self, _: &str, _: u16, _: u16) -> Option<crate::icon::edit::ImportedIcon> {
         None
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! Perk patterns patch a whole native carrier graph. Ability effect graphs instead assemble
 //! complete private owners, so these entries return source values and edit owner payloads.
-pub(crate) use super::status::{Connected, Lifetime, host::Host};
+pub(crate) use super::status::{Connected, Lifetime, display::patch as display, host::Host};
 use super::*;
 
 /// Check a generated source network against the native graph's network owner.

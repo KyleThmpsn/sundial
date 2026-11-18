@@ -15,6 +15,7 @@ use super::super::{
     resource::Pages,
     rig::METRES_PER_UNIT,
 };
+use crate::math::{cross, dot, sub};
 use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -476,25 +477,9 @@ fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|k| a[k] + b[k])
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    std::array::from_fn(|k| a[k] - b[k])
-}
-
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     let d = sub(a, b);
     dot(d, d).sqrt()
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    (0..3).map(|k| a[k] * b[k]).sum()
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 fn unit(v: [f32; 3]) -> Option<[f32; 3]> {

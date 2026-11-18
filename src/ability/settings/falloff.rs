@@ -33,7 +33,7 @@ const START: usize = 4;
 
 /// The Falloff Start of each query in `root` whose program has the exact plateau-linear form, no
 /// flags, no orientation program and no fast path.
-pub(super) fn find(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -> Vec<Setting> {
+pub(super) fn find(owner: u32, root: &RuntimeRoot, payload: Option<&[u8]>) -> Vec<Setting> {
     let Some(payload) = payload else {
         return Vec::new();
     };
@@ -50,7 +50,7 @@ pub(super) fn find(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>)
         .collect()
 }
 
-fn setting(owner: u32, root: &WeaponRuntimeRoot, payload: &[u8], query: usize) -> Option<Setting> {
+fn setting(owner: u32, root: &RuntimeRoot, payload: &[u8], query: usize) -> Option<Setting> {
     let word = |at: usize| {
         payload
             .get(at..at + 4)
@@ -84,10 +84,10 @@ fn setting(owner: u32, root: &WeaponRuntimeRoot, payload: &[u8], query: usize) -
     // The constant rows as fields this query's program declares.
     let field = |index: usize| {
         root.fields.iter().find(|field| {
-            field.source == WeaponRuntimeFieldSource::NativeDeclaration
+            field.source == RuntimeFieldSource::NativeDeclaration
                 && field.owner_offset as usize == rows + index * 16
                 && field.locator.type_handle.get() == CONSTANT_ROW
-                && matches!(field.value, WeaponRuntimeValue::Vector4Float32Bits(_))
+                && matches!(field.value, RuntimeValue::Vector4Float32Bits(_))
                 && field.locator.path.windows(2).any(|pair| {
                     pair[0].type_handle.get() == QUERY
                         && pair[1].type_handle.get() == ARRAY
@@ -148,7 +148,7 @@ fn slope(start: f32) -> f64 {
 
 /// The Y lanes for a start of `fraction`, by field: the start row's own, then the falling and
 /// rising slopes of its linked rows.
-fn lanes(setting: &Setting, fraction: f32) -> Vec<(&WeaponRuntimeField, f32)> {
+fn lanes(setting: &Setting, fraction: f32) -> Vec<(&RuntimeField, f32)> {
     let slope = slope(fraction) as f32;
     std::iter::once((&setting.field, fraction))
         .chain(setting.linked.iter().zip([-slope, slope]))
@@ -156,9 +156,9 @@ fn lanes(setting: &Setting, fraction: f32) -> Vec<(&WeaponRuntimeField, f32)> {
 }
 
 /// The Y lane of `value`, a constant row.
-pub(super) fn read(value: &WeaponRuntimeValue) -> Option<f32> {
+pub(super) fn read(value: &RuntimeValue) -> Option<f32> {
     match value {
-        WeaponRuntimeValue::Vector4Float32Bits(lanes) => Some(f32::from_bits(lanes[1])),
+        RuntimeValue::Vector4Float32Bits(lanes) => Some(f32::from_bits(lanes[1])),
         _ => None,
     }
 }
@@ -167,7 +167,7 @@ pub(super) fn read(value: &WeaponRuntimeValue) -> Option<f32> {
 /// each row as the draft holds it.
 pub(super) fn write(
     setting: &Setting,
-    draft: &mut Vec<WeaponRuntimeValueOverride>,
+    draft: &mut Vec<RuntimeValueOverride>,
     fraction: f32,
 ) -> Result<(), String> {
     if !(0.0..1.0).contains(&fraction) || setting.linked.len() != 2 {
@@ -180,14 +180,14 @@ pub(super) fn write(
 }
 
 /// Restores the stock Y lane of each of its three rows, keeping their other lanes' edits.
-pub(super) fn reset(setting: &Setting, draft: &mut Vec<WeaponRuntimeValueOverride>) {
+pub(super) fn reset(setting: &Setting, draft: &mut Vec<RuntimeValueOverride>) {
     for field in std::iter::once(&setting.field).chain(&setting.linked) {
         let _ = put(draft, field, None);
     }
 }
 
 /// Whether the draft changes the Y lane of any of its three rows.
-pub(super) fn is_modified(setting: &Setting, draft: &[WeaponRuntimeValueOverride]) -> bool {
+pub(super) fn is_modified(setting: &Setting, draft: &[RuntimeValueOverride]) -> bool {
     std::iter::once(&setting.field)
         .chain(&setting.linked)
         .any(|field| {
@@ -202,26 +202,24 @@ pub(super) fn is_modified(setting: &Setting, draft: &[WeaponRuntimeValueOverride
 /// Writes `bits` into the Y lane of `field` in the draft, or its stock Y lane when `None`. A row
 /// that ends up as it shipped leaves the draft.
 fn put(
-    draft: &mut Vec<WeaponRuntimeValueOverride>,
-    field: &WeaponRuntimeField,
+    draft: &mut Vec<RuntimeValueOverride>,
+    field: &RuntimeField,
     bits: Option<u32>,
 ) -> Result<(), String> {
     let current = draft
         .iter()
         .find(|entry| entry.locator == field.locator)
         .map_or(&field.value, |entry| &entry.value);
-    let (
-        WeaponRuntimeValue::Vector4Float32Bits(mut lanes),
-        WeaponRuntimeValue::Vector4Float32Bits(stock),
-    ) = (current.clone(), &field.value)
+    let (RuntimeValue::Vector4Float32Bits(mut lanes), RuntimeValue::Vector4Float32Bits(stock)) =
+        (current.clone(), &field.value)
     else {
         return Err("Falloff Start has a value of an unexpected kind.".into());
     };
     lanes[1] = bits.unwrap_or(stock[1]);
-    let next = WeaponRuntimeValue::Vector4Float32Bits(lanes);
+    let next = RuntimeValue::Vector4Float32Bits(lanes);
     draft.retain(|entry| entry.locator != field.locator);
     if next != field.value {
-        draft.push(WeaponRuntimeValueOverride {
+        draft.push(RuntimeValueOverride {
             locator: field.locator.clone(),
             value: next,
         });
@@ -231,8 +229,8 @@ fn put(
 
 /// Keeps the Falloff Starts whose three rows no other path of the graph reaches, since editing a
 /// shared row would change that program too.
-pub(super) fn unshared(settings: &mut Vec<Setting>, roots: &[(u32, &WeaponRuntimeRoot)]) {
-    let mut paths = BTreeMap::<(u32, u32), BTreeSet<&Vec<WeaponRuntimePathElement>>>::new();
+pub(super) fn unshared(settings: &mut Vec<Setting>, roots: &[(u32, &RuntimeRoot)]) {
+    let mut paths = BTreeMap::<(u32, u32), BTreeSet<&Vec<RuntimePathElement>>>::new();
     for (owner, root) in roots {
         for field in &root.fields {
             if field.locator.type_handle.get() == CONSTANT_ROW {

@@ -171,17 +171,17 @@ pub enum ModernDamageType {
     Void,
 }
 
-/// Element switching by holding Reload, the way Hard Light and Borealis work.
+/// Damage type switching by holding Reload, the way Hard Light and Borealis work.
 ///
 /// The hold itself is client-side and exists only on those two weapons' gear-art rows, so the
 /// appearance donor has to be one of them. The switchable effects are the three stock rows on
-/// Hard Light's Fundamentals plug, one Set Host Mode node per element, each gated on the selector
-/// value the hold steps through: 0 is Void, 1 is Arc, 2 is Solar.
+/// Hard Light's Fundamentals plug, one Set Host Mode node per damage type, each gated on the
+/// selector value the hold steps through: 0 is Void, 1 is Arc, 2 is Solar.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeaponVariableDamage {
-    /// Elements the cycle can settle on. A selector step without a chosen element keeps the
-    /// element the weapon already has, so a two-element set repeats one element for one hold.
-    pub elements: Vec<ModernDamageType>,
+    /// Damage types the cycle can settle on. A selector step without a chosen damage type keeps the
+    /// damage type the weapon already has, so a set of two repeats one for one hold.
+    pub damage_types: Vec<ModernDamageType>,
 }
 
 /// The inventory column occupied by an authored weapon.
@@ -367,7 +367,7 @@ pub struct WeaponCloneOverrides {
     pub corner_icon: Option<crate::presentation::Artwork>,
     pub lore: Option<String>,
     pub icon_edit: crate::WeaponIconEdit,
-    pub hud_icon: Option<crate::hud_icon::HudImage>,
+    pub hud_icon: Option<crate::icon::hud::HudImage>,
     pub investment_stats: Vec<(u16, i32)>,
     /// Investment-stat definition rows removed from the gameplay donor.
     pub removed_investment_stats: Vec<u16>,
@@ -389,8 +389,8 @@ pub struct WeaponCloneOverrides {
     pub inventory_slot: Option<WeaponInventorySlot>,
     pub ammo_type: Option<WeaponAmmoType>,
     pub modern_damage_type: Option<ModernDamageType>,
-    /// Reload-hold element switching. Compilation pins The Fundamentals into the first trait
-    /// socket, and [`Self::modern_damage_type`] is then the element the weapon rests on.
+    /// Reload-hold damage type switching. Compilation pins The Fundamentals into the first trait
+    /// socket, and [`Self::modern_damage_type`] is then the damage type the weapon rests on.
     pub variable_damage: Option<WeaponVariableDamage>,
     /// Catalogue identifiers of exotic behavior records grafted onto this weapon's variant block.
     pub additional_behaviors: Vec<String>,
@@ -480,13 +480,13 @@ pub struct WeaponCloneOverrides {
     /// Private socket-plug variants whose finished perk runtime graphs carry typed edits.
     pub socket_plug_variants: Vec<WeaponSocketPlugVariantOverride>,
     /// Typed values in the effective package-backed runtime graph.
-    pub runtime_values: Vec<WeaponRuntimeValueOverride>,
+    pub runtime_values: Vec<RuntimeValueOverride>,
     /// Adds private keyed sword attack profiles to the authored weapon runtime.
     /// The matching private perk must add the same key while its effect is active.
     pub sword_profile: Option<SwordProfileOverride>,
     /// Same-size byte replacements inside the concrete runtime resource selected by a component
     /// binding. Offsets are relative to the selected resource, not its owner tag.
-    pub runtime_resource_patches: Vec<WeaponRuntimeResourcePatch>,
+    pub runtime_resource_patches: Vec<RuntimeResourcePatch>,
     /// Final byte patches applied to this weapon's newly cloned records after structured fields.
     pub raw_payload_patches: Vec<WeaponRawPayloadPatch>,
 }
@@ -560,7 +560,7 @@ pub struct WeaponRawPayloadPatch {
 
 /// One technical byte replacement inside a concrete runtime-component resource.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeResourcePatch {
+pub struct RuntimeResourcePatch {
     pub binding_hash: u32,
     /// Zero-based resource selected from a multi-resource native binding.
     pub resource_index: u16,
@@ -568,7 +568,7 @@ pub struct WeaponRuntimeResourcePatch {
     pub offset: u32,
     pub bytes: Vec<u8>,
     /// Edits to a private clone of the graph identified by the four replacement bytes.
-    pub graph_values: Vec<WeaponRuntimeValueOverride>,
+    pub graph_values: Vec<RuntimeValueOverride>,
     /// Component owners that private clone leaves out entirely. Only a behavior graft whose host
     /// cannot carry part of the graph sets these, and recipes never do.
     pub graph_removals: Vec<u32>,
@@ -583,7 +583,7 @@ pub struct WeaponRuntimeResourcePatch {
 /// its own needs one appended. Every relative pointer inside the added bytes is self relative, and
 /// appending never moves existing data, so the rest of the payload stays valid.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeResourceAppend {
+pub struct RuntimeResourceAppend {
     pub binding_hash: u32,
     pub resource_index: u16,
     /// Bytes added at the end of the owner payload.
@@ -601,6 +601,13 @@ pub struct WeaponRuntimeResourceAppend {
     /// Absolute-offset words inside `bytes` and their targets inside `bytes`. Records carrying
     /// these relocations are placed on a 16-byte boundary before their references are fixed.
     pub references: Vec<(usize, usize)>,
+    /// Relative pointer words inside `bytes` whose targets remain in the original owner,
+    /// expressed as resource-relative offsets. Retaining the allocation also retains edits
+    /// other compilation stages make to its contents.
+    pub retained_pointers: Vec<(usize, u32)>,
+    /// Byte ranges copied from the final edited original resource into `bytes`. Each tuple is
+    /// the destination inside `bytes`, the resource-relative source offset and the byte count.
+    pub retained_bytes: Vec<(usize, u32, usize)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -763,7 +770,7 @@ pub(crate) fn follow_moved_variants(
 /// One finished sandbox-perk chain cloned privately for an authored socket plug.
 ///
 /// Only this finished-perk row and its runtime action/entity chain become private. Unmodified
-/// fixed-element markers retain their stock identities. Other perks carried by the source plug
+/// fixed damage type markers retain their stock identities. Other perks carried by the source plug
 /// continue to reference their stock rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeaponSandboxPerkRuntimeOverride {
@@ -771,7 +778,7 @@ pub struct WeaponSandboxPerkRuntimeOverride {
     pub projectiles: Vec<sundial::package_authoring::sandbox_perk::entity::Selection>,
     pub source_perk_index: u16,
     pub activation: Option<sundial::package_authoring::sandbox_perk::activation::PerkActivation>,
-    pub runtime_values: Vec<WeaponRuntimeValueOverride>,
+    pub runtime_values: Vec<RuntimeValueOverride>,
     /// Scalar values stored directly in the finished-perk action rather than a referenced weapon
     /// entity graph.
     pub action_float_values: Vec<WeaponSandboxPerkActionFloatOverride>,
@@ -856,7 +863,7 @@ pub struct WeaponRenderGearDonorReference {
 /// One stock donor whose concrete component binding is grafted into a private clone of the
 /// gameplay donor's runtime weapon entity.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeaponRuntimeComponentDonorReference {
+pub struct RuntimeComponentDonorReference {
     pub binding_hash: u32,
     pub item_hash: u32,
     pub expected_name: Option<String>,
@@ -879,7 +886,7 @@ pub struct WeaponCloneSpec {
     pub presentation_donor: Option<WeaponPresentationDonorReference>,
     pub icon_donor: Option<WeaponIconDonorReference>,
     pub render_gear_donor: Option<WeaponRenderGearDonorReference>,
-    pub runtime_component_donors: Vec<WeaponRuntimeComponentDonorReference>,
+    pub runtime_component_donors: Vec<RuntimeComponentDonorReference>,
     pub identity: WeaponCloneIdentity,
     pub text: WeaponCloneText,
     pub overrides: WeaponCloneOverrides,
@@ -1026,8 +1033,12 @@ impl WeaponCloneSpec {
                 "Only subclass recipes can select a damage type icon",
             ));
         }
-        if self.overrides.armor_class.is_some() && self.kind != ItemKind::Armor {
-            return Err(invalid("Only armor recipes can select an armor class"));
+        if self.overrides.armor_class.is_some()
+            && !matches!(self.kind, ItemKind::Armor | ItemKind::Artifact)
+        {
+            return Err(invalid(
+                "Only armor and artifact recipes can select a class",
+            ));
         }
         if self.overrides.stat_trackers.is_some() && self.kind != ItemKind::Emblem {
             return Err(invalid("Only emblem recipes can select stat trackers"));
