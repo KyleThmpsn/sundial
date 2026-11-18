@@ -20,8 +20,12 @@ pub const GLYPH_TABLE: u32 = 0x80BC_6A79;
 const TABLE_CLASS: u32 = 0x8080_4A55;
 /// Where the glyph key sits in an energy controller's instance and definition.
 pub const GLYPH_FIELD: usize = 0x1C8;
+/// Where a stock table's rows start: after the array pointer at +0x10 and the array's header.
 const ROWS: usize = 48;
 const ROW_SIZE: usize = 112;
+const ARRAY_POINTER: usize = 0x10;
+const ARRAY_HEADER: usize = 16;
+const ARRAY_MARKER: u32 = 0x8080_9FBD;
 /// The modifier class of a bank row naming the glyph, and where its modifier holds the key.
 const VARIANT_CLASS: u32 = 0x8080_4532;
 const VARIANT_GLYPH: usize = 0x10;
@@ -106,13 +110,35 @@ pub fn glyph_keys(manager: &PackageManager) -> Result<BTreeSet<u32>, String> {
     let table = manager
         .read_tag(TagHash(GLYPH_TABLE))
         .map_err(|error| error.to_string())?;
-    let count = usize::try_from(u64_at(&table, 8)?).map_err(|_| "HUD glyph count overflow")?;
-    if ROWS + count * ROW_SIZE != table.len() {
-        return Err("The HUD glyph table has an unexpected layout".into());
-    }
+    let (rows, count) = glyph_rows(&table)?;
     (0..count)
-        .map(|row| u32_at(&table, ROWS + row * ROW_SIZE))
+        .map(|row| u32_at(&table, rows + row * ROW_SIZE))
         .collect()
+}
+
+/// Where a HUD glyph table's rows start, and how many it holds. A stock table holds them right
+/// after its header. The table an installed mod patches keeps the stock rows where they were and
+/// names a longer array after them, so the rows are wherever the pointer at +0x10 leads.
+pub fn glyph_rows(table: &[u8]) -> Result<(usize, usize), String> {
+    let layout = || "The HUD glyph table has an unexpected layout".to_string();
+    let count = usize::try_from(u64_at(table, 8)?).map_err(|_| "HUD glyph count overflow")?;
+    let header = usize::try_from(u64_at(table, ARRAY_POINTER)?)
+        .ok()
+        .and_then(|offset| offset.checked_add(ARRAY_POINTER))
+        .filter(|&header| header >= ROWS - ARRAY_HEADER)
+        .ok_or_else(layout)?;
+    let rows = header + ARRAY_HEADER;
+    let end = count
+        .checked_mul(ROW_SIZE)
+        .and_then(|size| size.checked_add(rows))
+        .ok_or_else(layout)?;
+    if end > table.len()
+        || u64_at(table, header)? != count as u64
+        || u32_at(table, header - 4)? != ARRAY_MARKER
+    {
+        return Err(layout());
+    }
+    Ok((rows, count))
 }
 
 /// The glyph `entity`'s energy controller names: the one component resource whose instance and

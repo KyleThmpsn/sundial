@@ -570,6 +570,19 @@ pub(super) fn plan(
         hud_assets.extend(tags);
         hud_dependencies.extend(stock);
     }
+    // A row can also draw the layer of a stock icon container, as an icon borrowed from a node
+    // with no glyph does. Nothing loads that container's art while the HUD draws, so the layer
+    // and its textures stay loaded with the build's own HUD art.
+    for row in &subclass_hud_rows {
+        if let Some(crate::subclass::hud::Art::Layer(layer)) = row.art
+            && packages.tag(TagHash(layer)).is_none()
+        {
+            hud_dependencies.push(TagHash(layer));
+            hud_dependencies.extend(crate::subclass::hud::layer_textures(manager, layer)?);
+        }
+    }
+    hud_dependencies.sort_unstable();
+    hud_dependencies.dedup();
     Ok(Plan {
         subclass_ui: if resolved
             .iter()

@@ -22,8 +22,10 @@ use sundial::package_authoring::{
     PackageManager,
     ability_bank::{
         AbilityTarget, CHARGE_ROWS, FixedRow, Modifier, bank_owner, handler_slot, membership_keys,
-        ordered_rows_match, parameters, property_rows, retarget_references, slot_banks,
-        with_ordered_rows, with_property_row, with_property_row_mode,
+        ordered_rows_match, parameters, private_ordered_rows_match, property_rows,
+        retarget_references, slot_banks, with_ordered_rows, with_private_ordered_rows,
+        with_private_property_row, with_private_property_row_mode, with_property_row,
+        with_property_row_mode,
     },
     ability_movement::evade,
     referrers,
@@ -138,6 +140,18 @@ impl Row {
             RowValue::Single(modifier) => match self.mode {
                 Some(mode) => with_property_row_mode(payload, self.key, *modifier, mode),
                 None => with_property_row(payload, self.key, *modifier),
+            },
+        }
+    }
+
+    /// Appends the row to a private copy of a bank whose stock form took it. The stock bank
+    /// qualified the row's witnesses, and the copy may hold them with edited values.
+    fn append_private(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
+        match &self.value {
+            RowValue::Ordered(members) => with_private_ordered_rows(payload, self.key, members),
+            RowValue::Single(modifier) => match self.mode {
+                Some(mode) => with_private_property_row_mode(payload, self.key, *modifier, mode),
+                None => with_private_property_row(payload, self.key, *modifier),
             },
         }
     }
@@ -521,7 +535,7 @@ pub(crate) fn sync_private_banks(
                 .any(|existing| existing.key == row.key)
             {
                 if let RowValue::Ordered(members) = &row.value
-                    && !ordered_rows_match(&after, row.key, members).map_err(context)?
+                    && !private_ordered_rows_match(&after, row.key, members).map_err(context)?
                 {
                     return Err(context(
                         "An existing ordered ability group is incomplete or different".into(),
@@ -529,7 +543,7 @@ pub(crate) fn sync_private_banks(
                 }
                 continue;
             }
-            after = row.append(&after).map_err(context)?;
+            after = row.append_private(&after).map_err(context)?;
         }
         if after == before {
             continue;

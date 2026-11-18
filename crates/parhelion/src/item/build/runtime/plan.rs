@@ -305,6 +305,7 @@ impl Payloads {
             && self.runtime_asset_tags.is_empty()
             && self.grafted_graphs.is_empty()
             && assets.hud_assets.is_empty()
+            && assets.hud_dependencies.is_empty()
         {
             return Ok(None);
         }

@@ -15,16 +15,20 @@ const SAT: u32 = 1 << 13;
 pub(crate) enum Change {
     NotDyeMaterial,
     AlreadySupported,
+    /// A dye material whose pixel program is outside the recognized contract. It stays as it is.
+    Unsupported,
     Patched(Vec<u8>),
 }
 
-/// Recognize, plan and rewrite only a supported native opaque consumer.
+/// Recognize, plan and rewrite only a supported native opaque consumer. A dye material the plan
+/// does not recognize is left alone, so one such part does not stop the weapon's build.
 pub(crate) fn patch(bytes: &[u8]) -> AuthoringResult<Change> {
     let mut program = Program::read(bytes)?;
-    let plan = match plan::read(&program)? {
-        plan::Choice::NotDyeMaterial => return Ok(Change::NotDyeMaterial),
-        plan::Choice::AlreadySupported => return Ok(Change::AlreadySupported),
-        plan::Choice::Patch(plan) => plan,
+    let plan = match plan::read(&program) {
+        Ok(plan::Choice::NotDyeMaterial) => return Ok(Change::NotDyeMaterial),
+        Ok(plan::Choice::AlreadySupported) => return Ok(Change::AlreadySupported),
+        Ok(plan::Choice::Patch(plan)) => plan,
+        Err(_) => return Ok(Change::Unsupported),
     };
     let mut suffix = kernel::instructions(&program.instructions, &plan)?;
     let color = plan.first + 3;

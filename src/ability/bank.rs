@@ -64,7 +64,10 @@ pub use crate::ability::AbilityTarget;
 pub use handler::HandlerIndex;
 mod names;
 mod ordered;
-pub use ordered::{FixedRow, FixedWitness, ordered_rows_match, with_ordered_rows};
+pub use ordered::{
+    FixedRow, FixedWitness, ordered_rows_match, private_ordered_rows_match, with_ordered_rows,
+    with_private_ordered_rows,
+};
 mod read;
 mod registry;
 mod scalar;
@@ -389,6 +392,26 @@ pub fn with_property_row_mode(
     modifier: Modifier,
     mode: u8,
 ) -> Result<Vec<u8>, String> {
+    property_row_mode(payload, key, modifier, mode, false)
+}
+
+/// [`with_property_row_mode`] for a private copy of a bank whose stock form took the same row.
+pub fn with_private_property_row_mode(
+    payload: &[u8],
+    key: u32,
+    modifier: Modifier,
+    mode: u8,
+) -> Result<Vec<u8>, String> {
+    property_row_mode(payload, key, modifier, mode, true)
+}
+
+fn property_row_mode(
+    payload: &[u8],
+    key: u32,
+    modifier: Modifier,
+    mode: u8,
+    private_copy: bool,
+) -> Result<Vec<u8>, String> {
     if !matches!(
         modifier,
         Modifier::Charges(_)
@@ -402,7 +425,7 @@ pub fn with_property_row_mode(
             "An explicit property mode requires a charge, parameter, numeric or fixed row".into(),
         );
     }
-    let mut out = with_property_row(payload, key, modifier)?;
+    let mut out = property_row(payload, key, modifier, private_copy)?;
     let layout = layout(&out)?;
     let rows = (0..layout.definition_rows.count)
         .map(|i| layout.definition_rows.first + i * DEFINITION_ROW_SIZE)
@@ -428,11 +451,35 @@ pub fn with_property_row_mode(
 /// parameter, since only a listed parameter is known to be read by the bank's script, or that
 /// shows no slot for the modifier.
 pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result<Vec<u8>, String> {
+    property_row(payload, key, modifier, false)
+}
+
+/// [`with_property_row`] for a private copy of a bank whose stock form took the same row. A
+/// grouped row is qualified by the stock bank's literal child values, which a copy with edited
+/// values no longer holds, so the copy takes the row without matching them again.
+pub fn with_private_property_row(
+    payload: &[u8],
+    key: u32,
+    modifier: Modifier,
+) -> Result<Vec<u8>, String> {
+    property_row(payload, key, modifier, true)
+}
+
+fn property_row(
+    payload: &[u8],
+    key: u32,
+    modifier: Modifier,
+    private_copy: bool,
+) -> Result<Vec<u8>, String> {
     if let Modifier::Attack(body) = modifier {
         body.profiles(payload)?;
     }
     if let Modifier::Group(body) = modifier {
-        body.check_bank(payload)?;
+        if private_copy {
+            body.validate()?;
+        } else {
+            body.check_bank(payload)?;
+        }
         return scalar::with_group(payload, key, body);
     }
     if let Modifier::Fixed(body) = modifier {

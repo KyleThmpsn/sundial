@@ -68,6 +68,8 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Fixed authored subclass tooltips showing the base subclass's unfinished tree objective.
 - Fixed saved damage sockets restoring a weapon's previous element after changing **Damage Type**.
 - Fixed subclass abilities disappearing from the catalog after mod installs, which could also block builds using subclass conditions.
+- Fixed builds failing with "Shader Glow found an unsupported or ambiguous material operation" after choosing certain weapon or ornament appearances. Parts whose materials **Shaders Light Glowing Parts** cannot change now stay as they are.
+- Fixed subclass recipes showing "The HUD glyph table has an unexpected layout" and no icon preview after installing a build that adds ability HUD icons or colors.
 - Fixed installs equipping a subclass you had switched away from and resetting its ability choices. Only newly added subclasses are equipped automatically.
 - Fixed **Build & Stage** saving or rejecting an open recipe that was excluded from the selection, preserving its unsaved edits.
 - Fixed incorrect stock objective progress after builds added Collections pages or the Project Sunrise badge.

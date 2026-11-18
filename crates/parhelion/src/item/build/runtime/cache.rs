@@ -33,7 +33,7 @@ const ENTRY_LIMIT: u64 = 512 * 1024 * 1024;
 /// every saved fragment compiles again. A rebuild that leaves it alone keeps the fragments.
 /// The package version is part of the identity too, so a release never replays a fragment an
 /// earlier version saved even if a raise was missed.
-const REVISION: u32 = 16;
+const REVISION: u32 = 18;
 
 pub(super) struct Session {
     root: PathBuf,

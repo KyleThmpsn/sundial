@@ -90,9 +90,19 @@ impl FixedRow {
         }
     }
 
-    fn handler(&self, payload: &[u8], layout: &Layout) -> Result<HandlerIndex, String> {
+    /// The handler slot of the row's witness in `payload`. A stock bank must hold the witness
+    /// exactly. A `private_copy` of a bank whose stock form already qualified the row may hold
+    /// the witness with edited values, and its handler slot is unchanged.
+    fn handler(
+        &self,
+        payload: &[u8],
+        layout: &Layout,
+        private_copy: bool,
+    ) -> Result<HandlerIndex, String> {
         self.validate()?;
         let mut found = None;
+        // Rows that are the witness in everything but their literal body.
+        let mut edited = Vec::new();
         for index in 0..layout.definition_rows.count {
             let at = layout.definition_rows.first + index * DEFINITION_ROW_SIZE;
             if u32_at(payload, at + ROW_KEY)? != self.witness.key
@@ -107,15 +117,23 @@ impl FixedRow {
                 continue;
             }
             check_body(payload, layout, modifier, self.class)?;
+            let handler = HandlerIndex::new(u32_at(payload, at + ROW_HANDLER)?);
             if words(payload, modifier, self.class)? != self.witness.words {
+                edited.push(handler);
                 continue;
             }
-            let handler = HandlerIndex::new(u32_at(payload, at + ROW_HANDLER)?);
             if found.replace(handler).is_some() {
                 return Err("Ordered Jump row has more than one matching native witness".into());
             }
         }
-        found.ok_or_else(|| "Ordered Jump row has no complete native witness".into())
+        // Without the exact row, one row of the witness's key, selection and class is the same
+        // native row with other values. Several such rows cannot be told apart.
+        found
+            .or(match edited.as_slice() {
+                [handler] if private_copy => Some(*handler),
+                _ => None,
+            })
+            .ok_or_else(|| "Ordered Jump row has no complete native witness".into())
     }
 }
 
@@ -201,6 +219,25 @@ fn movement_layout(payload: &[u8]) -> Result<Layout, String> {
 /// Compares the entire group through its live row and modifier references. A partial group or
 /// different order is a conflict, including when a private bank already carries the same key.
 pub fn ordered_rows_match(payload: &[u8], key: u32, members: &[FixedRow]) -> Result<bool, String> {
+    rows_match(payload, key, members, false)
+}
+
+/// [`ordered_rows_match`] for a private copy of a bank whose stock form qualified the group. The
+/// copy may hold a witness row with edited values.
+pub fn private_ordered_rows_match(
+    payload: &[u8],
+    key: u32,
+    members: &[FixedRow],
+) -> Result<bool, String> {
+    rows_match(payload, key, members, true)
+}
+
+fn rows_match(
+    payload: &[u8],
+    key: u32,
+    members: &[FixedRow],
+    private_copy: bool,
+) -> Result<bool, String> {
     let layout = movement_layout(payload)?;
     let rows = (0..layout.definition_rows.count)
         .map(|index| layout.definition_rows.first + index * DEFINITION_ROW_SIZE)
@@ -210,7 +247,7 @@ pub fn ordered_rows_match(payload: &[u8], key: u32, members: &[FixedRow]) -> Res
         return Ok(false);
     }
     for (&at, member) in rows.iter().zip(members) {
-        let handler = member.handler(payload, &layout)?;
+        let handler = member.handler(payload, &layout, private_copy)?;
         let body = pointer(payload, at + ROW_MODIFIER)?;
         if u32_at(payload, body + BLOCK_CLASS)? != member.class
             || u32_at(payload, at + ROW_MODE)? != 255
@@ -233,6 +270,25 @@ pub fn with_ordered_rows(
     key: u32,
     members: &[FixedRow],
 ) -> Result<Vec<u8>, String> {
+    ordered_rows(payload, key, members, false)
+}
+
+/// [`with_ordered_rows`] for a private copy of a bank whose stock form took the same group. The
+/// copy may hold a witness row with edited values, which keeps its handler slot.
+pub fn with_private_ordered_rows(
+    payload: &[u8],
+    key: u32,
+    members: &[FixedRow],
+) -> Result<Vec<u8>, String> {
+    ordered_rows(payload, key, members, true)
+}
+
+fn ordered_rows(
+    payload: &[u8],
+    key: u32,
+    members: &[FixedRow],
+    private_copy: bool,
+) -> Result<Vec<u8>, String> {
     if members.is_empty() || [0, u32::MAX, NO_NAME].contains(&key) {
         return Err("Ordered ability property has no members or valid identity".into());
     }
@@ -245,7 +301,7 @@ pub fn with_ordered_rows(
     }
     let handlers = members
         .iter()
-        .map(|member| member.handler(payload, &layout))
+        .map(|member| member.handler(payload, &layout, private_copy))
         .collect::<Result<Vec<_>, _>>()?;
     let count = layout.definition_rows.count;
     let rows = count
@@ -317,7 +373,7 @@ pub fn with_ordered_rows(
         return Err("The ordered bank edit lost a reciprocal block".into());
     }
     check_read_back(out, &before, &added, None)?;
-    if !ordered_rows_match(out, key, members)? {
+    if !rows_match(out, key, members, private_copy)? {
         return Err("The ordered ability group did not read back completely".into());
     }
     Ok(region.out)

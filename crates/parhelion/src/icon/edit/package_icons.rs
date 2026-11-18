@@ -187,6 +187,29 @@ pub(crate) fn scan_for(
     }
 }
 
+/// Stock icon container `container`'s primary art as artwork a private container can hold, at
+/// the texture's own size. A HUD tile that borrows a node's icon draws a private copy of it,
+/// since the client loads a stock container's art for menus and not while the HUD draws. A tile
+/// naming the stock layer itself faulted the client: first on the unloaded texture header at
+/// `exe+0x1463A80`, and with the header kept loaded, in Direct3D on its missing resource.
+pub(crate) fn primary_artwork(
+    manager: &PackageManager,
+    container: TagHash,
+) -> Result<crate::perk::Icon, String> {
+    let texture = primary_texture(manager, container)?;
+    let image = super::render_texture_preview(manager, texture)?;
+    if !image.pixels.iter().any(|pixel| pixel.a() > 0) {
+        return Err(format!("Icon texture {texture} has no visible artwork"));
+    }
+    let pixels = image::RgbaImage::from_fn(image.size[0] as u32, image.size[1] as u32, |x, y| {
+        image::Rgba(image[(x as usize, y as usize)].to_srgba_unmultiplied())
+    });
+    Ok(crate::perk::Icon::Image {
+        name: texture.to_string(),
+        image: super::ImportedIcon::from_normalized(pixels)?,
+    })
+}
+
 pub(crate) fn primary_texture(
     manager: &PackageManager,
     container: TagHash,

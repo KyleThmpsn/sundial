@@ -105,7 +105,9 @@ fn material(
     let code = match crate::weapon::glow::patch(&code)
         .map_err(|e| e.context(format!("Material 0x{tag:08X}, pixel 0x{pixel:08X}")))?
     {
-        Change::NotDyeMaterial | Change::AlreadySupported => return Ok(None),
+        Change::NotDyeMaterial | Change::AlreadySupported | Change::Unsupported => {
+            return Ok(None);
+        }
         Change::Patched(code) => code,
     };
     let material_symbol = format!("{prefix}-material");

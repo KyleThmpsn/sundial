@@ -30,8 +30,11 @@ fn flag_word(source: u32) -> Result<u32> {
 fn has_glyph(reader: &mut Reader, key: u32) -> Result<bool> {
     let table = reader.tag(sundial::package_authoring::ability_hud::GLYPH_TABLE, None)?;
     let count = usize::try_from(table.u64(8)?)?;
+    // An installed mod's table keeps the stock rows in place and names a longer array after
+    // them, so the rows follow the header the pointer at +16 leads to.
+    let rows = usize::try_from(table.u64(16)?)? + 32;
     for index in 0..count {
-        if table.u32(48 + index * 112)? == key {
+        if table.u32(rows + index * 112)? == key {
             return Ok(true);
         }
     }

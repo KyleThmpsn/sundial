@@ -61,6 +61,48 @@ pub(crate) fn primary_layer(
     Ok(layer)
 }
 
+/// Where an icon layer lists its lanes, each an array of the textures it draws.
+const LAYER_LANES: usize = 0x20;
+const LANE_CLASS: u32 = 0x8080_4A6C;
+const LANE_SIZE: usize = 16;
+const LANE_TEXTURE_CLASS: u32 = 0x8080_4A6F;
+
+/// The textures stock icon layer `layer` draws. The client loads an icon container's art when a
+/// screen shows its icon, not while the HUD draws, so a glyph row naming a stock container's
+/// layer needs these kept loaded. A HUD tile whose texture was not loaded faulted the client at
+/// `exe+0x1463A80` when the subclass was equipped.
+pub(crate) fn layer_textures(
+    manager: &PackageManager,
+    layer: u32,
+) -> AuthoringResult<Vec<TagHash>> {
+    let payload = manager
+        .read_tag(TagHash(layer))
+        .map_err(|error| invalid(format!("Icon layer {layer:08X}: {error}")))?;
+    let (lanes, _, rows, class) = crate::tag_payload::array_at(&payload, LAYER_LANES)?;
+    if class != LANE_CLASS || lanes > 16 {
+        return Err(invalid(format!(
+            "Icon layer {layer:08X} has an unexpected lane list"
+        )));
+    }
+    let mut textures = Vec::new();
+    for lane in 0..lanes {
+        let (count, _, first, class) =
+            crate::tag_payload::array_at(&payload, rows + lane * LANE_SIZE)?;
+        if class != LANE_TEXTURE_CLASS || count > 64 {
+            return Err(invalid(format!(
+                "Icon layer {layer:08X} has an unexpected texture list"
+            )));
+        }
+        for index in 0..count {
+            let texture = crate::tag_payload::read_u32(&payload, first + index * 4)?;
+            if !matches!(texture, 0 | u32::MAX) {
+                textures.push(TagHash(texture));
+            }
+        }
+    }
+    Ok(textures)
+}
+
 pub(crate) fn is_super(place: Place) -> bool {
     matches!(
         place,

@@ -218,7 +218,7 @@ pub mod ability_definition {
 pub mod ability_hud {
     pub use crate::ability::hud::{
         AttachedGlyph, GLYPH_FIELD, GLYPH_TABLE, GlyphSite, VariantGlyph, all_variant_glyphs,
-        attached_glyphs, glyph_keys, glyph_site, variant_glyphs,
+        attached_glyphs, glyph_keys, glyph_rows, glyph_site, variant_glyphs,
     };
 }
 
@@ -299,10 +299,11 @@ pub mod ability_bank {
         StockParameter, UNPLACED_BANKS, bank_name, bank_names, bank_owner, block_count,
         constant_protection_definition, handler_slot, instance_offset, instance_shift,
         membership_keys, ordered_rows_match, parameter_abilities, parameter_kind, parameter_label,
-        parameter_meaning, parameter_name, parameters, property_rows, register_bank_names,
-        retarget_references, row_modifiers, slot_banks, slot_name, slot_parameters, tuning_key,
-        validate, validate_native_owner, widened, with_charge_row, with_ordered_rows,
-        with_property_row, with_property_row_mode,
+        parameter_meaning, parameter_name, parameters, private_ordered_rows_match, property_rows,
+        register_bank_names, retarget_references, row_modifiers, slot_banks, slot_name,
+        slot_parameters, tuning_key, validate, validate_native_owner, widened, with_charge_row,
+        with_ordered_rows, with_private_ordered_rows, with_private_property_row,
+        with_private_property_row_mode, with_property_row, with_property_row_mode,
     };
 }
 

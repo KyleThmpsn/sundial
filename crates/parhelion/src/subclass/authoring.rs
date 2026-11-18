@@ -622,6 +622,8 @@ fn author_entry(
     // artwork, is drawn in a glyph row of the ability's own from the icon's primary layer.
     let mut icon_glyph = None;
     let mut icon_art = None;
+    // The icon another entry lends when it has no glyph, as the art the tile copies.
+    let mut borrowed = None;
     match &edits.icon {
         Some(EntryIcon::Ability { subclass, entry }) => {
             let owner = stock.get(subclass).ok_or_else(|| {
@@ -636,16 +638,17 @@ fn author_entry(
             record = native::set_node_icon(&record, icon_row)?;
             icon_glyph = entry_glyph(sources, owner, *entry)?;
             if icon_glyph.is_none() {
-                let container = read_tag(
-                    sources.manager,
-                    (sources.icon_container)(icon_row)?,
-                    "icon container",
-                )?;
-                icon_art = Some(super::hud::Art::Layer(super::hud::primary_layer(
-                    sources.manager,
-                    &container,
-                    false,
-                )?));
+                // The client loads a stock icon container's art for menus, not for the HUD, and
+                // a tile naming its layer faults when the art is not loaded. The tile draws a
+                // private copy of the icon's primary texture, as it does artwork of its own.
+                borrowed = Some(
+                    crate::icon::edit::package_icons::primary_artwork(
+                        sources.manager,
+                        (sources.icon_container)(icon_row)?,
+                    )
+                    .map_err(invalid)?,
+                );
+                icon_art = Some(super::hud::Art::OwnIcon);
             }
         }
         Some(EntryIcon::Artwork { artwork: icon }) => {
@@ -736,6 +739,7 @@ fn author_entry(
                 let hud_icon = edits
                     .hud_artwork
                     .clone()
+                    .or(borrowed)
                     .filter(|_| color_row.is_some())
                     .map(|artwork| -> AuthoringResult<_> {
                         Ok(HudIcon {

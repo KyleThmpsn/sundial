@@ -16,26 +16,32 @@ const TEXTURE: TagHash = TagHash(0x80B464EB);
 /// The ammunition row every authored ammunition HUD row copies.
 const AMMUNITION_TEMPLATE: u32 = 0x08491234;
 const ROW_SIZE: usize = 112;
+/// The marker before a native array's header, and the class of a HUD icon table's rows.
+const ARRAY_MARKER: u32 = 0x80809FBD;
+const ROW_CLASS: u32 = 0x80804A59;
 
 /// The rows of a native HUD icon table (class `0x80804A55`), by key. The ammunition HUD bank and
 /// the HUD status table share the layout: a terminal array of 112-byte rows, each a key and the
-/// icon layer it shows, sorted by key.
+/// icon layer it shows, sorted by key. A stock table holds the array right after its header. The
+/// table an installed mod patches keeps the stock rows in place and names a longer array after
+/// them, so the rows are read from wherever the array pointer leads.
 pub(crate) fn table_rows(table: &[u8]) -> AuthoringResult<BTreeMap<u32, Vec<u8>>> {
     let count =
         usize::try_from(read_u64(table, 8)?).map_err(|_| invalid("HUD row count overflow"))?;
     let header = relative_target(table, 16)?;
     if count == 0
         || count > 4096
-        || header != 32
+        || header < 32
         || read_u64(table, header)? != count as u64
-        || read_u32(table, header - 4)? != 0x80809FBD
-        || read_u32(table, header + 8)? != 0x80804A59
-        || table.len() != 48 + count * ROW_SIZE
+        || read_u32(table, header - 4)? != ARRAY_MARKER
+        || read_u32(table, header + 8)? != ROW_CLASS
+        || table.len() < header + 16 + count * ROW_SIZE
+        || (header == 32 && table.len() != 48 + count * ROW_SIZE)
     {
         return Err(invalid("Unsupported HUD icon table layout"));
     }
     let mut rows = BTreeMap::new();
-    for row in table[48..].chunks_exact(ROW_SIZE) {
+    for row in table[header + 16..header + 16 + count * ROW_SIZE].chunks_exact(ROW_SIZE) {
         if rows.insert(read_u32(row, 0)?, row.to_vec()).is_some() {
             return Err(invalid("Duplicate native HUD icon key"));
         }
@@ -84,9 +90,15 @@ pub(crate) fn insert_rows(
             )));
         }
     }
+    // The written table always holds its array right after the header, wherever the source's was.
     table.truncate(48);
     write_u64(&mut table, 8, rows.len() as u64)?;
+    write_u64(&mut table, 16, 16)?;
+    write_u32(&mut table, 24, 0)?;
+    write_u32(&mut table, 28, ARRAY_MARKER)?;
     write_u64(&mut table, 32, rows.len() as u64)?;
+    write_u32(&mut table, 40, ROW_CLASS)?;
+    write_u32(&mut table, 44, 0)?;
     for row in rows.into_values() {
         table.extend_from_slice(&row);
     }

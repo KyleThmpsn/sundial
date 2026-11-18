@@ -94,13 +94,14 @@ fn icon(
                 owner.node_record(*entry)?,
                 "attached ability icon donor",
             )?;
-            let container = read_tag(
+            // A stock container's art is loaded for menus alone, so the tile draws a private
+            // copy of the icon's primary texture.
+            let artwork = crate::icon::edit::package_icons::primary_artwork(
                 sources.manager,
                 (sources.icon_container)(native::node_icon(&record)?)?,
-                "icon container",
-            )?;
-            let layer = crate::subclass::hud::primary_layer(sources.manager, &container, false)?;
-            Ok((Some(Art::Layer(layer)), None))
+            )
+            .map_err(invalid)?;
+            Ok((Some(Art::OwnIcon), Some(artwork)))
         }
     }
 }
